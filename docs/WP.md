@@ -71,7 +71,7 @@ or dependent on a single large counterparty. With QU!D's basket as the flash loa
 solvers access basket liquidity for each hop without pre-locking capital.
 
 The basket provides the liquidity. The solver routes and repays atomically.
-The basket is already capitalised by dollar depositor bonds attracted by the yield structure in Section III.
+The basket is already capitalised by dollar depositor bonds attracted by the yield structure.
 Solvers receive free flash loans from capital that exists because ETH depositors wanted to stake without selling.
 The flash loan facility costs QU!D nothing to provide and costs solvers nothing to use.
 
@@ -141,7 +141,7 @@ Time-weighted capital accumulation rewards early conviction — the hardest kind
 | Partner | Integration |
 |---|---|
 | Perena.org | Solana stablecoin basket. QU!D supplements Perena's basket on Solana with an Ethereum-imported basket on L1, taking deposits of L2 baskets inside L1. |
-| mempalace | oracle orchestrator |
+| mempalace | oracle orchestration layer |
 | USYC / Hashnote | Overnight repo wrapper. All USDC entering the protocol is wrapped in USYC before entering the basket, giving every dollar a T-bill floor yield. |
 | AAVE / Morpho | Yield sources. Deposited stablecoins earn yield through AAVE money markets and Morpho vaults, accruing in time-weighted share calculation. |
 | Uniswap Foundation | Liquidity management. Rover/Vogue manage Uniswap V3/V4 LP positions; zero-IL single-sided provision; virtual balance swaps. |
