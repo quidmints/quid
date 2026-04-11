@@ -1,0 +1,48 @@
+
+[profile.default]
+src = "src"
+out = "out"
+
+libs = ["lib"]
+ffi = true
+
+gas_reports = ["*"]
+fs_permissions = [
+    { access = "read-write", path = ".forge-snapshots/"},
+    { access = "read-write", path = "demo/src/contracts/"},
+    { access = "read-write", path = "src/contracts/"},
+    { access = "read-write", path = "deployments/"},
+    { access = "read-write", path = "./"}
+]
+
+solc_version = "0.8.26"
+evm_version = "cancun"
+
+via_ir = false
+optimizer = true
+optimizer_runs = 200
+dynamic_test_linking = true
+
+bytecode_hash = "none"
+deny_warnings = false
+cbor_metadata = false
+sparse_mode = false
+build_info = true
+
+[rpc_endpoints]
+# forge script scripts/DeployL1.s.sol:Deploy --rpc-url mainnet --broadcast --verify
+mainnet = "https://ethereum-rpc.publicnode.com"
+arbitrum = "https://rpc.ankr.com/arbitrum/abc1c9e1ba906a35c59e62a69c80cf77219499b3cd05752d53c0ed17d14cbfc3"
+base = "https://base-rpc.publicnode.com"
+polygon = "https://rpc.ankr.com/polygon/abc1c9e1ba906a35c59e62a69c80cf77219499b3cd05752d53c0ed17d14cbfc3"
+
+[etherscan]
+mainnet = { key = "${ETHERSCAN_L1}" }
+arbitrum = { key = "${ETHERSCAN_L1}" }
+base = { key = "${ETHERSCAN_L1}" }
+polygon = { key = "${ETHERSCAN_L1}" }
+
+[profile.dependencies]
+v4-core = { git = "https://github.com/uniswap/v4-core" }
+v4-periphery = { git = "https://github.com/uniswap/v4-periphery" }
+aave-v3-origin = { git = "https://github.com/aave-dao/aave-v3-origin" }

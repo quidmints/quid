@@ -1,0 +1,8 @@
+{
+  "lib/solidity-math-utils": {
+    "tag": {
+      "name": "v1.7.0",
+      "rev": "9022e98bcb0b8ce411cf9df59a380b67bccf1934"
+    }
+  }
+}

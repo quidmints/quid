@@ -1,0 +1,5013 @@
+{
+  "address": "J1xE8gXrXgrFoEch6QQ9JesqyqhUAkjDuD4CLb2RWSfC",
+  "metadata": {
+    "name": "quid",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "ack_match",
+      "docs": [
+        "Device marks their MatchNotification as read.",
+        "Enables garbage collection after a grace period."
+      ],
+      "discriminator": [
+        67,
+        146,
+        38,
+        99,
+        177,
+        200,
+        41,
+        139
+      ],
+      "accounts": [
+        {
+          "name": "notification",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104,
+                  95,
+                  110,
+                  111,
+                  116,
+                  105,
+                  102
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "notification.device",
+                "account": "MatchNotification"
+              },
+              {
+                "kind": "account",
+                "path": "notification.slot",
+                "account": "MatchNotification"
+              }
+            ]
+          }
+        },
+        {
+          "name": "device",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "notification"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "bid",
+      "discriminator": [
+        199,
+        56,
+        85,
+        38,
+        146,
+        243,
+        37,
+        158
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quid",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "OrderParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "challenge",
+      "discriminator": [
+        16,
+        107,
+        14,
+        39,
+        244,
+        150,
+        81,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "challenger",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_resolution_bond",
+      "discriminator": [
+        112,
+        14,
+        183,
+        165,
+        144,
+        237,
+        49,
+        126
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "market_evidence",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  101,
+                  118,
+                  105,
+                  100,
+                  101,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "oracle_operator",
+          "docs": [
+            "Oracle operator (config.admin) receives the bond when fees don't cover compute."
+          ],
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "docs": [
+            "Market creator receives bond refund when fees_collected >= oracle_compute_cost."
+          ],
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program_vault",
+          "docs": [
+            "QD token vault — pays oracle when fees cover compute cost."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.token_mint",
+                "account": "ProgramConfig"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_fee_account",
+          "docs": [
+            "Oracle operator's QD token account for fee payment."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_market",
+      "docs": [
+        "Commit oracle-generated evidence protocol hash before market opens.",
+        "Must be called after CreateMarketPipeline completes in the Go oracle.",
+        "No positions can be placed until this PDA exists."
+      ],
+      "discriminator": [
+        103,
+        226,
+        97,
+        235,
+        200,
+        188,
+        251,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "accuracy_buckets",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "CreateMarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quid",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "ticker",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "init_config",
+      "discriminator": [
+        23,
+        235,
+        115,
+        232,
+        168,
+        96,
+        1,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "orchestrator",
+          "type": "pubkey"
+        },
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "init_market_evidence",
+      "discriminator": [
+        197,
+        71,
+        161,
+        131,
+        101,
+        38,
+        119,
+        248
+      ],
+      "accounts": [
+        {
+          "name": "creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "market_evidence",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  101,
+                  118,
+                  105,
+                  100,
+                  101,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_id",
+          "type": "u64"
+        },
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "EvidenceRequirementsParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "init_oapp_store",
+      "discriminator": [
+        21,
+        133,
+        164,
+        45,
+        186,
+        137,
+        84,
+        61
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "store",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "lz_receive_types_accounts",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  76,
+                  122,
+                  82,
+                  101,
+                  99,
+                  101,
+                  105,
+                  118,
+                  101,
+                  84,
+                  121,
+                  112,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "store"
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "InitOAppStoreParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "liquidate",
+      "discriminator": [
+        223,
+        179,
+        226,
+        125,
+        48,
+        46,
+        39,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "liquidating"
+        },
+        {
+          "name": "liquidator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidating"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidator_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidator"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "ticker",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "lz_receive",
+      "docs": [
+        "LayerZero receive handler for incoming messages from Court.sol.",
+        "Handles FINAL_RULING message type only."
+      ],
+      "discriminator": [
+        8,
+        179,
+        120,
+        109,
+        33,
+        118,
+        189,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "store",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "oapp_registry"
+        },
+        {
+          "name": "nonce"
+        },
+        {
+          "name": "payload_hash",
+          "writable": true
+        },
+        {
+          "name": "endpoint",
+          "writable": true
+        },
+        {
+          "name": "endpoint_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "LzReceiveParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "lz_receive_types",
+      "docs": [
+        "LZ receive types handler — tells LayerZero which accounts",
+        "to include for a given incoming message."
+      ],
+      "discriminator": [
+        221,
+        17,
+        246,
+        159,
+        248,
+        128,
+        31,
+        96
+      ],
+      "accounts": [
+        {
+          "name": "store",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "LzReceiveParams"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "vec": {
+          "defined": {
+            "name": "LzAccount"
+          }
+        }
+      }
+    },
+    {
+      "name": "notify_match",
+      "docs": [
+        "Oracle writes a blinded MatchNotification for one device.",
+        "Called twice per match — once per device — with different",
+        "device and counterparty_commitment values."
+      ],
+      "discriminator": [
+        127,
+        74,
+        134,
+        56,
+        113,
+        200,
+        17,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "notification",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104,
+                  95,
+                  110,
+                  111,
+                  116,
+                  105,
+                  102
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.device"
+              },
+              {
+                "kind": "arg",
+                "path": "params.slot"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_operator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "RecordMatchNotificationParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "payout",
+      "discriminator": [
+        149,
+        140,
+        194,
+        236,
+        174,
+        189,
+        6,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "market.creator",
+                "account": "Market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true
+        },
+        {
+          "name": "keeper_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_chain",
+      "discriminator": [
+        230,
+        181,
+        152,
+        173,
+        20,
+        163,
+        157,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "store",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "chain_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  67,
+                  104,
+                  97,
+                  105,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.eid"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "RegisterChainParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolve",
+      "discriminator": [
+        246,
+        150,
+        236,
+        206,
+        108,
+        63,
+        58,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolve_challenge",
+      "discriminator": [
+        81,
+        191,
+        124,
+        119,
+        131,
+        248,
+        157,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolve_jury",
+      "docs": [
+        "Send resolution request to Court.sol via LayerZero.",
+        "Callable by anyone after deadline, if market has jury config.",
+        "Requester must hold a position >= MIN_JURY_STAKE."
+      ],
+      "discriminator": [
+        44,
+        48,
+        198,
+        75,
+        168,
+        156,
+        169,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "requester",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "market_evidence",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  101,
+                  118,
+                  105,
+                  100,
+                  101,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oapp_store",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "reveal",
+      "discriminator": [
+        9,
+        35,
+        59,
+        190,
+        167,
+        249,
+        76,
+        115
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "accuracy_buckets",
+          "writable": true
+        },
+        {
+          "name": "signer",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "reveals",
+          "type": {
+            "vec": {
+              "vec": {
+                "defined": {
+                  "name": "RevealEntry"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "sell",
+      "discriminator": [
+        51,
+        230,
+        133,
+        164,
+        1,
+        127,
+        131,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "tokens_to_sell",
+          "type": "u64"
+        },
+        {
+          "name": "max_deviation_bps",
+          "type": {
+            "option": "u64"
+          }
+        }
+      ]
+    },
+    {
+      "name": "submit_evidence",
+      "discriminator": [
+        12,
+        169,
+        228,
+        194,
+        229,
+        31,
+        44,
+        39
+      ],
+      "accounts": [
+        {
+          "name": "submitter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "market_evidence",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  101,
+                  118,
+                  105,
+                  100,
+                  101,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "evidence",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "SubmitEvidenceParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_create_market",
+      "discriminator": [
+        196,
+        156,
+        231,
+        242,
+        144,
+        98,
+        132,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true
+        },
+        {
+          "name": "accuracy_buckets",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "CreateMarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_receive_ruling",
+      "discriminator": [
+        150,
+        86,
+        58,
+        163,
+        21,
+        221,
+        222,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "winning_sides",
+          "type": "bytes"
+        },
+        {
+          "name": "force_majeure",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "test_resolve",
+      "discriminator": [
+        101,
+        161,
+        87,
+        182,
+        33,
+        36,
+        63,
+        63
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "winning_outcome",
+          "type": "u8"
+        },
+        {
+          "name": "confidence",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "timeout_jury",
+      "docs": [
+        "Permissionless force-majeure trigger for stalled jury markets.",
+        "If no ruling arrives within JURY_TIMEOUT_SECS (14 days) of",
+        "send_resolution_request, anyone may cancel the market so that",
+        "push_payouts can return all capital."
+      ],
+      "discriminator": [
+        101,
+        106,
+        44,
+        230,
+        39,
+        19,
+        144,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone may trigger — permissionless."
+          ],
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "tip_jury",
+      "docs": [
+        "Send jury compensation to Court.sol after resolution finalized."
+      ],
+      "discriminator": [
+        172,
+        203,
+        155,
+        236,
+        86,
+        180,
+        161,
+        164
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "oapp_store",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_config",
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_orchestrator",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_admin",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "add_apk_hash",
+          "type": {
+            "option": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        },
+        {
+          "name": "remove_apk_hash",
+          "type": {
+            "option": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "weigh",
+      "discriminator": [
+        231,
+        96,
+        240,
+        107,
+        1,
+        19,
+        253,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "accuracy_buckets",
+          "writable": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "keeper_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        183,
+        18,
+        70,
+        156,
+        148,
+        109,
+        161,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "i64"
+        },
+        {
+          "name": "ticker",
+          "type": "string"
+        },
+        {
+          "name": "exposure",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AccuracyBuckets",
+      "discriminator": [
+        97,
+        199,
+        172,
+        75,
+        149,
+        65,
+        232,
+        22
+      ]
+    },
+    {
+      "name": "ChainConfig",
+      "discriminator": [
+        13,
+        177,
+        233,
+        141,
+        212,
+        29,
+        148,
+        56
+      ]
+    },
+    {
+      "name": "Depositor",
+      "discriminator": [
+        219,
+        74,
+        92,
+        245,
+        101,
+        149,
+        45,
+        97
+      ]
+    },
+    {
+      "name": "Depository",
+      "discriminator": [
+        241,
+        199,
+        229,
+        248,
+        165,
+        69,
+        224,
+        187
+      ]
+    },
+    {
+      "name": "EvidenceSubmission",
+      "discriminator": [
+        90,
+        83,
+        239,
+        125,
+        172,
+        182,
+        231,
+        132
+      ]
+    },
+    {
+      "name": "LzReceiveTypesAccounts",
+      "discriminator": [
+        248,
+        87,
+        167,
+        117,
+        5,
+        251,
+        21,
+        126
+      ]
+    },
+    {
+      "name": "Market",
+      "discriminator": [
+        219,
+        190,
+        213,
+        55,
+        0,
+        227,
+        198,
+        154
+      ]
+    },
+    {
+      "name": "MarketEvidence",
+      "discriminator": [
+        182,
+        22,
+        186,
+        167,
+        198,
+        166,
+        194,
+        27
+      ]
+    },
+    {
+      "name": "MatchNotification",
+      "discriminator": [
+        167,
+        174,
+        15,
+        200,
+        243,
+        140,
+        23,
+        74
+      ]
+    },
+    {
+      "name": "OAppStore",
+      "discriminator": [
+        192,
+        146,
+        140,
+        177,
+        133,
+        210,
+        10,
+        110
+      ]
+    },
+    {
+      "name": "Position",
+      "discriminator": [
+        170,
+        188,
+        143,
+        228,
+        122,
+        64,
+        247,
+        208
+      ]
+    },
+    {
+      "name": "ProgramConfig",
+      "discriminator": [
+        196,
+        210,
+        90,
+        231,
+        144,
+        149,
+        140,
+        63
+      ]
+    },
+    {
+      "name": "TickerRisk",
+      "discriminator": [
+        3,
+        214,
+        137,
+        123,
+        184,
+        229,
+        179,
+        16
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "EvidenceSubmitted",
+      "discriminator": [
+        13,
+        123,
+        197,
+        44,
+        231,
+        117,
+        168,
+        53
+      ]
+    },
+    {
+      "name": "JuryRequested",
+      "discriminator": [
+        159,
+        49,
+        192,
+        119,
+        57,
+        133,
+        110,
+        59
+      ]
+    },
+    {
+      "name": "JuryRulingReceived",
+      "discriminator": [
+        144,
+        243,
+        50,
+        75,
+        178,
+        4,
+        155,
+        192
+      ]
+    },
+    {
+      "name": "MarketChallenged",
+      "discriminator": [
+        136,
+        143,
+        207,
+        118,
+        201,
+        19,
+        10,
+        246
+      ]
+    },
+    {
+      "name": "MarketCreated",
+      "discriminator": [
+        88,
+        184,
+        130,
+        231,
+        226,
+        84,
+        6,
+        58
+      ]
+    },
+    {
+      "name": "MarketResolved",
+      "discriminator": [
+        89,
+        67,
+        230,
+        95,
+        143,
+        106,
+        199,
+        202
+      ]
+    },
+    {
+      "name": "MatchNotificationWritten",
+      "discriminator": [
+        234,
+        2,
+        144,
+        104,
+        47,
+        121,
+        211,
+        188
+      ]
+    },
+    {
+      "name": "QDBridgeReceived",
+      "discriminator": [
+        63,
+        169,
+        188,
+        46,
+        125,
+        51,
+        255,
+        140
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "ForOhfour",
+      "msg": "if you are who you say you are then you're not who you are"
+    },
+    {
+      "code": 6001,
+      "name": "NotUndercollateralised",
+      "msg": "not under-collateralised...still gains to be realised"
+    },
+    {
+      "code": 6002,
+      "name": "Secp256InstructionMissing",
+      "msg": "Missing secp256k1 precompile instruction"
+    },
+    {
+      "code": 6003,
+      "name": "SignatureVerificationFailed",
+      "msg": "Secp256k1 signature verification failed"
+    },
+    {
+      "code": 6004,
+      "name": "WrongSigner",
+      "msg": "Signer ETH address does not match expected artist"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidMarketBinding",
+      "msg": "Oracle return value does not match this market's binding tag"
+    },
+    {
+      "code": 6006,
+      "name": "MaxPositionsReached",
+      "msg": "cant be up another one pack a new gun"
+    },
+    {
+      "code": 6007,
+      "name": "PriceManipulated",
+      "msg": "better you'd waited, lest you be baited"
+    },
+    {
+      "code": 6008,
+      "name": "NoPrice",
+      "msg": "pass in a price or call it off twice"
+    },
+    {
+      "code": 6009,
+      "name": "Tickers",
+      "msg": "pass in ticker no miss it or hickups"
+    },
+    {
+      "code": 6010,
+      "name": "TooSoon",
+      "msg": "call in too often or show stops then"
+    },
+    {
+      "code": 6011,
+      "name": "TakeProfit",
+      "msg": "too many ahead take profit instead"
+    },
+    {
+      "code": 6012,
+      "name": "PoolAtCapacity",
+      "msg": "wait for deleveraging"
+    },
+    {
+      "code": 6013,
+      "name": "UnknownSymbol",
+      "msg": ""
+    },
+    {
+      "code": 6014,
+      "name": "Undercollateralised",
+      "msg": "Recap..."
+    },
+    {
+      "code": 6015,
+      "name": "InvalidAmount",
+      "msg": "Slow it up...amount is either not enough or too much."
+    },
+    {
+      "code": 6016,
+      "name": "InvalidUser",
+      "msg": "Double-check who you're trying to touch."
+    },
+    {
+      "code": 6017,
+      "name": "InvalidMint",
+      "msg": "We only work with stars here."
+    },
+    {
+      "code": 6018,
+      "name": "UnderExposed",
+      "msg": "Your position is under-exposed."
+    },
+    {
+      "code": 6019,
+      "name": "DepositFirst",
+      "msg": "You must deposit before you can do this."
+    },
+    {
+      "code": 6020,
+      "name": "MissingPythAccount",
+      "msg": "Missing Pyth account in remaining_accounts"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidPythFeed",
+      "msg": "Invalid Pyth price feed"
+    },
+    {
+      "code": 6022,
+      "name": "InvalidMarket",
+      "msg": "Invalid market configuration"
+    },
+    {
+      "code": 6023,
+      "name": "AlreadyResolved",
+      "msg": "Market has already been resolution_received"
+    },
+    {
+      "code": 6024,
+      "name": "TooLate",
+      "msg": "The window has closed"
+    },
+    {
+      "code": 6025,
+      "name": "NotFinalized",
+      "msg": "The window is still open"
+    },
+    {
+      "code": 6026,
+      "name": "NoPositions",
+      "msg": "Division's in recision"
+    },
+    {
+      "code": 6027,
+      "name": "AlreadyRevealed",
+      "msg": "There's no hiding now"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidLiquidity",
+      "msg": "InvalidLiquidity"
+    },
+    {
+      "code": 6029,
+      "name": "PriceCalculationOverflow",
+      "msg": "PriceCalculationOverflow"
+    },
+    {
+      "code": 6030,
+      "name": "InvalidSide",
+      "msg": "please stand up"
+    },
+    {
+      "code": 6031,
+      "name": "InvalidConfidence",
+      "msg": "please sit down"
+    },
+    {
+      "code": 6032,
+      "name": "InvalidPrice",
+      "msg": "pyth we clip"
+    },
+    {
+      "code": 6033,
+      "name": "OrderTooSmall",
+      "msg": "not too much"
+    },
+    {
+      "code": 6034,
+      "name": "InvalidParameters",
+      "msg": "Invalid parameters"
+    },
+    {
+      "code": 6035,
+      "name": "InvalidMessageFormat",
+      "msg": "Invalid message format"
+    },
+    {
+      "code": 6036,
+      "name": "InvalidMessageType",
+      "msg": "Invalid message type"
+    },
+    {
+      "code": 6037,
+      "name": "AlreadyRequested",
+      "msg": "Resolution request already sent"
+    },
+    {
+      "code": 6038,
+      "name": "PeerNotConfigured",
+      "msg": "LayerZero peer not configured"
+    },
+    {
+      "code": 6039,
+      "name": "ResolutionNotFinal",
+      "msg": "Resolution has not been finalized"
+    },
+    {
+      "code": 6040,
+      "name": "InsufficientLZFee",
+      "msg": "Not enough lamports from resolution requester"
+    },
+    {
+      "code": 6041,
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
+    },
+    {
+      "code": 6042,
+      "name": "WrongMarket",
+      "msg": "Wrong market"
+    },
+    {
+      "code": 6043,
+      "name": "InvalidAccountOwner",
+      "msg": "who thee QD"
+    },
+    {
+      "code": 6044,
+      "name": "NotResolved",
+      "msg": "open case"
+    },
+    {
+      "code": 6045,
+      "name": "TradingClosed",
+      "msg": "repose i suppose"
+    },
+    {
+      "code": 6046,
+      "name": "TooManyEntries",
+      "msg": "i'm censoring"
+    },
+    {
+      "code": 6047,
+      "name": "InsufficientTokens",
+      "msg": "хватит брать"
+    },
+    {
+      "code": 6048,
+      "name": "InsufficientConfidence",
+      "msg": "недо-constinence"
+    },
+    {
+      "code": 6049,
+      "name": "QuestionNotResolvable",
+      "msg": "QuestionNotResolvable"
+    },
+    {
+      "code": 6050,
+      "name": "WeightsNotCalculated",
+      "msg": "Weights not calculated"
+    },
+    {
+      "code": 6051,
+      "name": "AlreadyComplete",
+      "msg": "replete"
+    },
+    {
+      "code": 6052,
+      "name": "InvalidRevealCount",
+      "msg": "unreal reveals"
+    },
+    {
+      "code": 6053,
+      "name": "CommitmentVerificationFailed",
+      "msg": "i was perified"
+    },
+    {
+      "code": 6054,
+      "name": "InvalidPosition",
+      "msg": "one you can't decide"
+    },
+    {
+      "code": 6055,
+      "name": "InvalidResolution",
+      "msg": "not a solution"
+    },
+    {
+      "code": 6056,
+      "name": "TooManyChallenges",
+      "msg": "TooManyChallenges"
+    },
+    {
+      "code": 6057,
+      "name": "DuplicateOutcome",
+      "msg": "DuplicateOutcome"
+    },
+    {
+      "code": 6058,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6059,
+      "name": "Underflow",
+      "msg": "Arithmetic underflow"
+    },
+    {
+      "code": 6060,
+      "name": "InsufficientAccounts",
+      "msg": "Insufficient accounts provided"
+    },
+    {
+      "code": 6061,
+      "name": "InsufficientSides",
+      "msg": "Insufficient sides"
+    },
+    {
+      "code": 6062,
+      "name": "InvalidReturnData",
+      "msg": "Invalid return data from cross-program call"
+    },
+    {
+      "code": 6063,
+      "name": "NoReturnData",
+      "msg": "No return data from cross-program call"
+    },
+    {
+      "code": 6064,
+      "name": "InvalidPeer",
+      "msg": "Invalid peer configuration"
+    },
+    {
+      "code": 6065,
+      "name": "TradingFrozen",
+      "msg": "Trading is frozen (resolution pending)"
+    },
+    {
+      "code": 6066,
+      "name": "PriceUncertain",
+      "msg": "Oracle price confidence too wide - price uncertain"
+    },
+    {
+      "code": 6067,
+      "name": "RequesterPositionTooSmall",
+      "msg": "Requester position too small - need 1% of market minimum"
+    },
+    {
+      "code": 6068,
+      "name": "OracleManipulated",
+      "msg": "Oracle price deviates too much from TWAP - possible manipulation"
+    },
+    {
+      "code": 6069,
+      "name": "TooEarlyToResolve",
+      "msg": "Too early to resolve - resolution time not reached"
+    },
+    {
+      "code": 6070,
+      "name": "QualifySentinelInResolution",
+      "msg": "outcome 254 is the qualify sentinel — cannot use as resolution"
+    },
+    {
+      "code": 6071,
+      "name": "ProtocolHashMismatch",
+      "msg": "oracle ran a different protocol than the one committed at market creation"
+    },
+    {
+      "code": 6072,
+      "name": "QualificationScoreTooLow",
+      "msg": "qualification score below minimum for this market type"
+    },
+    {
+      "code": 6073,
+      "name": "ProtocolVersionMismatch",
+      "msg": "protocol version mismatch — regenerate via CreateMarketPipeline"
+    },
+    {
+      "code": 6074,
+      "name": "SasNotConfigured",
+      "msg": "SAS credential not configured — set sas_credential in ProgramConfig"
+    }
+  ],
+  "types": [
+    {
+      "name": "AccuracyBuckets",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "buckets",
+            "type": {
+              "vec": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Actuary",
+      "docs": [
+        "Actuary: The risk oracle that learns from market behavior.",
+        "",
+        "Unlike traditional systems with preset volatility/jump parameters per asset",
+        "class, the Actuary starts conservative and discovers each ticker's true",
+        "characteristics through observation. No priors needed — the Pyth feeds",
+        "exist or they don't.",
+        "",
+        "## State Size: ~104 bytes (fits comfortably in PDA)",
+        "",
+        "## Confidence Model",
+        "",
+        "The system uses observation count to build confidence:",
+        "- 0 obs: 0% confidence → 400 bps vol floor (conservative)",
+        "- 10 obs: 50% confidence → 200 bps vol floor",
+        "- 50 obs: 83% confidence → 68 bps vol floor",
+        "- 100 obs: 91% confidence → 36 bps vol floor",
+        "",
+        "This prevents the \"quiet start\" attack where a ticker with no activity",
+        "gets assigned near-zero vol and offers insane leverage."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "observed_vol_bps",
+            "docs": [
+              "EMA of observed absolute returns (bps). Updated on each price change.",
+              "Fast up, slow down — reacts quickly to vol spikes, decays gradually."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "max_drawdown_bps",
+            "docs": [
+              "Maximum single-slot price move observed recently (bps).",
+              "Used for collar buffer calculation. Decays after calm periods."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_price",
+            "docs": [
+              "Last oracle price (in token's native precision).",
+              "Used to calculate returns on next update."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_price_slot",
+            "docs": [
+              "Slot number of last price update. Used for staleness penalty."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_trade_slot",
+            "docs": [
+              "Slot number of last trade. Used for velocity decay."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "jump_count",
+            "docs": [
+              "Count of recent jump events [0, 20]. Jump = move > 3σ.",
+              "Decays over time (1 per 1000 slots). Affects eta and collar."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "velocity",
+            "docs": [
+              "Trade velocity score [0, 255]. Higher = more urgent activity.",
+              "Combines local (this ticker) and global (all tickers) activity."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "momentum_bps",
+            "docs": [
+              "Open interest change rate [-10000, 10000] bps.",
+              "Negative = liquidation cascade risk. Affects fee multiplier."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "net_exposure",
+            "docs": [
+              "Sum of (exposure × leverage) across all positions, SIGNED.",
+              "Positive = net long bias, negative = net short bias."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "total_exposure",
+            "docs": [
+              "Sum of |exposure × leverage| across all positions, always positive.",
+              "Total counterparty risk regardless of direction."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "twap_price",
+            "docs": [
+              "EMA smoothed price for manipulation detection.",
+              "Slower than spot price — large deviations indicate potential manipulation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "obs_count",
+            "docs": [
+              "Number of price observations. Used to compute confidence level.",
+              "Capped at 255 to fit in u8 if needed for space optimization."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChainConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "eid",
+            "type": "u32"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "peer_address",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "enforced_options",
+            "type": {
+              "defined": {
+                "name": "EnforcedOptions"
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreateMarketParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "question",
+            "type": "string"
+          },
+          {
+            "name": "context",
+            "type": "string"
+          },
+          {
+            "name": "exculpatory",
+            "type": "string"
+          },
+          {
+            "name": "resolution_source",
+            "type": "string"
+          },
+          {
+            "name": "outcomes",
+            "type": {
+              "vec": "string"
+            }
+          },
+          {
+            "name": "sb_feed",
+            "type": "pubkey"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "liquidity",
+            "type": "u64"
+          },
+          {
+            "name": "creator_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "creator_bond",
+            "type": "u64"
+          },
+          {
+            "name": "num_winners",
+            "docs": [
+              "Number of expected winners. 1 = standard. >1 = contest."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "winning_splits",
+            "docs": [
+              "BPS allocation per outcome. Empty = equal split.",
+              "If non-empty: len == outcomes.len(), winning entries sum to 10_000."
+            ],
+            "type": {
+              "vec": "u64"
+            }
+          },
+          {
+            "name": "beneficiaries",
+            "docs": [
+              "Optional beneficiary per outcome for fee-split payouts.",
+              "Empty = no beneficiaries. If non-empty: len == outcomes.len()."
+            ],
+            "type": {
+              "vec": {
+                "option": "pubkey"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Depositor",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_quid",
+            "type": "u64"
+          },
+          {
+            "name": "deposit_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "drawn",
+            "type": "u64"
+          },
+          {
+            "name": "balances",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Stock"
+                }
+              }
+            }
+          },
+          {
+            "name": "realized_pnl",
+            "type": "i64"
+          },
+          {
+            "name": "total_interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "positions_closed_profitably",
+            "type": "u32"
+          },
+          {
+            "name": "positions_liquidated",
+            "type": "u32"
+          },
+          {
+            "name": "total_collar_dollar_seconds",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Depository",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "total_deposits",
+            "type": "u64"
+          },
+          {
+            "name": "total_deposit_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "total_drawn",
+            "type": "u64"
+          },
+          {
+            "name": "market_count",
+            "type": "u64"
+          },
+          {
+            "name": "max_liability",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EnforcedOptions",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "send",
+            "type": "bytes"
+          },
+          {
+            "name": "send_and_call",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvidenceRequirements",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "time_window_start",
+            "docs": [
+              "GPS hint for the oracle — NOT a hard filter. Claude sees the raw",
+              "coordinates and reasons about proximity. GPS is spoofable so we",
+              "never gate on it; we let Claude weigh it as a soft signal.",
+              "Evidence must have timestamps overlapping this window."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "time_window_end",
+            "type": "i64"
+          },
+          {
+            "name": "min_submissions",
+            "docs": [
+              "Minimum independent device submissions for the oracle to consider",
+              "evidence sufficient. 0 = any amount is informational."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "required_tags",
+            "docs": [
+              "Required tag IDs. Evidence must contain at least one above min_confidence."
+            ],
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "min_tag_confidence",
+            "docs": [
+              "Minimum per-tag confidence in bps (5000-10000). Floor 50%."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "pipeline_routes",
+            "docs": [
+              "Pipeline routes: tag→provider mappings for specialized model routing.",
+              "When evidence matches route tags, the oracle dispatches to the",
+              "specified provider URI (e.g., \"switchboard:shuffler\" for CoCo,",
+              "\"https://api.anthropic.com\" for external Claude)."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "PipelineRoute"
+                }
+              }
+            }
+          },
+          {
+            "name": "notification_domains",
+            "docs": [
+              "Notification domain hashes. Oracle groups tag detections by domain",
+              "for summarization (e.g., speech.count, music.instruments)."
+            ],
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "resolution_mode",
+            "docs": [
+              "Resolution mode: 0=auto (deterministic→LLM), 1=external (Claude+Brave),",
+              "2=coco_local (TEE-only, no external APIs), 3=deterministic_only."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "max_submissions",
+            "docs": [
+              "Hard cap on evidence submissions. Makes oracle processing cost bounded.",
+              "Must be 1..=MAX_EVIDENCE_SUBMISSIONS. submit_evidence rejects beyond this."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "resolution_bond",
+            "docs": [
+              "Bond deposited by market creator (lamports). Covers oracle's off-chain",
+              "resolution costs (API keys, compute). Claimed by oracle after resolution.",
+              "Must be >= RESOLUTION_BOND[resolution_mode]."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "jury_config",
+            "docs": [
+              "Optional human jury configuration for cross-chain resolution via LayerZero."
+            ],
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "JuryConfig"
+                }
+              }
+            }
+          },
+          {
+            "name": "oracle_compute_cost",
+            "docs": [
+              "Estimated oracle compute cost in QD tokens. If non-zero and fees_collected",
+              "covers it, oracle is paid from fees and SOL bond is refunded to creator."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvidenceRequirementsParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "time_window_start",
+            "type": "i64"
+          },
+          {
+            "name": "time_window_end",
+            "type": "i64"
+          },
+          {
+            "name": "min_submissions",
+            "type": "u8"
+          },
+          {
+            "name": "required_tags",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "min_tag_confidence",
+            "type": "u16"
+          },
+          {
+            "name": "pipeline_routes",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "PipelineRouteParams"
+                }
+              }
+            }
+          },
+          {
+            "name": "notification_domains",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "resolution_mode",
+            "docs": [
+              "0=auto, 1=external, 2=coco_local, 3=deterministic_only"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "max_submissions",
+            "docs": [
+              "Hard cap on evidence submissions. 1..=32."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "resolution_bond",
+            "docs": [
+              "Resolution bond in lamports. Must be >= RESOLUTION_BOND[mode]."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "jury_config",
+            "docs": [
+              "Optional jury config. If Some, market supports human jury."
+            ],
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "JuryConfigParams"
+                }
+              }
+            }
+          },
+          {
+            "name": "oracle_compute_cost",
+            "docs": [
+              "Estimated oracle compute cost in QD tokens. Set to 0 for legacy behaviour."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvidenceSubmission",
+      "docs": [
+        "One attestation per (market, submitter, nonce). Submitted by Seeker owner.",
+        "Hardware attestation data (necklace P-256 sig, BLE RSSI, motion, audio)",
+        "is encrypted on-device and stored on 0G Storage. Only a SHA256 commitment",
+        "to the ciphertext lives on-chain. At resolution, the TEE fetches the",
+        "encrypted blob from 0G, verifies the hash matches, then decrypts and",
+        "processes within the TEE boundary. Plaintext never exists outside the TEE.",
+        "",
+        "Seeds: [b\"evidence\", market.key().as_ref(), submitter.key().as_ref(), &[nonce]]",
+        "Minimal on-chain commitment. Everything else (timestamps, GPS, audio/video",
+        "content, model pipeline results) lives in the encrypted 0G blob. The oracle",
+        "fetches the blob, verifies SHA256(blob) == attestation_hash inside CoCo,",
+        "then decrypts and processes. No self-reported metadata trusted on-chain.",
+        "",
+        "Seeds: [b\"evidence\", market.key().as_ref(), submitter.key().as_ref(), &[nonce]]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "submitter",
+            "type": "pubkey"
+          },
+          {
+            "name": "attestation_hash",
+            "docs": [
+              "SHA256 of encrypted attestation blob stored on 0G Storage.",
+              "Oracle verifies: SHA256(downloaded_ciphertext) == attestation_hash."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "zg_root",
+            "docs": [
+              "0G Merkle root — the download address for the blob.",
+              "Stored on-chain so the oracle can fetch without a KV server.",
+              "Set by the phone at submit time from the 0G upload response."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "submitted_at",
+            "type": "i64"
+          },
+          {
+            "name": "content_type",
+            "docs": [
+              "0 = audio, 1 = video. One byte hint so oracle knows what to expect."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvidenceSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "submitter",
+            "type": "pubkey"
+          },
+          {
+            "name": "content_type",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitOAppStoreParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "endpoint",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JuryConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "binding",
+            "type": "bool"
+          },
+          {
+            "name": "requires_unanimous",
+            "type": "bool"
+          },
+          {
+            "name": "appeal_cost",
+            "type": "u64"
+          },
+          {
+            "name": "dst_eid",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JuryConfigParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "binding",
+            "type": "bool"
+          },
+          {
+            "name": "requires_unanimous",
+            "type": "bool"
+          },
+          {
+            "name": "appeal_cost",
+            "type": "u64"
+          },
+          {
+            "name": "dst_eid",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JuryRequested",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "requester",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "JuryRulingReceived",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "winning_sides",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "is_signer",
+            "type": "bool"
+          },
+          {
+            "name": "is_writable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzReceiveParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "src_eid",
+            "type": "u32"
+          },
+          {
+            "name": "sender",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "guid",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "message",
+            "type": "bytes"
+          },
+          {
+            "name": "extra_data",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzReceiveTypesAccounts",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "store",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Market",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": "u64"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "question",
+            "docs": [
+              "The prediction question. Must be an objectively resolvable question",
+              "about a future real-world event."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "context",
+            "docs": [
+              "Definitions, condition precedents, special terms.",
+              "e.g. \"BTC price = CoinGecko daily close UTC. 'Close above' means",
+              "the final daily candle close price strictly > threshold.\""
+            ],
+            "type": "string"
+          },
+          {
+            "name": "exculpatory",
+            "docs": [
+              "Force majeure / exculpatory clauses.",
+              "e.g. \"Market cancels if: CoinGecko is offline for >24h during",
+              "measurement period; BTC undergoes a chain halt >6h; exchange",
+              "delisting removes >50% of CoinGecko's price sources.\""
+            ],
+            "type": "string"
+          },
+          {
+            "name": "resolution_source",
+            "docs": [
+              "Optional hint for the oracle on where to find resolution data.",
+              "e.g. \"check CoinGecko\", \"check AP News\", \"check NBA.com\""
+            ],
+            "type": "string"
+          },
+          {
+            "name": "outcomes",
+            "docs": [
+              "The possible outcomes. Fixed at creation. Minimum 2."
+            ],
+            "type": {
+              "vec": "string"
+            }
+          },
+          {
+            "name": "num_outcomes",
+            "docs": [
+              "Cached outcome count — MUST stay in sync with outcomes.len().",
+              "Used by etc.rs::update_price_accumulator TWAP loop."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "sb_feed",
+            "docs": [
+              "Single Switchboard Pull Feed for this market.",
+              "Oracle writes resolution result here."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "start_time",
+            "type": "i64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "liquidity",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_sold_per_outcome",
+            "type": {
+              "vec": "u64"
+            }
+          },
+          {
+            "name": "total_capital",
+            "type": "u64"
+          },
+          {
+            "name": "total_capital_per_outcome",
+            "type": {
+              "vec": "u64"
+            }
+          },
+          {
+            "name": "fees_collected",
+            "type": "u64"
+          },
+          {
+            "name": "creator_bond_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "sol_vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "resolved",
+            "type": "bool"
+          },
+          {
+            "name": "cancelled",
+            "type": "bool"
+          },
+          {
+            "name": "winning_outcome",
+            "type": "u8"
+          },
+          {
+            "name": "resolution_confidence",
+            "type": "u64"
+          },
+          {
+            "name": "resolution_time",
+            "type": "i64"
+          },
+          {
+            "name": "winning_sides",
+            "docs": [
+              "All winning outcome indices. For single-winner markets: vec![winning_outcome].",
+              "For multi-winner contests: multiple indices (up to num_winners)."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "winning_splits",
+            "docs": [
+              "BPS allocation per outcome index. Set at creation.",
+              "Empty = equal split among winners. If non-empty: len == num_outcomes,",
+              "only entries at winning_sides indices matter, must sum to 10_000."
+            ],
+            "type": {
+              "vec": "u64"
+            }
+          },
+          {
+            "name": "num_winners",
+            "docs": [
+              "Expected number of winners. 1 = standard prediction market.",
+              ">1 = contest/tournament with multiple winning outcomes."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "beneficiaries",
+            "docs": [
+              "Optional beneficiary addresses parallel to outcomes.",
+              "Used for fee-split payouts to side sponsors/creators.",
+              "Empty = no beneficiaries. If non-empty: len == num_outcomes."
+            ],
+            "type": {
+              "vec": {
+                "option": "pubkey"
+              }
+            }
+          },
+          {
+            "name": "challenge_count",
+            "docs": [
+              "Number of times this resolution has been challenged and re-evaluated."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "challenged",
+            "docs": [
+              "Whether a challenge is currently pending (oracle re-run in progress)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "positions_revealed",
+            "type": "u64"
+          },
+          {
+            "name": "positions_total",
+            "type": "u64"
+          },
+          {
+            "name": "positions_processed",
+            "type": "u64"
+          },
+          {
+            "name": "total_winner_weight_revealed",
+            "type": "u128"
+          },
+          {
+            "name": "total_loser_weight_revealed",
+            "type": "u128"
+          },
+          {
+            "name": "total_winner_capital_revealed",
+            "type": "u64"
+          },
+          {
+            "name": "total_loser_capital_revealed",
+            "type": "u64"
+          },
+          {
+            "name": "winner_weight_per_outcome",
+            "docs": [
+              "Per-outcome winner weight — populated during calculate_weights.",
+              "Parallel to outcomes. Only indices in winning_sides are meaningful.",
+              "Used by push_payouts for split-based pot partitioning."
+            ],
+            "type": {
+              "vec": "u128"
+            }
+          },
+          {
+            "name": "weights_complete",
+            "type": "bool"
+          },
+          {
+            "name": "payouts_complete",
+            "type": "bool"
+          },
+          {
+            "name": "creator_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "time_decay_lambda",
+            "type": "u64"
+          },
+          {
+            "name": "price_cumulative_per_outcome",
+            "type": {
+              "vec": "u128"
+            }
+          },
+          {
+            "name": "price_checkpoint_per_outcome",
+            "type": {
+              "vec": "u128"
+            }
+          },
+          {
+            "name": "last_price_update",
+            "type": "i64"
+          },
+          {
+            "name": "checkpoint_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "resolution_mode",
+            "type": "u8"
+          },
+          {
+            "name": "resolution_requested",
+            "type": "bool"
+          },
+          {
+            "name": "resolution_received",
+            "type": "bool"
+          },
+          {
+            "name": "resolution_requester",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "resolution_requested_time",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "resolution_finalized",
+            "type": "i64"
+          },
+          {
+            "name": "jury_fee_pool",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketChallenged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenger",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenge_count",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": "u64"
+          },
+          {
+            "name": "market_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "question",
+            "type": "string"
+          },
+          {
+            "name": "outcomes",
+            "type": {
+              "vec": "string"
+            }
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketEvidence",
+      "docs": [
+        "Per-market evidence requirements. Created alongside market when creator",
+        "opts in to the evidence layer. Separate PDA so existing markets are",
+        "unaffected — Market struct layout does not change.",
+        "",
+        "Seeds: [b\"market_evidence\", market.key().as_ref()]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "evidence",
+            "type": {
+              "defined": {
+                "name": "EvidenceRequirements"
+              }
+            }
+          },
+          {
+            "name": "submission_count",
+            "type": "u64"
+          },
+          {
+            "name": "oracle_claimed",
+            "docs": [
+              "True after oracle operator has claimed the resolution bond."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketResolved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "winning_outcome",
+            "type": "u8"
+          },
+          {
+            "name": "winning_sides",
+            "type": "bytes"
+          },
+          {
+            "name": "confidence",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MatchNotification",
+      "docs": [
+        "On-chain notification of a match, written by the matching oracle.",
+        "One PDA per matched device. Counterparty is blinded.",
+        "",
+        "PDA seeds: [b\"match_notif\", device.key().as_ref(), &slot.to_le_bytes()]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "device",
+            "type": "pubkey"
+          },
+          {
+            "name": "counterparty_commitment",
+            "docs": [
+              "Nonce derivation (oracle-side):",
+              "nonce = keccak256(device_A || device_B || category_hash || slot)",
+              "This makes the nonce unique per match event, non-reusable across",
+              "categories or slots, and non-guessable by either party independently.",
+              "The oracle sends the same nonce to both matched devices off-chain.",
+              "Neither device can discover the counterparty without receiving the nonce."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "category_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "oracle_attestation",
+            "docs": [
+              "CoCo oracle signature over:",
+              "SHA256(device || counterparty_commitment || category_hash",
+              "|| similarity_bps || slot)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "similarity_bps",
+            "docs": [
+              "Bilateral harmonic mean similarity, 0-10000 bps."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "read",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MatchNotificationWritten",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "device",
+            "type": "pubkey"
+          },
+          {
+            "name": "category_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "similarity_bps",
+            "type": "u16"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OAppStore",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "endpoint_program",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "capital",
+            "type": "u64"
+          },
+          {
+            "name": "commitment_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "reveal_delegate",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "max_deviation_bps",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PipelineRoute",
+      "docs": [
+        "A pipeline route maps a set of tags to a processing endpoint.",
+        "The oracle uses this to dispatch evidence to specialized processors",
+        "(e.g., Whisper for transcription, embedder for semantic matching).",
+        "",
+        "The shuffler is NOT routed via model_class — it's fixed TEE infrastructure",
+        "triggered by provider_uri (\"switchboard:shuffler\"). model_class here",
+        "tells the oracle which model class produces input for this route."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tags",
+            "docs": [
+              "Tag IDs that trigger this route (keccak hashes)."
+            ],
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "provider_uri",
+            "docs": [
+              "Provider URI. Registered models: \"switchboard:<model_id>\".",
+              "Fixed infra: \"switchboard:shuffler\". External: \"https://api.anthropic.com\"."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "model_class",
+            "docs": [
+              "Pipeline role of the model that feeds this route.",
+              "0=CLASSIFIER, 1=TRANSCRIBER, 2=EMBEDDER. Matches 0G model classification."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "priority",
+            "docs": [
+              "Priority (lower = higher priority). Routes evaluated in order."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "is_direct_evidence",
+            "docs": [
+              "If true, this route's output counts as direct evidence for resolution",
+              "(vs. supplementary context for the LLM)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "verdict_hint",
+            "docs": [
+              "Optional hint for the oracle on what this route's verdict means."
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PipelineRouteParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tags",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "provider_uri",
+            "type": "string"
+          },
+          {
+            "name": "model_class",
+            "type": "u8"
+          },
+          {
+            "name": "priority",
+            "type": "u8"
+          },
+          {
+            "name": "is_direct_evidence",
+            "type": "bool"
+          },
+          {
+            "name": "verdict_hint",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "docs": [
+        "Position PDA — one per (market, user, outcome).",
+        "",
+        "Lifecycle: created in place_order, weight computed in calculate_weights,",
+        "then atomically paid out + closed (data zeroed, rent → creator) in",
+        "push_payouts. Zeroed discriminator prevents double-processing."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "total_capital",
+            "type": "u64"
+          },
+          {
+            "name": "total_tokens",
+            "type": "u64"
+          },
+          {
+            "name": "total_capital_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "entries",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "PositionEntry"
+                }
+              }
+            }
+          },
+          {
+            "name": "revealed_confidence",
+            "docs": [
+              "0 = unrevealed. Set during reveal phase of calculate_weights."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "accuracy_percentile",
+            "docs": [
+              "Raw accuracy score for bucket lookup. Actual percentile",
+              "is computed in the weigh phase from AccuracyBuckets."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "weight",
+            "type": "u128"
+          },
+          {
+            "name": "reveal_delegate",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PositionEntry",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "capital",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "capital_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "commitment_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProgramConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "orchestrator",
+            "docs": [
+              "Switchboard Function pubkey of the trusted orchestrator.",
+              "Only feeds signed by this function are accepted for resolution."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "registered_mints",
+            "type": {
+              "array": [
+                "pubkey",
+                2
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "apk_hashes",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "apk_hash_count",
+            "type": "u8"
+          },
+          {
+            "name": "sas_credential",
+            "type": "pubkey"
+          },
+          {
+            "name": "sas_signer_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QDBridgeReceived",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_sd",
+            "type": "u64"
+          },
+          {
+            "name": "amount_local",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordMatchNotificationParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "device",
+            "type": "pubkey"
+          },
+          {
+            "name": "counterparty_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "category_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "oracle_attestation",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "similarity_bps",
+            "type": "u16"
+          },
+          {
+            "name": "slot",
+            "docs": [
+              "Slot at which the match was produced. Used in PDA seed for uniqueness.",
+              "Oracle passes current slot; on-chain record stores it for ack/close."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RegisterChainParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "eid",
+            "type": "u32"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "peer_address",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "enforced_options_send",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RevealEntry",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "confidence",
+            "type": "u64"
+          },
+          {
+            "name": "salt",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Stock",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ticker",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "pledged",
+            "type": "u64"
+          },
+          {
+            "name": "exposure",
+            "type": "i64"
+          },
+          {
+            "name": "updated",
+            "type": "i64"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "collar_bps",
+            "type": "u16"
+          },
+          {
+            "name": "cost_basis",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "collar_dollar_seconds",
+            "docs": [
+              "Time-integrated economic capital: sum of (collar_dollars × seconds).",
+              "RAROC denominator — how much capital was at risk, for how long."
+            ],
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SubmitEvidenceParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "attestation_hash",
+            "docs": [
+              "SHA256 of encrypted attestation blob uploaded to 0G Storage.",
+              "All metadata (timestamps, GPS, tags, model pipeline results) lives",
+              "in the blob. TEE verifies this hash before decrypting at resolution."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "zg_root",
+            "docs": [
+              "0G Merkle root — the download address on 0G Storage.",
+              "Stored on-chain so the oracle can locate the blob without a KV server."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "content_type",
+            "docs": [
+              "0=audio (necklace + Seeker), 1=video (Seeker only).",
+              "One byte hint so oracle knows what decoder to apply."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "nonce",
+            "docs": [
+              "Allows multiple submissions per device per market (different sessions)."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TickerRisk",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ticker",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "actuary",
+            "type": {
+              "defined": {
+                "name": "Actuary"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

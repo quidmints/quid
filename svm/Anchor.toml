@@ -1,0 +1,21 @@
+[toolchain]
+anchor_version = "0.32.1"
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+quid = "J1xE8gXrXgrFoEch6QQ9JesqyqhUAkjDuD4CLb2RWSfC"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+startup_wait = "10000"
+test = "yarn run test"

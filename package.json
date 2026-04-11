@@ -1,0 +1,45 @@
+{
+  "name": "quid",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "prebuild": "npx ts-node svm/extract-tickers.ts",
+    "build": "npm run prebuild && next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "keeper": "npx ts-node keeper/keeper.ts",
+    "keeper:dev": "npx ts-node --watch keeper/keeper.ts",
+    "keeper:solana": "npx ts-node keeper/keeper_solana.ts",
+    "keeper:prediction": "npx ts-node keeper/keeper_prediction.ts",
+    "cre:simulate": "cd keeper && cre workflow simulate my-workflow --target staging-settings"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "0.4.8",
+    "bs58": "^6.0.0",
+    "ethers": "^6.16.0",
+    "mongodb": "^6.21.0",
+    "next": "14.2.29",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "rlp": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "esbuild": "0.19.12"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "safta-tests",
+  "scripts": {
+    "refresh": "node tests/refresh_fixtures.mjs",
+    "test": "ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@pythnetwork/price-service-client": "^1.9.0",
+    "@pythnetwork/pyth-solana-receiver": "^0.8.0",
+    "@solana/spl-token": "0.4.8",
+    "@solana/web3.js": "1.94.0",
+    "@switchboard-xyz/on-demand": "^3.9.0",
+    "bn.js": "^5.2.1",
+    "js-sha3": "^0.9.3",
+    "rpc-websockets": "7.11.0"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.5",
+    "@types/chai": "^4.3.16",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.10",
+    "chai": "^4.4.1",
+    "mocha": "^10.7.0",
+    "ts-mocha": "^10.0.0",
+    "typescript": "^5.5.3"
+  }
+}
