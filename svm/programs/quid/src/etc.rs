@@ -77,7 +77,7 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("too many ahead take profit instead")]
     TakeProfit,
 
-    #[msg("wait for deleveraging")]
+    #[msg("Зарекалась баба не меняться - замоталась баба зарекаться.")]
     PoolAtCapacity,
 
     #[msg("")]
@@ -140,7 +140,7 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("pyth we clip")]
     InvalidPrice,
 
-    #[msg("not too much")]
+    #[msg("То конь устал, то флаг не встал.")]
     OrderTooSmall,
 
     #[msg("Invalid parameters")]
@@ -200,7 +200,7 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("unreal reveals")]
     InvalidRevealCount,
 
-    #[msg("i was perified")]
+    #[msg("i was petrified")]
     CommitmentVerificationFailed,
 
     #[msg("one you can't decide")]
@@ -251,7 +251,6 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("Too early to resolve - resolution time not reached")]
     TooEarlyToResolve,
 
-    // ── from entra.rs (protocol guards, merged from vela/prot) ──
     #[msg("outcome 254 is the qualify sentinel — cannot use as resolution")]
     QualifySentinelInResolution,
 
