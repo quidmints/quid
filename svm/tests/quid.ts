@@ -3000,7 +3000,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       const now = Math.floor(Date.now() / 1000);
       const deadline = now + 30 * 24 * 60 * 60; // 30 days
       const question = "Will construction noise be detected at Staronadvodnytska 13a during prohibited hours (22:00-07:00) on more than 5 nights in March 2026?";
-      const context = "Noise measured by SE-signed audio classifier on necklace device. 'Night' = 22:00-07:00 local time. 'Construction' = classifier tag with ≥70% confidence.";
+      const context = "Noise measured by SE-signed audio classifier on device. 'Night' = 22:00-07:00 local time. 'Construction' = classifier tag with ≥70% confidence.";
       const exculpatory = "Market cancels if fewer than 3 evidence submissions received or if device is flagged/revoked before resolution.";
       const resolutionSource = "On-chain evidence + AI oracle resolution";
       const outcomes = ["Yes", "No"];
@@ -3197,7 +3197,6 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
     it("29.2 Submits evidence (Night 0, nonce=0) — confidence is off-chain", async () => {
       // Confidence validation was removed from on-chain SubmitEvidenceParams.
-      // It lives in the encrypted 0G blob and is enforced by the oracle inside CoCo.
       // On-chain we only store the attestation_hash commitment.
       if (!evidenceMarketPDA || !marketEvidencePDA) {
         console.log("  ⚠ Skipped — no market/evidence config"); return;
@@ -3459,10 +3458,6 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           console.log("    Submissions:", me.submissionCount.toNumber());
         } catch { console.log("    (no evidence requirements)"); }
       }
-
-      console.log("\n  Device trust: Seeker Genesis Token (soul-bound NFT)");
-      console.log("  Model trust:  0G Serving (decentralized AI marketplace)");
-      console.log("  Attestation:  encrypted on-device → 0G Storage → TEE-verified");
       console.log("\n  ✓ All tests complete");
       console.log("  ═══════════════════════════════════════════════════════\n");
     });
@@ -3513,9 +3508,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       }
 
       it("31.1 Binary exists and prints version/help without crashing", function () {
+        // TODO oracle is now in external repo, mempalace
         if (!oracleAvailable()) {
           console.log(`  ⚠ Skipped — oracle binary not found at ${oracleBin}`);
-          console.log("    Build: cd oracle && go build -o ../oracle/safta-oracle .");
           this.skip();
         }
         // Invoke with missing required env → should log fatal and exit non-zero,
@@ -3599,7 +3594,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
       it("31.3 Validate path returns well-formed ValidationResult (mode=validate)", async function () {
         if (!oracleAvailable() || !evidenceMarketPDA) {
-          console.log("  ⚠ Skipped — oracle binary or evidence market unavailable");
+          console.log("⚠ Skipped — oracle binary or evidence market unavailable");
           this.skip();
         }
         // validate mode reads market.question/outcomes/context from chain,
@@ -3662,39 +3657,15 @@ describe("QU!D Protocol — Merged Test Suite", () => {
     });
 
     // =========================================================================
-    // 32. DEMO SCENARIO — Staronadvodnytska 13a Construction Noise
     //
-    // This is the scenario that couldn't be demonstrated with any other stack.
+    // Demo flow (Expo app running against localnet)
+    //   1. App signing audio evidence in real time (via BLE).
+    //   2. App calls submitEvidence — audience sees the tx land on localnet.
+    //   3. Oracle triggers automatically.
+    //   4. Market resolves "Yes" on-chain. Winners' positions become claimable.
+    //   5. Presenter claims winnings from the Expo app — SPL token balance updates.
     //
-    // What makes it unique:
-    //   - Physical evidence is device-signed at the hardware level (ATECC608B).
-    //     Nobody — not even the device owner — can forge a submission that passes
-    //     on-chain P-256 verification without the necklace's private key.
-    //   - The oracle runs in a TEE (AMD SEV-SNP). Its MRENCLAVE is fixed at build
-    //     time. The resolution logic cannot be tampered with at runtime.
-    //   - Capital at risk on both sides (Yes/No) creates a real economic signal,
-    //     not a survey or vote. Betters are incentivized to submit accurate evidence.
-    //   - The whole chain — sound → signature → on-chain → TEE resolution →
-    //     settlement — is verifiable by anyone with the chain RPC endpoint.
-    //
-    // Demo flow (Expo app running against localnet):
-    //   1. Presenter puts on Seeker necklace, walks near a jackhammer sound.
-    //   2. App shows necklace signing audio evidence in real time (via BLE).
-    //   3. App calls submitEvidence — audience sees the tx land on localnet.
-    //   4. Presenter runs oracle binary (or it triggers automatically).
-    //   5. Market resolves "Yes" on-chain. Winners' positions become claimable.
-    //   6. Presenter claims winnings from the Expo app — SPL token balance updates.
-    //
-    // This test simulates steps 3-6 end-to-end in the test environment.
-    // =========================================================================
-    //   Build the oracle binary first:
-    //      cd oracle &&  go build -o safta-oracle .
-    // Spawns the compiled Go oracle binary against the running localnet using
-    // the evidence market and submissions created in sections 28-29.
-    // Analogous to lib.rs test_helpers for Switchboard — no mocking, real chain.
-    //
-    // Requires:
-    //   ORACLE_TRUSTED_CODE_HASHES             (optional; omit = skip attestation)
+    // This test simulates steps 2-5 end-to-end in the test environment.
     // =========================================================================
 
     describe("32. Demo: Staronadvodnytska 13a Construction Noise — End-to-End", () => {
@@ -3743,7 +3714,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
         "Will construction noise be detected at Staronadvodnytska 13a " +
         "during prohibited hours (22:00-07:00) on more than 5 nights in March 2026?";
       const DEMO_CONTEXT =
-        "Noise measured by SE-signed audio classifier on necklace device. " +
+        "Noise measured by SE-signed audio classifier " +
         "'Night' = 22:00-07:00 local time. 'Construction' = classifier tag ≥70% confidence.";
       const DEMO_EXCULPATORY =
         "Market cancels if fewer than 3 evidence submissions received " +
@@ -3913,8 +3884,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       });
 
       it("32.4 Submits 6 nights of device-signed evidence", async () => {
-        // Each submission simulates one night of recordings from the Seeker necklace.
-        // In the real demo, these would arrive as BLE-synced batches from the necklace,
+        // Each submission simulates one night of recordings from the Seeker.
+        // In the real demo, these would arrive as BLE-synced batches,
         // with device_sig_r/device_sig_s from the ATECC608B over the merkle root.
         // Here we use the mock P-256 device key generated in section 27.
         const submittedPDAs: PublicKey[] = [];
@@ -3924,7 +3895,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           const nightStart = now - 8 * 3600; // simulate 22:00-06:00 window
           const nightEnd   = now;
 
-          // Simulate what the necklace would hash: merkle root of audio segments
+          // Simulate hash: merkle root of audio segments
           const audioBlob      = crypto.randomBytes(4096);
           const merkleRoot     = crypto.createHash("sha256").update(audioBlob).digest();
           const attestationHash = Array.from(
@@ -3972,6 +3943,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
       it("32.5 Oracle reads chain and resolves market (binary if available)", async function () {
         const oracleBin = process.env.ORACLE_BIN || "./oracle/safta-oracle";
+        // TODO oracle is now in external repo, mempalace
 
         // Whether or not the binary is present, we first verify the chain state
         // matches what the oracle would see — this is the heart of the demo.
@@ -3979,7 +3951,6 @@ describe("QU!D Protocol — Merged Test Suite", () => {
         expect(me.submissionCount.toNumber()).to.be.greaterThanOrEqual(3,
           "oracle requires min_submissions=3 to proceed");
 
-        // Tags are now off-chain (inside the encrypted 0G blob, verified by oracle).
         // On-chain we can only verify submission count and attestation hash existence.
         let verifiedNights = 0;
         for (let i = 0; i < DEMO_NIGHTS.length; i++) {
@@ -4087,7 +4058,6 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           "user2 NO position should have capital locked");
 
         console.log("\n  ── What the Expo demo shows at this point ────────────");
-        console.log("  • Necklace icon glows red in app (evidence received)");
         console.log("  • Live feed: 6 on-chain evidence submissions, all verified");
         console.log("  • YES position claimable: payer sees $500 + winnings");
         console.log("  • NO position zeroed: user2 lost stake (illegal construction proven)");
