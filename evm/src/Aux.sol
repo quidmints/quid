@@ -34,6 +34,17 @@ interface ILink {
     function depegPending() external view returns (bool);
 }
 
+interface IDepositAdapter {
+    function depositWETH(uint256 amount,
+        address referrer) external;
+}
+
+interface IEtherFiRedemptionManager {
+    function redeemEEth(uint256 amount) external;
+    function canRedeem(uint256 amount)
+    external view returns (bool);
+}
+
 contract Aux is // Auxiliary
     Ownable, ReentrancyGuard {
     address[] public stables;
@@ -54,16 +65,22 @@ contract Aux is // Auxiliary
     mapping(address => address) public tokens;
     mapping(address => uint) internal toIndex;
 
+    address internal JAM;
     uint public untouchable;
     // ^ in vault shares, 1e18
     address internal v3Router;
     uint constant WAD = 1e18;
-
-    uint24 internal v3Fee;
-    address internal SPOKE;
     address internal LINK;
+    // ^ de-peg market...
+    uint24 internal v3Fee;
+
+    // ether.fi contracts...
+    address internal REDEEMER;
+    address internal ADAPTER;
+
+    // AAVE contracts...
+    address internal SPOKE;
     address internal HUB;
-    address internal JAM;
     Amp internal AMP;
 
     error LengthMismatch();
@@ -140,14 +157,16 @@ contract Aux is // Auxiliary
     }
 
     function setQuid(address _quid, address _jam,
-        address _hub, address _spoke) external
-        onlyOwner { SPOKE = _spoke; HUB = _hub;
+        address _hub, address _spoke, address _adapter,
+        address _redeemer) external onlyOwner {
+        SPOKE = _spoke; HUB = _hub; // AAVEv4...
+        ADAPTER = _adapter; REDEEMER = _redeemer;
         QUID = Basket(_quid); // top ten stables
         LINK = address(QUID.LINK()); JAM = _jam;
         USDC.approve(v3Router, type(uint).max);
         WETH.approve(v3Router, type(uint).max);
         WETH.approve(address(V4), type(uint).max);
-        WETH.approve(SPOKE, type(uint).max);
+        WETH.approve(ADAPTER, type(uint).max);
         USDC.approve(vaults[stables[stables.length - 1]], type(uint).max);
         WETH.approve(address(AMP), type(uint).max);
         USDC.approve(address(AMP), type(uint).max);

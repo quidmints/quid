@@ -35,14 +35,16 @@ contract Deploy is Script {
     INonfungiblePositionManager public nfpm = INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
     address public JAM = 0xbeb0b0623f66bE8cE162EbDfA2ec543A522F4ea6;
-    address public aavePool  = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
-    address public aaveData  = 0x56b7A1012765C285afAC8b8F25C69Bf10ccfE978;
-    address public aaveAddr  = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
-    address public aaveHub   = 0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9;
+    address public aavePool = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    address public aaveData = 0x56b7A1012765C285afAC8b8F25C69Bf10ccfE978;
+    address public aaveAddr = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
+    address public aaveHub = 0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9;
     address public aaveSpoke = 0x94e7A5dCbE816e498b89aB752661904E2F56c485;
     address public stabilityPool = 0x5721cbbd64fc7Ae3Ef44A0A3F9a790A9264Cf9BF;
+    address public FORWARDER = 0x0b93082D9b3C7C97fAcd250082899BAcf3af3885;
 
-    address constant FORWARDER = 0x0b93082D9b3C7C97fAcd250082899BAcf3af3885;
+    address public ADAPTER = 0xcfC6d9Bd7411962Bfe7145451A7EF71A24b6A7A2; // Etherfi
+    address public REDEEMER = 0xDadEf1fFBFeaAB4f68A9fD181395F68b4e4E7Ae0;
 
     IERC20 public WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
     IERC20 public GHO = IERC20(0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f);
@@ -138,7 +140,10 @@ contract Deploy is Script {
 
         CORE.setup(address(V4), address(AUX), address(WETHv3pool));
         V4.setup(address(QUID), address(AUX), address(CORE));
-        AUX.setQuid(address(QUID), JAM, aaveHub, aaveSpoke);
+        AUX.setQuid(address(QUID), JAM,
+                    aaveHub, aaveSpoke,
+                    ADAPTER, REDEEMER);
+
         V3.setAux(address(AUX));
 
         console.log("=== Deployed Addresses ===");

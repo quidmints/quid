@@ -106,7 +106,7 @@ contract Vogue is
 
         require(distance % 100 == 0 && distance != 0 &&
                 distance >= -5000 && distance <= 5000,
-                "must be -5000 to 5000 in increments of 100");
+            "must be -5000 to 5000 in increments of 100");
 
         (uint160 currentSqrtPrice,
          int24 currentLowerTick,
@@ -123,13 +123,13 @@ contract Vogue is
             if (token1isETH) {
                 require(newLowerTick > currentUpperTick);
                 liquidity = LiquidityAmounts.getLiquidityForAmount1(
-                             TickMath.getSqrtPriceAtTick(newLowerTick),
-                             TickMath.getSqrtPriceAtTick(newUpperTick), amount);
+                            TickMath.getSqrtPriceAtTick(newLowerTick),
+                            TickMath.getSqrtPriceAtTick(newUpperTick), amount);
             } else {
                 require(newUpperTick < currentLowerTick);
                 liquidity = LiquidityAmounts.getLiquidityForAmount0(
-                             TickMath.getSqrtPriceAtTick(newLowerTick),
-                             TickMath.getSqrtPriceAtTick(newUpperTick), amount);
+                            TickMath.getSqrtPriceAtTick(newLowerTick),
+                            TickMath.getSqrtPriceAtTick(newUpperTick), amount);
             }
         } else { amount = AUX.deposit(
             msg.sender, token, amount);
@@ -198,8 +198,7 @@ contract Vogue is
             LP.usd_owed = 0;
             QUID.mint(msg.sender,
             fees_usd, address(QUID), 0);
-        }
-        // Cap withdrawal at user's total balance
+        } // Cap withdrawal user's total balance
         // (i.e. principal + compounded rewards)
         amount = Math.min(amount, LP.pooled_eth);
         if (amount > 0) { uint sent;
@@ -215,21 +214,21 @@ contract Vogue is
                     sent = V4.modLP(sqrtPriceX96, pulled, 0,
                             tickLower, tickUpper, msg.sender);
                 }
-            }
-            // Arb flows naturally balance over time...
+            } // Arb flows naturally balance over time...
             // The V4/V3 spread keeps the pool in equilibrium
             // Any temporary imbalance self-corrects before LP withdrawals,
             // arbETH is mainly emergency code that should never execute...
             if (amount > sent) { uint shortfall = amount - sent;
                 // Cap to this LP's pro-rata share of vogueETH.
                 // AUX.vogueETH() covers all LPs; without the cap the first
-                // withdrawer drains the entire vault leaving others with shares
-                // but no backing ETH.
+                // withdrawer drains the entire vault leaving others with
+                // shares but no ETH backing them
                 { uint vaultShare = totalShares > 0
                         ? FullMath.mulDiv(AUX.vogueETH(), amount, totalShares)
                         : AUX.vogueETH();
                   uint inPool = V4.POOLED_ETH();
-                  uint excess = Math.min(shortfall, vaultShare > inPool ? vaultShare - inPool : 0);
+                  uint excess = Math.min(shortfall, vaultShare > inPool ?
+                                                    vaultShare - inPool : 0);
                   if (excess > 0) {
                       excess = _sendETH(excess, msg.sender);
                       sent += excess; shortfall -= excess;

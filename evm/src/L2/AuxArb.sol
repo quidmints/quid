@@ -377,17 +377,18 @@ contract AuxArb is // Auxiliary
     function vogueETHOp(uint amount, uint8 op)
         external returns (uint ret) {
         require(msg.sender == address(V4));
-        if (op == 0) { WETH.transferFrom(msg.sender, address(this), amount);
-            _supplyAAVE(address(WETH), amount, address(this)); vogueETH += amount;
-        } else if (op == 1) { // take
+        if (op == 0) { WETH.transferFrom(msg.sender,
+                            address(this), amount);
+
+            _supplyAAVE(address(WETH), amount,
+            address(this)); vogueETH += amount;
+        } else if (op == 1) { // take ETH...
             amount = Math.min(amount, vogueETH);
             ret = _withdrawAAVE(address(WETH),
                         amount, address(this));
             vogueETH -= Math.min(ret, vogueETH);
             WETH.transfer(msg.sender, ret);
-        } else { // sync
-            _syncETH(); ret = vogueETH;
-        }
+        } else { _syncETH(); ret = vogueETH; }
     }
 
     function setV4(address _hub, address _spoke) external

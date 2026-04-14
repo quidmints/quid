@@ -62,6 +62,8 @@ contract Alles is Test, Fixtures {
     // Arb : 0xa6147867264374F324524E30C02C331cF28aa879
     address constant FORWARDER = 0x0b93082D9b3C7C97fAcd250082899BAcf3af3885;
     address constant JAM = 0xbeb0b0623f66bE8cE162EbDfA2ec543A522F4ea6;
+    address public ADAPTER = 0xcfC6d9Bd7411962Bfe7145451A7EF71A24b6A7A2; // Etherfi
+    address public REDEEMER = 0xDadEf1fFBFeaAB4f68A9fD181395F68b4e4E7Ae0;
 
     address[] public STABLECOINS; address[] public VAULTS; Link public LINK;
     IERC20 public WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
@@ -213,7 +215,7 @@ contract Alles is Test, Fixtures {
         LINK.setCourt(address(court));
         // Mock getTWAP(0) so _gasToQD in calculateWeights/pushPayouts
         // doesn't revert when AUX oracle is unavailable in test env.
-        vm.mockCall(address(AUX), abi.encodeWithSelector(
+        vm.mockCall(address(AUX), abi.encodeWithSelector( // TODO ?
             Aux.getTWAP.selector, uint32(0)),
                   abi.encode(uint(2000e18)));
 
@@ -222,7 +224,10 @@ contract Alles is Test, Fixtures {
 
         CORE.setup(address(V4), address(AUX), address(WETHv3pool));
         V4.setup(address(QUID), address(AUX), address(CORE));
-        AUX.setQuid(address(QUID), JAM, aaveHub, aaveSpoke);
+        AUX.setQuid(address(QUID), JAM,
+                    aaveHub, aaveSpoke,
+                    ADAPTER, REDEEMER);
+
         V3.setAux(address(AUX));
 
         vm.startPrank(User01);

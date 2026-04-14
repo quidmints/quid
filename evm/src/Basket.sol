@@ -27,7 +27,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "solmate/src/utils/ReentrancyGuard.sol";
 import {MessagingReceipt, MessagingFee} from "./imports/oapp/OAppSender.sol";
 
-contract Basket is OFT, ERC6909, ReentrancyGuard {
+contract Basket is OFT, // LZ
+    ERC6909, ReentrancyGuard {
     using SortedSetLib for SortedSetLib.Set;
     using OFTMsgCodec for bytes32;
     using OFTMsgCodec for bytes;
@@ -64,9 +65,12 @@ contract Basket is OFT, ERC6909, ReentrancyGuard {
                       who == court); // vanilla...
     }
 
-    //  QD holders call optInJury() to volunteer for paid jury duty.
+    //  QD holders call optInJury() to volunteer for paid jury duty
     address constant LZ = 0x1a44076050125825900e736c501f859c50fE728c;
     uint32 public constant SOL_MAINNET_EID = 30168;
+
+    uint public l2Deposits;
+    address[] internal l2Baskets;
 
     address[] internal juryPool;
     mapping(address => uint) internal juryLocked;
@@ -75,9 +79,6 @@ contract Basket is OFT, ERC6909, ReentrancyGuard {
     mapping(uint => uint) public totalSupplies;
     mapping(address => bool) internal isL2Basket;
     mapping(address => uint) internal untouchables;
-
-    address[] internal l2Baskets;
-    uint public l2Deposits;
 
     constructor(address _vogue, address _aux)
         OFT("QU!D", "QD", LZ, msg.sender)
