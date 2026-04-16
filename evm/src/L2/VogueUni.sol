@@ -477,7 +477,7 @@ contract VogueUni is
        withdrawn = Math.min(howMuch, max);
        if (withdrawn == 0) return 0;
        wethVault.withdraw(withdrawn,
-                address(this), address(this));
+        address(this), address(this));
    }
 
    function _sendETH(uint howMuch,
@@ -488,7 +488,7 @@ contract VogueUni is
             if (sent > 0) WETH.transfer(toWhom, sent);
             return sent;
         }
-        // L1/Arb/Base: unwrap WETH to native and send
+        // Arb/Base: unwrap WETH to native and send
         uint alreadyInETH = address(this).balance;
         if (alreadyInETH >= howMuch) {
             sent = howMuch;

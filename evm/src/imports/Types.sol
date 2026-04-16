@@ -43,7 +43,7 @@ library Types {
         address rover;
         uint24 v3Fee;
         address hub;
-        bool isAAVE;
+        uint vaultType;
         bool nativeWETH;
     }
 

@@ -261,8 +261,8 @@ contract AuxPoly is // Auxiliary
     function _buildContext() internal view returns (Types.AuxContext memory) {
         return Types.AuxContext({ v3Pool: address(v3PoolWETH), v3Router: v3Router,
             weth: address(WETH), usdc: address(USDC), vault: address(wethVault),
-            v4: address(V4), core: address(CORE), rover: address(V3),
-            v3Fee: v3Fee, hub: address(0), isAAVE: false, nativeWETH: false });
+            v4: address(V4), core: address(CORE), rover: address(V3), v3Fee: v3Fee,
+            hub: address(0), vaultType: 0, nativeWETH: false });
     }
 
     function arbETH(uint shortfall)

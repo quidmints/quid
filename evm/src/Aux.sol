@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import "forge-std/console.sol";
 import {Amp} from "./Amp.sol";
 import {Vogue} from "./Vogue.sol";
 import {Rover} from "./Rover.sol";
@@ -35,14 +36,16 @@ interface ILink {
 }
 
 interface IDepositAdapter {
-    function depositWETH(uint256 amount,
-        address referrer) external;
+    function depositWETHForWeETH(uint _amount,
+               address _referral) external;
 }
 
 interface IEtherFiRedemptionManager {
-    function redeemEEth(uint256 amount) external;
-    function canRedeem(uint256 amount)
-    external view returns (bool);
+    function redeemWeEth(uint weEthAmount,
+        address receiver, address outputToken) external;
+
+    function canRedeem(uint amount,
+        address token) external view returns (bool);
 }
 
 contract Aux is // Auxiliary
@@ -166,6 +169,7 @@ contract Aux is // Auxiliary
         USDC.approve(v3Router, type(uint).max);
         WETH.approve(v3Router, type(uint).max);
         WETH.approve(address(V4), type(uint).max);
+        WETH.approve(SPOKE, type(uint).max);
         WETH.approve(ADAPTER, type(uint).max);
         USDC.approve(vaults[stables[stables.length - 1]], type(uint).max);
         WETH.approve(address(AMP), type(uint).max);
@@ -257,9 +261,9 @@ contract Aux is // Auxiliary
         returns (Types.AuxContext memory) {
         return Types.AuxContext({ v3Pool: address(v3PoolWETH), hub: HUB,
             v3Router: v3Router, weth: address(WETH), usdc: address(USDC),
-            vault: SPOKE, v4: address(V4), core: address(CORE),
+            vault: ADAPTER, v4: address(V4), core: address(CORE),
             rover: address(V3), v3Fee: v3Fee,
-            isAAVE: true, nativeWETH: true });
+            vaultType: 2, nativeWETH: true });
     }
 
     function arbETH(uint shortfall) public
@@ -279,6 +283,7 @@ contract Aux is // Auxiliary
             if (avail > _lastTotalETH)
                 vogueETH += (avail - _lastTotalETH)
                         * vogueETH / _lastTotalETH;
+
             _lastTotalETH = avail;
         }
     }
@@ -292,16 +297,28 @@ contract Aux is // Auxiliary
             WETH.transferFrom(msg.sender,
                   address(this), amount);
 
-            _supplyAAVE(address(WETH), amount,
-            address(this)); vogueETH += amount;
+            IDepositAdapter(ADAPTER).depositWETHForWeETH(
+                                   amount, address(this));
+            /*_supplyAAVE(address(WETH), amount,
+            address(this));*/ vogueETH += amount;
         }
         else if (op == 1) { // take
             amount = Math.min(amount, vogueETH);
+            sent = address(this).balance;
+            if (IEtherFiRedemptionManager(REDEEMER).canRedeem(amount, address(0)))
+                IEtherFiRedemptionManager(REDEEMER).redeemWeEth(
+                             amount, address(this), address(0));
+            else console.log("can't redeem");
+            sent = address(this).balance - sent;
+            console.log("sent...", sent);
+            /*
             sent = _withdrawAAVE(address(WETH),
-                        amount, address(this));
+                        amount, address(this)); */
 
             vogueETH -= Math.min(sent, vogueETH);
-            WETH.transfer(msg.sender, sent);
+            // WETH.transfer(msg.sender, sent);
+            (bool sent, ) = payable(msg.sender).call{value: sent}("");
+            require(sent, "transfer failed");
         } else { _syncETH(); sent = vogueETH; }
     }
 
@@ -345,7 +362,8 @@ contract Aux is // Auxiliary
             uint ethReceived = address(this).balance;
 
             WETH.deposit{value: ethReceived}();
-            _supplyAAVE(address(WETH), ethReceived, address(this));
+            _supplyAAVE(address(WETH),
+            ethReceived, address(this));
 
             uint usdcBefore = USDC.balanceOf(address(this));
             CORE.swap(sqrtPriceX96, address(this), !token1isWETH,
@@ -499,9 +517,9 @@ contract Aux is // Auxiliary
             sp.spPrincipalTime = r.newSpPrincipalTime;
             sp.spValue = r.newSpValue; sent = r.sent;
             if (r.wethGain > 0) {
-                _supplyAAVE(address(WETH),
-                r.wethGain, address(this));
-                vogueETH += r.wethGain;
+                IDepositAdapter(ADAPTER).depositWETHForWeETH(
+                                   r.wethGain, address(this));
+                                       vogueETH += r.wethGain;
             }
         } else if (index < 5) { address token = stables[index - 1];
             if (index == 1) { (sent,) = BasketLib.withdrawUSYC(
@@ -644,11 +662,10 @@ contract Aux is // Auxiliary
         require(result == CALLBACK_SUCCESS &&
             repaid >= (toIndex[token] > 0 &&
                        toIndex[token] < 4 ? sent / 1e12 : sent));
-        if (token == address(WETH)) { _supplyAAVE(address(WETH),
-                                        repaid, address(this));
-            vogueETH += repaid;
-        } else _supply(token,
-        toIndex[token], repaid);
+        if (token == address(WETH)) { IDepositAdapter(ADAPTER).depositWETHForWeETH(
+                                                             repaid, address(this));
+                                                                 vogueETH += repaid;
+        } else _supply(token, toIndex[token], repaid);
         return true; // builders don't introspect...
     } // they see priority fees, explicit bribes, not
     // internal profit splits. Bebop's orchestrator

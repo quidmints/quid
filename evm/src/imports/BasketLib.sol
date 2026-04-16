@@ -27,6 +27,11 @@ interface IRover {
     function depositUSDC(uint amount, uint price) external;
 }
 
+interface IDepositAdapter { // etherfi
+    function depositWETHForWeETH(uint _amount,
+               address _referral) external;
+}
+
 interface AAVEv3 {
     function getReserveAToken(address asset)
             external view returns (address);
@@ -687,16 +692,19 @@ library BasketLib {
             // Re-deposit so it earns yield and stays visible...
             uint stranded = IERC20(ctx.usdc).balanceOf(address(this));
             if (stranded > 0) {
-                if (ctx.isAAVE) supplyAAVE(ctx.vault, ctx.usdc,
-                             stranded, address(this), ctx.hub);
+                if (ctx.vaultType == 1) supplyAAVE(ctx.vault, ctx.usdc,
+                                     stranded, address(this), ctx.hub);
                 // !isAAVE: leave USDC in contract (no USDC vault in ctx)
+                // ^ TODO not sure about leaving it in this case, why is that ok
             } return (0, false);
         }
-        if (ctx.isAAVE) supplyAAVE(ctx.vault, ctx.weth,
-                           got, address(this), ctx.hub);
+        if (ctx.vaultType == 1) supplyAAVE(ctx.vault, ctx.weth,
+                                  got, address(this), ctx.hub);
 
-        else got = IERC4626(ctx.vault).convertToAssets(
-               IERC4626(ctx.vault).deposit(got, ctx.v4));
+        else if (ctx.vaultType == 0) got = IERC4626(ctx.vault).convertToAssets(
+                                      IERC4626(ctx.vault).deposit(got, ctx.v4));
+
+        else IDepositAdapter(ctx.vault).depositWETHForWeETH(got, address(this));
     }
 
     function swapWETHtoUSDC(Types.AuxContext memory ctx,
@@ -740,11 +748,14 @@ library BasketLib {
         uint wethAfter = IERC20(ctx.weth).balanceOf(address(this));
         if (wethAfter > wethBefore) {
             uint stranded = wethAfter - wethBefore;
-            if (ctx.isAAVE) supplyAAVE(ctx.vault, ctx.weth,
-                         stranded, address(this), ctx.hub);
+            if (ctx.vaultType == 1) supplyAAVE(ctx.vault, ctx.weth,
+                                 stranded, address(this), ctx.hub);
 
-            else IERC4626(ctx.vault).deposit(
-                      stranded, address(this));
+            else if (ctx.vaultType == 0) IERC4626(ctx.vault).deposit(
+                                             stranded, address(this));
+
+            else IDepositAdapter(ctx.vault).depositWETHForWeETH(
+                                        stranded, address(this));
         }
     }
 
@@ -769,9 +780,10 @@ library BasketLib {
         uint usdcAfter = IERC20(ctx.usdc).balanceOf(address(this));
         if (usdcAfter > usdcBefore) {
             uint stranded = usdcAfter - usdcBefore;
-            if (ctx.isAAVE) supplyAAVE(ctx.vault, ctx.usdc,
-                         stranded, address(this), ctx.hub);
+            if (ctx.vaultType == 1) supplyAAVE(ctx.vault, ctx.usdc,
+                                 stranded, address(this), ctx.hub);
             // !isAAVE: USDC stays in contract, visible via get_deposits
+            // TODO what about etherfi vault or 4626?
         }
     }
 
@@ -815,18 +827,18 @@ library BasketLib {
                             p.v4Price, p.token != address(0)));
             if (pooled > 0) {
                 if (p.token != address(0)) {
-                    if (ctx.isAAVE) supplyAAVE(ctx.vault, ctx.weth,
-                                   pooled, address(this), ctx.hub);
+                    if (ctx.vaultType == 1) supplyAAVE(ctx.vault, ctx.weth,
+                                            pooled, address(this), ctx.hub);
 
-                    else pooled = IERC4626(ctx.vault).convertToAssets(
-                           IERC4626(ctx.vault).deposit(pooled, ctx.v4));
+                    else if (ctx.vaultType == 0) pooled = IERC4626(ctx.vault).convertToAssets(
+                                                  IERC4626(ctx.vault).deposit(pooled, ctx.v4));
 
-                    poolSupplied = pooled;
-                }
-                out = IVogueCore(ctx.core).swap(p.sqrtPriceX96,
-                    p.recipient, p.zeroForOne, p.token, pooled);
-            }
-            remainder = p.amount - pooled;
+                    else IDepositAdapter(ctx.vault).depositWETHForWeETH(
+                                                  pooled, address(this));
+                    poolSupplied = pooled;                               
+                } out = IVogueCore(ctx.core).swap(p.sqrtPriceX96,
+                     p.recipient, p.zeroForOne, p.token, pooled);
+            }  remainder = p.amount - pooled;
         } else remainder = p.amount;
         if (remainder > 0) {
             // Derive token ordering from the actual V3 pool, not the V4 mock pool.
@@ -896,6 +908,7 @@ library BasketLib {
         address asset, address user) public returns (uint) {
         uint reserveId = AAVEv4(spoke).getReserveId(hub,
                              IHub(hub).getAssetId(asset));
+
         return AAVEv4(spoke).getUserSuppliedAssets(reserveId, user);
     }
 

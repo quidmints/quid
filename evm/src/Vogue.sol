@@ -223,9 +223,8 @@ contract Vogue is
                 // AUX.vogueETH() covers all LPs; without the cap the first
                 // withdrawer drains the entire vault leaving others with
                 // shares but no ETH backing them
-                { uint vaultShare = totalShares > 0
-                        ? FullMath.mulDiv(AUX.vogueETH(), amount, totalShares)
-                        : AUX.vogueETH();
+                { uint vaultShare = totalShares > 0 ? FullMath.mulDiv(AUX.vogueETH(),
+                                                  amount, totalShares) : AUX.vogueETH();
                   uint inPool = V4.POOLED_ETH();
                   uint excess = Math.min(shortfall, vaultShare > inPool ?
                                                     vaultShare - inPool : 0);
@@ -449,10 +448,10 @@ contract Vogue is
     function _syncYield() internal {
         uint current = AUX.vogueETHOp(0, 2);
         if (lastVogueETH > 0 && current > lastVogueETH) {
-            uint aaveYield = current - lastVogueETH;
+            uint yield = current - lastVogueETH;
             if (totalShares > 0)
                 ETH_FEES += FullMath.mulDiv(
-                aaveYield, WAD, totalShares);
+                    yield, WAD, totalShares);
         } lastVogueETH = current;
     }
 
@@ -466,7 +465,8 @@ contract Vogue is
                 uint got = AUX.vogueETHOp(
                        needed - inWETH, 1);
                              inWETH += got;
-            }  WETH.withdraw(inWETH);
+            }
+            WETH.withdraw(inWETH);
             sent = inWETH + alreadyInETH;
         }
         (bool success, ) = payable(toWhom).call{

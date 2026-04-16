@@ -330,7 +330,7 @@ contract AuxArb is // Auxiliary
             v3Router: v3Router, weth: address(WETH), usdc: address(USDC),
             vault: aave, v4: address(V4), core: address(CORE),
             rover: address(V3), v3Fee: v3Fee,
-            isAAVE: true, nativeWETH: true });
+            vaultType: 1, nativeWETH: true });
     }
 
     function _availableETH() internal returns (uint) {

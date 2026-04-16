@@ -117,26 +117,26 @@ contract VogueCore is SafeCallback {
         uint deltaUSD, int24 tickLower, int24 tickUpper,
         address sender) public onlyUs returns (uint ethSent) {
         BalanceDelta delta = abi.decode(poolManager.unlock(abi.encode(
-                Action.ModLP, sqrtPriceX96, deltaETH, deltaUSD,
-                tickLower, tickUpper, sender)), (BalanceDelta));
+                        Action.ModLP, sqrtPriceX96, deltaETH, deltaUSD,
+                        tickLower, tickUpper, sender)), (BalanceDelta));
+
         int128 ethDelta = token1isETH ? delta.amount1() : delta.amount0();
         ethSent = ethDelta > 0 ? uint(int(ethDelta)) : 0;
     }
 
     function outOfRange(address sender, int liquidity,
         int24 tickLower, int24 tickUpper, address token)
-        public onlyUs {
-        abi.decode(poolManager.unlock(abi.encode(
-            Action.OutsideRange, sender, liquidity,
-            tickLower, tickUpper, token)), (BalanceDelta));
+        public onlyUs { abi.decode(poolManager.unlock(abi.encode(
+                            Action.OutsideRange, sender, liquidity,
+                      tickLower, tickUpper, token)), (BalanceDelta));
     }
 
     function swap(uint160 sqrtPriceX96, address sender,
         bool forOne, address token, uint amount)
         onlyUs public returns (uint out) {
         BalanceDelta delta = abi.decode(poolManager.unlock(
-          abi.encode(Action.Swap, sqrtPriceX96, sender,
-            forOne, token, amount)), (BalanceDelta));
+              abi.encode(Action.Swap, sqrtPriceX96, sender,
+                forOne, token, amount)), (BalanceDelta));
 
         // zeroForOne=true: input token0, output token1
         // zeroForOne=false: input token1, output token0
