@@ -19,6 +19,7 @@ import {IERC4626} from "forge-std/interfaces/IERC4626.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 import {IUniswapV3Pool} from "./imports/v3/IUniswapV3Pool.sol";
+import {IV3SwapRouter} from "./imports/v3/IV3SwapRouter.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "solmate/src/utils/ReentrancyGuard.sol";
@@ -38,6 +39,7 @@ interface ILink {
 interface IDepositAdapter {
     function depositWETHForWeETH(uint _amount,
                address _referral) external;
+    function weETH() external view returns (address);
 }
 
 interface IEtherFiRedemptionManager {
@@ -47,6 +49,12 @@ interface IEtherFiRedemptionManager {
     function canRedeem(uint amount,
         address token) external view returns (bool);
 }
+
+interface IWeETH {
+    function getEETHByWeETH(uint _weETHAmount) external view returns (uint);
+    function getWeETHByeETH(uint _eETHAmount) external view returns (uint);
+}
+
 
 contract Aux is // Auxiliary
     Ownable, ReentrancyGuard {
@@ -80,6 +88,7 @@ contract Aux is // Auxiliary
     // ether.fi contracts...
     address internal REDEEMER;
     address internal ADAPTER;
+    address internal WEETH; // weETH token (set in setQuid)
 
     // AAVE contracts...
     address internal SPOKE;
@@ -176,6 +185,9 @@ contract Aux is // Auxiliary
         USDC.approve(address(AMP), type(uint).max);
         WETH.approve(address(V3), type(uint).max);
         USDC.approve(address(V3), type(uint).max);
+        // weETH token for DEX fallback withdrawal path
+        WEETH = IDepositAdapter(ADAPTER).weETH();
+        IERC20(WEETH).approve(v3Router, type(uint).max);
     }
 
     function getTWAP(uint32 period)
@@ -304,21 +316,35 @@ contract Aux is // Auxiliary
         }
         else if (op == 1) { // take
             amount = Math.min(amount, vogueETH);
-            sent = address(this).balance;
-            if (IEtherFiRedemptionManager(REDEEMER).canRedeem(amount, address(0)))
+            if (amount == 0) return 0;
+            uint weETHAmount = IWeETH(WEETH).getWeETHByeETH(amount);
+            uint weETHBal = IERC20(WEETH).balanceOf(address(this));
+            if (weETHAmount > weETHBal) weETHAmount = weETHBal;
+            if (weETHAmount == 0) return 0;
+
+            if (IEtherFiRedemptionManager(REDEEMER).canRedeem(weETHAmount, address(0))) {
+                uint ethBefore = address(this).balance;
                 IEtherFiRedemptionManager(REDEEMER).redeemWeEth(
-                             amount, address(this), address(0));
-            else console.log("can't redeem");
-            sent = address(this).balance - sent;
-            console.log("sent...", sent);
-            /*
-            sent = _withdrawAAVE(address(WETH),
-                        amount, address(this)); */
+                    weETHAmount, address(this), address(0));
+                sent = address(this).balance - ethBefore;
+            } else {
+                uint expectedEth = IWeETH(WEETH).getEETHByWeETH(weETHAmount);
+                sent = IV3SwapRouter(v3Router).exactInputSingle(
+                    IV3SwapRouter.ExactInputSingleParams({
+                        tokenIn: WEETH,
+                        tokenOut: address(WETH),
+                        fee: 500,
+                        recipient: address(this),
+                        amountIn: weETHAmount,
+                        amountOutMinimum: expectedEth * 99 / 100,
+                        sqrtPriceLimitX96: 0
+                    }));
+                WETH.withdraw(sent);
+            }
 
             vogueETH -= Math.min(sent, vogueETH);
-            // WETH.transfer(msg.sender, sent);
-            (bool sent, ) = payable(msg.sender).call{value: sent}("");
-            require(sent, "transfer failed");
+            (bool ok, ) = payable(msg.sender).call{value: sent}("");
+            require(ok, "transfer failed");
         } else { _syncETH(); sent = vogueETH; }
     }
 
