@@ -462,11 +462,12 @@ contract Vogue is
         else { uint needed = howMuch - alreadyInETH;
             uint inWETH = WETH.balanceOf(address(this));
             if (needed > inWETH) {
-                uint got = AUX.vogueETHOp(
-                       needed - inWETH, 1);
-                             inWETH += got;
+                AUX.vogueETHOp(needed - inWETH, 1);
+                // Aux sends ETH directly; recheck balances
+                alreadyInETH = address(this).balance;
+                inWETH = WETH.balanceOf(address(this));
             }
-            WETH.withdraw(inWETH);
+            if (inWETH > 0) WETH.withdraw(inWETH);
             sent = inWETH + alreadyInETH;
         }
         (bool success, ) = payable(toWhom).call{
