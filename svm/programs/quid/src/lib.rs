@@ -29,7 +29,7 @@ use etc::*;
 pub mod LZ;
 use LZ::*;
 
-declare_id!("J1xE8gXrXgrFoEch6QQ9JesqyqhUAkjDuD4CLb2RWSfC");
+declare_id!("EnEfbQwmy9GpKx55EfUh79sV8ruhDmtCpVaAikjjgfDp");
 
 #[program]
 pub mod quid {

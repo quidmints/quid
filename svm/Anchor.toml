@@ -7,13 +7,16 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-quid = "J1xE8gXrXgrFoEch6QQ9JesqyqhUAkjDuD4CLb2RWSfC"
+quid = "EnEfbQwmy9GpKx55EfUh79sV8ruhDmtCpVaAikjjgfDp"
+
+[programs.devnet]
+quid = "EnEfbQwmy9GpKx55EfUh79sV8ruhDmtCpVaAikjjgfDp"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
