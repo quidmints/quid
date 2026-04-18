@@ -169,7 +169,7 @@ contract Alles is Test, Fixtures {
             address(hashnote)
         ];
 
-        uint mainnetFork = vm.createFork("https://ethereum-rpc.publicnode.com");
+        uint mainnetFork = vm.createFork(vm.rpcUrl("mainnet"));
         vm.selectFork(mainnetFork);
 
         vm.startPrank(0x37305B1cD40574E4C5Ce33f8e8306Be057fD7341);
