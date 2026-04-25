@@ -39,6 +39,9 @@ library FeeLib {
     uint constant E_NUM = 2718281828;
     uint constant E_DEN = 1000000000;
 
+    uint public constant DECAY_FLOOR = 1000;
+    uint public constant LAMBDA = 127;
+
     /// @dev b is capped at 6× INITIAL_B → max market-maker loss = 6×INITIAL_B×ln(12) ≈ 14.91×INITIAL_B
     int128 public constant INITIAL_B = 10_000e18;
     int128 public constant MAX_B = 60_000e18; // 6× cap
@@ -685,27 +688,6 @@ library FeeLib {
         } return calcFee(thisRisk, totalExposure);
     }
 
-    function calcFeeUni(uint idx, uint[7] memory deps,
-        address[] memory stables, address hook) external view
-        returns (uint) { uint base = (idx == 3) ? 2 : idx; // sUSDS maps to USDS
-        if (IHook(hook).stablecoinToSide(stables[base]) == 0) return BASE;
-        Types.DepegStats memory stats = IHook(hook).getDepegStats(stables[base]);
-        if (stats.side == 0 || deps[1] == 0) return BASE;
-        uint thisRisk = calcRisk(stats); uint totalExposure;
-        for (uint i = 0; i < 5; i++) {
-            if (i == 3) continue; // skip sUSDS, count USDS
-            uint dep = (i == 2) ? deps[4] + deps[5] : deps[i + 2];
-            if (dep < 100 * WAD) continue;
-            uint8 side = IHook(hook).stablecoinToSide(stables[i]);
-            if (side == 0) continue;
-            Types.DepegStats memory s = IHook(hook).getDepegStats(stables[i]);
-            if (s.side > 0) {
-                uint risk = calcRisk(s);
-                totalExposure += (dep * risk) / deps[1];
-            }
-        } return calcFee(thisRisk, totalExposure);
-    }
-
     function calcFeePoly(uint idx, uint[8] memory deps,
         address[] memory stables, address hook) external view returns (uint) {
         if (IHook(hook).stablecoinToSide(stables[idx]) == 0) return BASE;
@@ -875,67 +857,104 @@ library FeeLib {
     //  these bytes off Link's 24 576-byte budget.
     // ═══════════════════════════════════════════════════════════════
 
-    function buyTokens(int128[12] memory q, uint8 numSides, int128 b, uint8 side, uint netCap)
+    function buyTokens(int128[12] memory q, 
+        uint8 numSides, int128 b, uint8 side, uint netCap)
         public pure returns (uint tokens, int128 deltaQ) {
         int128 capWAD = int128(int256(netCap));
-        int128 lo; int128 hi = capWAD * int128(int256(uint256(numSides))) * 2;
+        int128 lo; int128 hi = capWAD * 
+        int128(int256(uint256(numSides))) * 2;
         for (uint i; i < 64; i++) {
             int128 mid = (lo + hi) / 2;
             uint c = cost(q, numSides, b, side, mid);
-            if (c <= uint(uint128(capWAD))) lo = mid; else hi = mid;
+            if (c <= uint(uint128(capWAD))) 
+                lo = mid; 
+            else hi = mid;
             if (hi - lo <= 1) break;
         } tokens = uint(uint128(lo)); deltaQ = lo;
     }
 
-    function sellTokens(int128[12] memory q, uint8 numSides, int128 b, uint8 side, uint tokSell)
+    function sellTokens(int128[12] memory q, uint8 numSides, 
+                        int128 b, uint8 side, uint tokSell)
         public pure returns (uint returned, int128 deltaQ) {
         int128 tokWAD = int128(int256(tokSell));
         returned = cost(q, numSides, b, side, -tokWAD);
         deltaQ = tokWAD;
     }
 
-    function computeWeight(uint[] memory capitals, uint[] memory timestamps,
-        uint roundStart, uint resTs, uint lambda, uint floor, uint confidence, bool isWinner)
-        public pure returns (uint weight) {
-        uint timeWeightedCap; uint WAD = 1e18;
-        for (uint j; j < capitals.length; j++) {
-            uint decay;
-            if (resTs <= roundStart) { decay = 10000; }
-            else {
-                uint mktD = resTs - roundStart;
-                uint posD = timestamps[j] <= roundStart ? mktD :
-                    (timestamps[j] >= resTs ? 0 : resTs - timestamps[j]);
-                uint p = (posD * 10000) / mktD;
-                if (p > 10000) p = 10000;
-                if (lambda <= 100) decay = p;
-                else if (lambda <= 200) {
-                    uint t = lambda - 100; uint qd = (p * p) / 10000;
-                    decay = (p * (100 - t) + qd * t) / 100;
-                } else { uint qd = (p * p) / 10000; decay = (qd * p) / 10000; }
-                if (decay < floor) decay = floor;
-            }
-            timeWeightedCap += capitals[j] * decay;
+    function _entryEffectiveCap(uint capital,
+        uint decay, uint priceAtEntry,
+        uint confidence) internal pure returns (uint) {
+        uint pae = priceAtEntry < 10_000 ? priceAtEntry : 9_999;
+        uint joint = (10_000 - pae) * confidence / 10_000;
+        return capital * decay / 10_000 * joint / 10_000;
+    }
+
+    function _computeDecay(uint timestamp,
+        uint roundStart, uint resTs,
+        uint lambda, uint floor) 
+        internal pure returns (uint decay) {
+        if (resTs <= roundStart) return 10_000;
+
+        uint mktD = resTs - roundStart;
+        uint posD = timestamp >= resTs ? 0 : 
+                    timestamp >= roundStart ? 
+                    resTs - timestamp : mktD;
+
+        uint p = posD * 10_000 / mktD;
+        if (p > 10_000) p = 10_000;
+        if (lambda <= 100) {
+            decay = p;
+        } else if (lambda <= 200) {
+            uint t = lambda - 100;
+            uint qd = p * p / 10_000;
+            decay = (p * (100 - t) + qd * t) / 100;
+        } else {
+            uint qd = p * p / 10_000;
+            decay = qd * p / 10_000;
         }
-        uint twcWAD = timeWeightedCap / 10000;
-        uint confNorm = (confidence * WAD) / 10000;
-        if (isWinner) weight = FullMath.mulDiv(confNorm, twcWAD, WAD);
-        else { uint inv = WAD - confNorm; weight = FullMath.mulDiv(inv > 0 ? inv : 1, twcWAD, WAD); }
+        if (decay < floor) decay = floor;
+    }
+
+    function computeWeight(uint[] memory capitals,
+        uint[] memory timestamps, uint[] memory pricesAtEntry,
+        uint roundStart, uint resTs, uint confidence, 
+        bool isWinner) public pure returns (uint weight) {
+        uint timeWeightedCap; bool usePAE = !isWinner && 
+        pricesAtEntry.length == capitals.length;
+        for (uint j; j < capitals.length; j++) {
+            uint decay = _computeDecay(timestamps[j], 
+            roundStart, resTs, LAMBDA, DECAY_FLOOR);
+
+            timeWeightedCap += usePAE
+                ? _entryEffectiveCap(capitals[j], 
+                decay, pricesAtEntry[j], confidence)
+                : capitals[j] * decay / 10_000;
+        }
+        uint twcWAD = timeWeightedCap * 1e18 / 10_000;
+        weight = isWinner ? FullMath.mulDiv(confidence * 1e18 / 10_000, twcWAD, 1e18): twcWAD;
     }
 
     function computePayout(uint capital, uint weight, uint totalWinWeight,
         uint totalLoseWeight, uint totalLoserCap, uint consolBps, bool isWinner)
-        public pure returns (uint payout) {
-        uint winnerPool; uint consolPool;
-        if (totalWinWeight == 0) { consolPool = totalLoserCap; }
-        else {
-            winnerPool = FullMath.mulDiv(totalLoserCap, 10000 - consolBps, 10000);
+        public pure returns (uint payout) { uint winnerPool; uint consolPool;
+        if (totalWinWeight == 0) {
+            if (!isWinner && totalLoseWeight > 0) {
+                consolPool = FullMath.mulDiv(totalLoserCap, consolBps, 10000);
+                return capital + FullMath.mulDiv(consolPool, weight, totalLoseWeight);
+            } return capital; // winner capital returned as-is
+        } else {
+            winnerPool = FullMath.mulDiv(totalLoserCap, 
+                10000 - consolBps, 10000);
+
             consolPool = totalLoserCap - winnerPool;
-        }
-        if (isWinner) {
-            uint bonus = totalWinWeight > 0 ? FullMath.mulDiv(winnerPool, weight, totalWinWeight) : 0;
+        } if (isWinner) {
+            uint bonus = totalWinWeight > 0 ? FullMath.mulDiv(
+                            winnerPool, weight, totalWinWeight) : 0;
+            
             payout = capital + bonus;
         } else {
-            payout = totalLoseWeight > 0 ? FullMath.mulDiv(consolPool, weight, totalLoseWeight) : 0;
+            payout = totalLoseWeight > 0 ? FullMath.mulDiv(
+                        consolPool, weight, totalLoseWeight) : 0;
         }
     }
 

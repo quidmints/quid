@@ -29,7 +29,7 @@ use etc::*;
 pub mod LZ;
 use LZ::*;
 
-declare_id!("EnEfbQwmy9GpKx55EfUh79sV8ruhDmtCpVaAikjjgfDp");
+declare_id!("HFNXYaADSSToPmgSpV6Jnsd3UcyKdkhHt5T8Am2c7wRe");
 
 #[program]
 pub mod quid {
@@ -81,8 +81,7 @@ pub mod quid {
     }
 
     pub fn challenge(ctx: Context<ChallengeResolution>) -> Result<()> {
-        // alte liebe rostet nicht?
-        out::challenge_resolution(ctx)
+        out::challenge_resolution(ctx) // alte liebe rostet nicht?
     }
 
     pub fn resolve_challenge<'info>(ctx: Context<'_, '_, '_, 'info,
@@ -97,7 +96,7 @@ pub mod quid {
         entra::place_order(ctx, params)
     }
 
-        pub fn sell(ctx: Context<SellPosition>,
+    pub fn sell(ctx: Context<SellPosition>,
         tokens_to_sell: u64, max_deviation_bps: Option<u64>) -> Result<()> {
         pago::sell_position(ctx, tokens_to_sell, max_deviation_bps)
     }
@@ -138,12 +137,15 @@ pub mod quid {
         entra::init_config(ctx, orchestrator, token_mint)
     }
 
-    pub fn update_config(ctx: Context<UpdateConfig>,
-        new_orchestrator: Option<Pubkey>,
-        new_admin: Option<Pubkey>,
-        set_bebop_authority: Option<Pubkey>) -> Result<()> {
-        entra::update_config(ctx, new_orchestrator, new_admin,
-            set_bebop_authority)
+    pub fn update_config(ctx: Context<UpdateConfig>, new_orchestrator: Option<Pubkey>, 
+        new_admin: Option<Pubkey>, set_bebop_authority: Option<Pubkey>) -> Result<()> {
+        entra::update_config(ctx, new_orchestrator, new_admin, set_bebop_authority)
+    }
+
+    /// Commit a staged bebop_authority rotation after the 48 h on-chain delay.
+    /// Must be called by admin via the same UpdateConfig accounts struct.
+    pub fn accept_bebop_authority(ctx: Context<UpdateConfig>) -> Result<()> {
+        entra::accept_bebop_authority(ctx)
     }
 
     pub fn deposit_sol(ctx: Context<DepositSol>, lamports: u64) -> Result<()> {
@@ -167,7 +169,6 @@ pub mod quid {
     pub fn refresh_sol_collateral(ctx: Context<RefreshSolCollateral>) -> Result<()> {
         clutch::handle_refresh_sol_collateral(ctx)
     }
-
 
     pub fn init_oapp_store(mut ctx: Context<InitOAppStore>,
         params: InitOAppStoreParams) -> Result<()> {
@@ -208,6 +209,14 @@ pub mod quid {
                  PithyQuip::InsufficientAccounts);
 
         let chain_config_info = &ctx.remaining_accounts[0];
+        // Verify the account is owned by this program before deserialization.
+        // Without this, an attacker can pass a crafted account whose bytes
+        // satisfy ChainConfig layout (active=true, eid=src_eid, peer=sender),
+        // spoofing a valid chain config and injecting arbitrary LZ messages.
+        // The discriminator check inside try_deserialize is a second layer,
+        // but ownership must be confirmed first.
+        require!(chain_config_info.owner == ctx.program_id,
+                 PithyQuip::InvalidAccountOwner);
         let chain_data = chain_config_info.try_borrow_data()?;
         let chain_config = ChainConfig::try_deserialize(&mut chain_data.as_ref())
             .map_err(|_| PithyQuip::InvalidParameters)?;

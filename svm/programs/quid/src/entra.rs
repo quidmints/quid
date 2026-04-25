@@ -69,11 +69,39 @@ pub fn update_config(ctx: Context<UpdateConfig>,
         config.admin = admin;
     }
     if let Some(authority) = set_bebop_authority {
-        // SENSITIVE: grants unlimited flash loan access to the new authority.
-        // This call must only be reachable via a Squads proposal that has
-        // completed its 48h timelock — enforced off-chain by the multisig config.
-        config.bebop_authority = authority;
+        // Stages the rotation rather than applying it immediately.
+        // Call accept_bebop_authority after BEBOP_ROTATION_DELAY (48 h) to commit.
+        // This gives depositors an on-chain-enforceable exit window — the delay
+        // cannot be bypassed even if the admin key is compromised, because
+        // accept_bebop_authority checks the timestamp at execution time.
+        let clock = Clock::get()?;
+        config.pending_bebop_authority = Some(authority);
+        config.bebop_authority_pending_since = clock.unix_timestamp;
     }
+    Ok(())
+}
+
+/// Minimum seconds between proposing and committing a bebop_authority rotation.
+/// Mirrors the Squads multisig time_lock recommendation — enforced on-chain so
+/// even a fully compromised admin key cannot shorten the window.
+pub const BEBOP_ROTATION_DELAY: i64 = 48 * 60 * 60;
+
+/// Commit a staged bebop_authority rotation.
+/// Callable by admin only, and only after BEBOP_ROTATION_DELAY has elapsed
+/// since the matching update_config call. Clears the pending fields on commit.
+pub fn accept_bebop_authority(ctx: Context<UpdateConfig>) -> Result<()> {
+    let config = &mut ctx.accounts.config;
+    let pending = config.pending_bebop_authority
+        .ok_or(error!(PithyQuip::InvalidParameters))?;
+    let clock = Clock::get()?;
+    require!(
+        clock.unix_timestamp.saturating_sub(config.bebop_authority_pending_since)
+            >= BEBOP_ROTATION_DELAY,
+        PithyQuip::TradingFrozen // timelock window not yet elapsed
+    );
+    config.bebop_authority = pending;
+    config.pending_bebop_authority = None;
+    config.bebop_authority_pending_since = 0;
     Ok(())
 }
 
@@ -597,6 +625,10 @@ pub fn place_order(ctx: Context<PlaceOrder>,
         capital_seconds: 0,
         last_updated: right_now,
         commitment_hash,
+        // Clamp to [1, 9_999] so zero is unambiguously "legacy/missing"
+        // rather than a genuine extreme price — the reveal phase uses 0
+        // as a sentinel to skip the edge-bonus path gracefully.
+        price_at_entry: (current_price * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
     });
     position.total_capital += net_capital;
     position.total_tokens += tokens_bought;
@@ -935,39 +967,28 @@ pub fn handle_flash_borrow<'info>(ctx: Context<'_, '_, '_, 'info, FlashBorrow<'i
     let current_idx = load_current_index_checked(ixs)? as usize;
     let mut found = false;
     let mut i = current_idx + 1;
-    loop {
-        match load_instruction_at_checked(i, ixs) {
+    loop { match load_instruction_at_checked(i, ixs) {
             Ok(ix) => {
                 if ix.program_id == crate::ID && ix.data.len() >= 8
                     && ix.data[..8] == FLASH_REPAY_DISC { found = true; break; }
                 i += 1;
-            }
-            Err(_) => break,
+            } Err(_) => break,
         }
-    }
-    require!(found, PithyQuip::FlashRepayMissing);
-
+    } require!(found, PithyQuip::FlashRepayMissing);
     if lamports > 0 {
         // ── SOL path (unchanged) ──────────────────────────────────────────────
         require!(lamports <= bank.sol_lamports, PithyQuip::InsufficientFunds);
         // Zero sol_usd_contrib so has_capacity() is conservative during flash window.
         let old_contrib = bank.sol_usd_contrib;
         bank.total_deposits = bank.total_deposits.saturating_sub(old_contrib);
-        bank.sol_usd_contrib = 0;
-        flash.flash_lamports = lamports;
-        bank.sol_lamports   = bank.sol_lamports.saturating_sub(lamports);
-        invoke_signed(
-            &system_instruction::transfer(
-                ctx.accounts.sol_pool.key,
-                ctx.accounts.borrower.key,
-                lamports,
-            ),
-            &[
-                ctx.accounts.sol_pool.to_account_info(),
-                ctx.accounts.borrower.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool]]],
+        bank.sol_usd_contrib = 0; flash.flash_lamports = lamports;
+        bank.sol_lamports = bank.sol_lamports.saturating_sub(lamports);
+        invoke_signed(&system_instruction::transfer(ctx.accounts.sol_pool.key,
+                ctx.accounts.borrower.key, lamports),
+            &[ctx.accounts.sol_pool.to_account_info(),
+              ctx.accounts.borrower.to_account_info(),
+              ctx.accounts.system_program.to_account_info(),
+            ], &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool]]],
         )?;
     } else {
         // ── SPL path — remaining_accounts: [vault, mint, borrower_ata, token_prog] ─

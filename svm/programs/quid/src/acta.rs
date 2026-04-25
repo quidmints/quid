@@ -428,11 +428,23 @@ pub fn submit_evidence(
 /// Note: market creation (init_market_evidence) does NOT require enrollment.
 /// Any wallet can create a market. Enrollment is only required for
 /// submit_evidence — the operation that contributes data to resolution.
+
 #[derive(Accounts)]
 #[instruction(params: EnrollDeviceParams)]
 pub struct EnrollDevice<'info> {
+    // Device user pays rent — same as submit_evidence
     #[account(mut)]
     pub payer: Signer<'info>,
+
+    // Oracle signs to authorize — proves off-chain attestation passed
+    pub orchestrator: Signer<'info>,
+
+    #[account(
+        seeds = [b"program_config"],
+        bump = config.bump,
+        constraint = orchestrator.key() == config.orchestrator @ PithyQuip::Unauthorized,
+    )]
+    pub config: Account<'info, ProgramConfig>,
 
     #[account(
         init,
@@ -446,11 +458,16 @@ pub struct EnrollDevice<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn enroll_device(ctx: Context<EnrollDevice>, params: EnrollDeviceParams) -> Result<()> {
-    let e           = &mut ctx.accounts.enrollment;
+pub fn enroll_device(ctx: Context<EnrollDevice>, 
+    params: EnrollDeviceParams) -> Result<()> {
+    require!(
+        params.config_version == ctx.accounts.config.config_version,
+        PithyQuip::Unauthorized // stale attestation challenge — re-attest against current config
+    );
+    let e = &mut ctx.accounts.enrollment;
     e.device_pubkey = params.device_pubkey;
-    e.revoked       = false;
-    e.bump          = ctx.bumps.enrollment;
+    e.revoked = false;
+    e.bump = ctx.bumps.enrollment;
 
     emit!(DeviceEnrolled {
         device_pubkey: params.device_pubkey,

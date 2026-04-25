@@ -360,12 +360,12 @@ impl Depositor {
             // unless amount == 0 (liquidator caller)
             if exposure > upper { // Over-profitable:
                 // must take profit or add collateral
-                let mut delta = exposure.saturating_sub(upper);
-                delta = pod.pledged.saturating_add(delta).saturating_sub(delta / 250);
-                if self.deposited_quid >= delta {
-                    let new_pledged = pod.pledged + delta - delta / 250;
+                let delta = exposure.saturating_sub(upper); // gross excess; user pays this...
+                let net = delta.saturating_sub(delta / 250); // net added to pledged after fee
+                if self.deposited_quid >= delta { 
+                    let new_pledged = pod.pledged.saturating_add(net);
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
-                    pod.collar_bps, exposure, new_pledged, actuary);
+                            pod.collar_bps, exposure, new_pledged, actuary);
                     let collar_increase = lelu.new_collar_dollars.saturating_sub(lelu.old_collar_dollars);
                     require!(depository.has_capacity(collar_increase), PithyQuip::PoolAtCapacity);
 
@@ -434,7 +434,6 @@ impl Depositor {
                 // first, try prevent liquidation
                 let mut delta = lower.saturating_sub(exposure).saturating_sub(collar_amt);
                 delta = delta.saturating_add(delta / 250);
-
                 if self.deposited_quid >= delta {
                     let new_exp = exposure.saturating_add(delta).saturating_sub(delta / 250);
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
@@ -646,13 +645,11 @@ impl Depositor {
                 return Ok((dollars,
                 accrued_interest));
             }
-        }
-        if exposure > pivot || exposure == 0 {
+        } if exposure > pivot || exposure == 0 {
             let upper = pod.pledged.saturating_add(collar_amt);
             if exposure > upper {
                 let mut delta = exposure.saturating_sub(upper);
                 delta = delta.saturating_add(delta / 250);
-
                 if self.deposited_quid >= delta {
                     let new_pledged = pod.pledged.saturating_add(delta).saturating_sub(delta / 250);
                     let lelu = LiabilityUpdate::compute(old_exposure_value, pod.collar_bps,

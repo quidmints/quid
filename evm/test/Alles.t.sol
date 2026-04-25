@@ -221,9 +221,15 @@ contract Alles is Test, Fixtures {
 
         QUID.setup(address(LINK),
         address(court), address(jury));
+        // contract calls setPeer; DVN config is set by calling endpoint.setConfig(...) 
+        // from the OApp owner's address. The endpoint is hardcoded in Baskek and this 
+        // MUST BE DONE BEFORE CALLING QUID.setup() because it renounces ownership...
 
-        CORE.setup(address(V4), address(AUX), address(WETHv3pool));
-        V4.setup(address(QUID), address(AUX), address(CORE));
+        CORE.setup(address(V4), 
+        address(AUX), address(WETHv3pool));
+
+        V4.setup(address(QUID), 
+        address(AUX), address(CORE));
         AUX.setQuid(address(QUID), JAM,
                     aaveHub, aaveSpoke,
                     ADAPTER, REDEEMER);

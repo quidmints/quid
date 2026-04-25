@@ -30,9 +30,9 @@ contract Court is ReentrancyGuard {
 
     uint constant APPEAL_WINDOW = 7 days;
 
-    uint constant MAX_APPEALS = 3;
+    uint constant MAX_APPEALS = 2;
     uint constant MAX_HUNG_JURIES = 3;
-    uint constant MAX_TOTAL_ROUNDS = 10;
+    uint constant MAX_TOTAL_ROUNDS = 5;
 
     uint constant COMMIT_PERIOD = 4 days;
     uint constant REVEAL_WINDOW = 12 hours;

@@ -6,6 +6,7 @@ import {Types} from "./imports/Types.sol";
 import {FeeLib} from "./imports/FeeLib.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {ReentrancyGuard} from "solmate/src/utils/ReentrancyGuard.sol";
 
 interface ICourt {
     function requestArbitration(
@@ -19,8 +20,7 @@ interface ICourt {
 ///   CRE resolves depeg claims in minutes. Jury fallback if CRE silent.
 ///   Griefing limited by 500 QD gate + 24h per-side rejection cooldown.
 ///   LMSR pure math lives in Court (external pure calls).
-contract Link {
-
+contract Link is ReentrancyGuard {
     address public owner;
     modifier onlyOwner() { if (msg.sender != owner) revert("not owner"); _; }
     function transferOwnership(address n) external onlyOwner { owner = n; }
@@ -31,8 +31,6 @@ contract Link {
     uint public constant CONSOLATION_BPS   = 2000;
     uint public constant REVEAL_WINDOW     = 48 hours;
     int128 public constant INITIAL_B       = 10_000e18;
-    uint public constant DECAY_FLOOR       = 1000;
-    uint public constant LAMBDA            = 127;
     uint constant NEUTRAL_CONFIDENCE       = 5000;
     uint constant WAD                      = 1e18;
     uint public constant MIN_QD_TO_ASSERT  = 500e18;
@@ -41,20 +39,23 @@ contract Link {
 
     Basket public immutable QUID;
 
-    // ─── Admin-settable ───────────────────────────────────────────
+    // Admin-settable
     address public FORWARDER;
     address public COURT;
-    uint public CRE_TIMEOUT   = 4 hours;
+    uint public CRE_TIMEOUT = 4 hours;
     uint8 public minConfidence = 80;
 
     Types.Market internal _market;
+    
     mapping(address => uint8) public stablecoinToSide;
     mapping(address => mapping(uint8 => Types.Position))    internal _positions;
     mapping(address => mapping(uint8 => Types.PositionEntry[])) internal _entries;
+    mapping(uint8 => uint) internal _depegSeverityBps;
+
     uint[12] internal _confCapAccum;
     uint[12] internal _revealedCapPerSide;
     uint[12] internal _lastRoundAvgConf;
-    mapping(uint8 => uint) internal _depegSeverityBps;
+    
     uint public pendingAssertions;
     uint public accumulatedFees;
     struct AssertionContext {
@@ -96,9 +97,9 @@ contract Link {
     error SideAlreadyAsserted(); error ArbitrationInProgress();
     error CREWindowOpen(); error CREAlreadyResponded(); error NoCourt();
 
-    // ─── Modifiers ────────────────────────────────────────────────
+
     modifier onlyForwarder() { if (msg.sender != FORWARDER) revert("not forwarder"); _; }
-    modifier onlyCourt()     { if (msg.sender != COURT)     revert("not court");     _; }
+    modifier onlyCourt() { if (msg.sender != COURT) revert("not court"); _; }
 
     constructor(address _quid, address _forward) {
         owner = msg.sender; QUID = Basket(_quid);
@@ -120,14 +121,13 @@ contract Link {
         minConfidence = _min;
     }
 
-    // ─── Market creation ──────────────────────────────────────────
-
     /// @notice Called once from Basket.setup(). Initialises both LMSR and depeg state.
     function createMarket(address[] calldata stables) external {
         if (msg.sender != address(QUID)) revert("not quid");
         if (_market.numSides != 0) revert("market exists");
         uint8 n = uint8(stables.length) + 1;
         if (n > MAX_SIDES) revert("too many sides");
+        
         _market.numSides = n;
         _market.startTime = block.timestamp;
         _market.roundStartTime = block.timestamp;
@@ -137,15 +137,13 @@ contract Link {
             stablecoinToSide[stables[i]] = i + 1;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  Depeg resolver — CRE-primary, jury fallback
-    // ═══════════════════════════════════════════════════════════════
-
     /// @notice Side 0: permissionless monthly timeout.
     function resolveAsNone() external {
         if (_market.numSides == 0) revert("market not ready");
-        if (_market.resolved || pendingAssertions > 0 || arbitratingAssertionId != bytes32(0))
+        if (_market.resolved || pendingAssertions > 0 
+         || arbitratingAssertionId != bytes32(0))
             revert("arbitration in progress");
+
         if (block.timestamp < _market.roundStartTime + FeeLib.MONTH)
             revert("cre window open");
         _trigger(block.timestamp, 0, 0);
@@ -163,39 +161,35 @@ contract Link {
         uint cooldownEnd = sideRejectedAt[_market.roundNumber][claimedSide] + REJECTION_COOLDOWN;
         if (block.timestamp < cooldownEnd) revert("cooldown active");
 
-        assertionId = keccak256(abi.encodePacked(_market.roundNumber, claimedSide, msg.sender, _assertionNonce++));
+        assertionId = keccak256(abi.encodePacked(_market.roundNumber, 
+                        claimedSide, msg.sender, _assertionNonce++));
+
         assertions[assertionId] = AssertionContext({
             asserter: msg.sender, claimedSide: claimedSide,
             filedAt: block.timestamp, round: _market.roundNumber,
             maxDeviationBps: maxDeviationBps
         });
         sideAssertionId[_market.roundNumber][claimedSide] = assertionId;
-
         if (pendingAssertions == 0) pendingAssertions++;  // first assertion freezes
         emit ResolutionRequested(assertionId, claimedSide);
     }
 
-    // ─── CRE primary path ─────────────────────────────────────────
-
     function onReport(bytes calldata, bytes calldata report) external onlyForwarder {
-        (bytes32 assertionId, uint8 claimedSide,
-            uint8 recommendedSide, uint maxDeviationBps,
-            uint8 confidence,) = abi.decode(report, (bytes32, uint8, uint8, uint, uint8, bytes32));
+        (bytes32 assertionId, uint8 claimedSide, uint8 recommendedSide, uint maxDeviationBps,
+         uint8 confidence,) = abi.decode(report, (bytes32, uint8, uint8, uint, uint8, bytes32));
 
         // Recovery: stable re-pegged, allow market restart
         if (_market.resolved && recommendedSide == 0 && _market.winningSide > 0
-                && confidence >= minConfidence) {
-            _market.winningSide = 0;
+            && confidence >= minConfidence) { _market.winningSide = 0;
             emit CRESkipped(assertionId, "depeg cleared by CRE");
             return;
         }
-
+        
         AssertionContext memory ctx = assertions[assertionId];
         if (ctx.asserter == address(0)) { emit CRESkipped(assertionId, "unknown assertion"); return; }
         if (ctx.round != _market.roundNumber) { emit CRESkipped(assertionId, "stale round"); return; }
         if (confidence < minConfidence) { emit CRESkipped(assertionId, "low confidence"); return; }
         creResponded[assertionId] = true;
-
         // CRE can override jury if it arrives before receiveRuling fires
         if (arbitratingAssertionId != bytes32(0)) {
             arbitratingAssertionId = bytes32(0);
@@ -206,7 +200,6 @@ contract Link {
             }
             return;
         }
-
         // Co-depeg: market already resolved by another side this round
         if (_market.resolved) {
             if (recommendedSide == ctx.claimedSide) {
@@ -219,7 +212,6 @@ contract Link {
             if (pendingAssertions > 0) pendingAssertions--;
             return;
         }
-
         if (recommendedSide == ctx.claimedSide) {
             _resolveDepeg(assertionId, ctx, uint16(maxDeviationBps));
         } else {
@@ -227,27 +219,31 @@ contract Link {
         }
     }
 
-    function _resolveDepeg(bytes32 assertionId, AssertionContext memory ctx, uint16 sev) internal {
+    function _resolveDepeg(bytes32 assertionId, 
+        AssertionContext memory ctx, uint16 sev) internal {
         sideDepegged[_market.roundNumber][ctx.claimedSide] = true;
         delete assertions[assertionId];
         _trigger(block.timestamp, ctx.claimedSide, sev);
         emit AssertionConfirmed(assertionId, ctx.claimedSide);
     }
 
-    function _rejectAssertion(bytes32 assertionId, AssertionContext memory ctx) internal {
+    function _rejectAssertion(bytes32 assertionId, 
+        AssertionContext memory ctx) internal {
         delete assertions[assertionId];
         sideAssertionId[ctx.round][ctx.claimedSide] = bytes32(0);
         sideRejectedAt[ctx.round][ctx.claimedSide] = block.timestamp;
-        emit AssertionRejected(assertionId, ctx.claimedSide, block.timestamp + REJECTION_COOLDOWN);
+        emit AssertionRejected(assertionId, ctx.claimedSide, 
+                        block.timestamp + REJECTION_COOLDOWN);
         bool anyPending;
         for (uint8 s = 1; s < _market.numSides; s++) {
             bytes32 id = sideAssertionId[_market.roundNumber][s];
-            if (id != bytes32(0) && assertions[id].asserter != address(0)) { anyPending = true; break; }
+            if (id != bytes32(0) && assertions[id].asserter != address(0)) { 
+                anyPending = true; break; 
+            }
+        } if (!anyPending) { 
+            if (pendingAssertions > 0) pendingAssertions--; 
         }
-        if (!anyPending) { if (pendingAssertions > 0) pendingAssertions--; }
     }
-
-    // ─── Jury fallback ────────────────────────────────────────────
 
     function escalateToCourt(bytes32 assertionId) external {
         if (COURT == address(0)) revert("no court");
@@ -281,8 +277,6 @@ contract Link {
         emit ArbitrationResolved(winningSide);
     }
 
-    // ─── Market restart ───────────────────────────────────────────
-
     function restartMarket() external {
         if (!_market.resolved) revert("market not ready");
         if (block.timestamp < _market.revealDeadline) revert("cre window open");
@@ -291,8 +285,6 @@ contract Link {
         _resetForNewRound();
         emit MarketRestarted(_market.roundNumber);
     }
-
-    // ─── Internal state transitions ───────────────────────────────
 
     function _trigger(uint ts, uint8 side, uint sev) internal {
         _market.resolved = true;
@@ -332,31 +324,34 @@ contract Link {
         _market.roundNumber++;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  LMSR prediction market
-    // ═══════════════════════════════════════════════════════════════
-
     struct RevealEntry { uint confidence; bytes32 salt; }
 
-    function placeOrder(uint8 side, uint capital,
-        bool autoRollover, bytes32 commitHash, address delegate) external {
+    function placeOrder(uint8 side, uint capital, bool autoRollover, 
+        bytes32 commitHash, address delegate) external nonReentrant {
         if (side >= _market.numSides) revert("invalid side");
         if (capital < MIN_ORDER) revert("order too small");
         if (commitHash == bytes32(0)) revert("not owner");
         if (_market.resolved) revert("resolved");
         if (pendingAssertions > 0) revert("side already asserted");
         QUID.transferFrom(msg.sender, address(this), capital);
+        
         uint fee = (capital * FEE_BPS) / 10000;
         uint netCapital = capital - fee;
         accumulatedFees += fee;
+        uint entryPrice = FeeLib.price(_market.q, 
+            _market.numSides, _market.b, side);
+        
         uint tokens = _buyTokens(_market, side, netCapital);
+        require(_entries[msg.sender][side].length < 32, "too many entries");
         Types.Position storage position = _positions[msg.sender][side];
         if (position.user == address(0)) {
             position.user = msg.sender; position.side = side;
             position.lastRound = _market.roundNumber;
             _market.positionsTotal++;
         } else if (position.lastRound < _market.roundNumber) {
-            if (position.totalCapital > 0) QUID.transfer(msg.sender, position.totalCapital);
+            if (position.totalCapital > 0) QUID.transfer(msg.sender, 
+                                            position.totalCapital);
+
             position.totalCapital = 0; position.totalTokens = 0;
             position.lastRound = _market.roundNumber;
             position.revealed = false; position.revealedConfidence = 0;
@@ -367,15 +362,16 @@ contract Link {
         position.delegate = delegate; position.totalCapital += netCapital;
         position.totalTokens += tokens; position.autoRollover = autoRollover;
         position.entryTimestamp = block.timestamp; position.entryBlock = block.number;
-        _entries[msg.sender][side].push(Types.PositionEntry({
-            capital: netCapital, tokens: tokens, commitmentHash: commitHash,
-            timestamp: block.timestamp, revealedConfidence: 0 }));
+        _entries[msg.sender][side].push(Types.PositionEntry({ capital: netCapital, 
+            tokens: tokens, commitmentHash: commitHash, timestamp: block.timestamp, 
+            revealedConfidence: 0, priceAtEntry: entryPrice }));
+
         _market.totalCapital += netCapital;
         _market.capitalPerSide[side] += netCapital;
         emit OrderPlaced(msg.sender, side, netCapital, tokens);
     }
 
-    function sellPosition(uint8 side, uint tokensToSell) external {
+    function sellPosition(uint8 side, uint tokensToSell) external nonReentrant {
         if (_market.resolved) revert("arbitration in progress");
         if (pendingAssertions > 0) revert("side already asserted");
         Types.Position storage position = _positions[msg.sender][side];
@@ -388,82 +384,151 @@ contract Link {
           uint length = entries.length;
           uint[] memory oldCaps = new uint[](length);
           uint[] memory oldToks = new uint[](length);
-          for (uint i; i < length; i++) { oldCaps[i] = entries[i].capital; oldToks[i] = entries[i].tokens; }
+          for (uint i; i < length; i++) { 
+            oldCaps[i] = entries[i].capital; 
+            oldToks[i] = entries[i].tokens; 
+          }
           uint[] memory newCaps; uint[] memory newToks;
-          (newCaps, newToks, capitalReduced) = FeeLib.reduceEntries(oldCaps, oldToks, tokensToSell, position.totalTokens);
+          (newCaps, newToks, capitalReduced) = FeeLib.reduceEntries(oldCaps, 
+                                oldToks, tokensToSell, position.totalTokens);
           uint wi;
           for (uint i; i < length; i++) {
               if (newToks[i] == 0) continue;
               if (wi != i) entries[wi] = entries[i];
-              entries[wi].capital = newCaps[i]; entries[wi].tokens = newToks[i]; wi++;
+              entries[wi].capital = newCaps[i]; 
+              entries[wi].tokens = newToks[i]; wi++;
           }
           while (entries.length > wi) entries.pop();
         }
-        position.totalTokens -= tokensToSell; position.totalCapital -= capitalReduced;
-        _market.totalCapital -= capitalReduced; _market.capitalPerSide[side] -= capitalReduced;
+        position.totalTokens -= tokensToSell; 
+        position.totalCapital -= capitalReduced;
+        _market.totalCapital -= capitalReduced; 
+        _market.capitalPerSide[side] -= capitalReduced;
         if (position.totalTokens == 0) _market.positionsTotal--;
-        if (capitalReduced > returned) accumulatedFees += capitalReduced - returned;
+        if (capitalReduced > returned) 
+            accumulatedFees += capitalReduced - returned;
         uint balance = QUID.balanceOf(address(this));
         if (returned > balance) returned = balance;
         QUID.transfer(msg.sender, returned);
-        emit PositionSold(msg.sender, side, tokensToSell, returned);
+
+        emit PositionSold(msg.sender, 
+        side, tokensToSell, returned);
     }
 
-    function calculateWeights(address[] calldata users, uint8[] calldata sides,
-        RevealEntry[] calldata reveals, uint[] calldata revealCounts) external {
-        uint gasStart = gasleft();
-        if (!_market.resolved) revert("market not ready");
-        if (users.length != sides.length || users.length != revealCounts.length) revert("not owner");
+    function _computePositionWeight(address user, uint8 side, bool isWinner, 
+        uint revealedConfidence) internal view returns (uint) {
+        Types.PositionEntry[] storage entries = _entries[user][side];
+        uint[] memory capitals = new uint[](entries.length);
+        uint[] memory timestamps = new uint[](entries.length);
+        uint[] memory prices = new uint[](entries.length);
+        for (uint i; i < entries.length; i++) {
+            capitals[i] = entries[i].capital;
+            timestamps[i] = entries[i].timestamp;
+            prices[i] = entries[i].priceAtEntry;
+        }
+        return FeeLib.computeWeight(
+            capitals, timestamps, prices,
+            _market.roundStartTime,
+            _market.resolutionTimestamp,
+            revealedConfidence, isWinner
+        );
+    }
+
+    function _processPosition(address user, uint8 side, 
+        RevealEntry[] calldata reveals, uint revealStart, 
+        uint revealCount) internal returns (uint weight) {
+        Types.Position storage position = _positions[user][side];
+        if (position.weight > 0 || position.paidOut) return 0;
+        if (position.lastRound < _market.roundNumber) {
+            if (!position.autoRollover || position.totalCapital == 0) return 0;
+            _rolloverPosition(user, side);
+        }
+        if (position.lastRound != _market.roundNumber) return 0;
+        if (!position.revealed) {
+            _revealPosition(user, side, reveals, revealStart, revealCount);
+        }
+        weight = _computePositionWeight(user, side,
+            side == _market.winningSide,
+            position.revealedConfidence
+        );
+        if (weight == 0) {
+            position.paidOut = true;
+            _market.positionsPaidOut++;
+            _market.positionsWeighed++;
+            emit PayoutPushed(user, side, 0);
+            return 0;
+        }
+        position.weight = weight;
+        if (side == _market.winningSide) 
+            _market.totalWinnerWeight += weight;
+        else _market.totalLoserWeight += weight;
+        _market.positionsWeighed++;
+    }
+
+    function _rolloverPosition(address user, uint8 side) internal {
+        Types.Position storage position = _positions[user][side];
+        uint capital = position.totalCapital;
+        position.totalTokens = 0;
+        position.revealed = false;
+        position.revealedConfidence = 0;
+        position.lastRound = _market.roundNumber;
+        position.weight = 0;
+        position.paidOut = false;
+        position.entryTimestamp = _market.roundStartTime;
+        _market.positionsTotal++;
+        _market.totalCapital += capital;
+        _market.capitalPerSide[side] += capital;
+        delete _entries[user][side];
+        _entries[user][side].push(Types.PositionEntry({
+            capital: capital, tokens: 0,
+            commitmentHash: bytes32(0),
+            timestamp: _market.roundStartTime,
+            revealedConfidence: 0,
+            priceAtEntry: 0
+        }));
+        emit Recommitted(user, side, capital);
+    }
+
+    function calculateWeights(address[] calldata users,
+        uint8[] calldata sides, RevealEntry[] calldata reveals,
+        uint[] calldata revealCounts) external { uint gasStart = gasleft();
+        if (!_market.resolved) 
+            revert("market not ready");
+        if (users.length != sides.length 
+         || users.length != revealCounts.length) revert("not owner");
+         
         if (_market.positionsPaidOut != 0) revert("not owner");
-        if (block.timestamp < _market.revealDeadline) revert("cre window open");
+        if (block.timestamp < _market.revealDeadline) 
+            revert("cre window open");
+
         uint revealCursor;
         for (uint index; index < users.length; index++) {
-            address user = users[index]; uint8 side = sides[index];
-            Types.Position storage position = _positions[user][side];
-            if (position.weight > 0 || position.paidOut) { revealCursor += revealCounts[index]; continue; }
-            if (position.lastRound < _market.roundNumber) {
-                if (!position.autoRollover || position.totalCapital == 0) { revealCursor += revealCounts[index]; continue; }
-                position.totalTokens = 0; position.revealed = false; position.revealedConfidence = 0;
-                uint capital = position.totalCapital;
-                position.lastRound = _market.roundNumber; position.weight = 0; position.paidOut = false;
-                position.entryTimestamp = _market.roundStartTime;
-                _market.positionsTotal++; _market.totalCapital += capital; _market.capitalPerSide[side] += capital;
-                delete _entries[user][side];
-                _entries[user][side].push(Types.PositionEntry({ capital: capital, tokens: 0,
-                    commitmentHash: bytes32(0), timestamp: _market.roundStartTime, revealedConfidence: 0 }));
-                emit Recommitted(user, side, capital);
-            }
-            if (position.lastRound != _market.roundNumber) { revealCursor += revealCounts[index]; continue; }
-            if (!position.revealed) {
-                uint count = revealCounts[index]; uint start = revealCursor; revealCursor += count;
-                _revealPosition(user, side, reveals, start, count);
-            } else { revealCursor += revealCounts[index]; }
-            bool isWinner = side == _market.winningSide; uint weight;
-            { Types.PositionEntry[] storage entries = _entries[user][side];
-              uint length = entries.length;
-              uint[] memory capitals = new uint[](length); uint[] memory timestamps = new uint[](length);
-              for (uint entry; entry < length; entry++) { capitals[entry] = entries[entry].capital; timestamps[entry] = entries[entry].timestamp; }
-              weight = FeeLib.computeWeight(capitals, timestamps, _market.roundStartTime,
-                  _market.resolutionTimestamp, LAMBDA, DECAY_FLOOR, position.revealedConfidence, isWinner);
-            }
-            if (weight == 0) { position.paidOut = true; _market.positionsPaidOut++; _market.positionsWeighed++; emit PayoutPushed(user, side, 0); continue; }
-            position.weight = weight;
-            if (isWinner) _market.totalWinnerWeight += weight;
-            else _market.totalLoserWeight += weight;
-            _market.positionsWeighed++;
+            uint count = revealCounts[index];
+            _processPosition(users[index], sides[index], 
+                            reveals, revealCursor, count);
+                                   revealCursor += count;
         }
-        if (_market.positionsWeighed >= _market.positionsRevealed) _market.weightsComplete = true;
+        if (_market.positionsWeighed >= _market.positionsRevealed)
+            _market.weightsComplete = true;
+
         uint gasCost = _gasToQD(gasStart - gasleft() + 21000);
         uint qdBal = QUID.balanceOf(address(this));
         if (gasCost > qdBal) gasCost = qdBal;
-        if (gasCost > 0 && gasCost <= accumulatedFees) { accumulatedFees -= gasCost; _reimburseKeeper(gasCost); }
+        if (gasCost > 0 && 
+            gasCost <= accumulatedFees) {
+            accumulatedFees -= gasCost;
+            _reimburseKeeper(gasCost);
+        }
         emit WeightsCalculated();
     }
 
-    function pushPayouts(address[] calldata users, uint8[] calldata sides) external {
+    function pushPayouts(address[] calldata users, 
+        uint8[] calldata sides) external nonReentrant {
         uint gasStart = gasleft();
         if (!_market.weightsComplete) revert("market not ready");
-        if (_market.positionsWeighed != _market.positionsRevealed) revert("market not ready");
+        if (_market.positionsWeighed != _market.positionsRevealed) 
+            revert("market not ready");
+
         uint winnerWeight = _market.totalWinnerWeight;
         uint loserWeight  = _market.totalLoserWeight;
         uint loserCapital = _market.totalLoserCapital;
@@ -472,10 +537,14 @@ contract Link {
         for (uint index; index < users.length; index++) {
             address user = users[index]; uint8 side = sides[index];
             Types.Position storage position = _positions[user][side];
-            if (position.paidOut || position.lastRound != roundNum || position.weight == 0) continue;
+            if (position.paidOut || 
+                position.lastRound != roundNum || 
+                position.weight == 0) continue;
+            
             position.paidOut = true; _market.positionsPaidOut++;
             uint payout = FeeLib.computePayout(position.totalCapital, position.weight,
                 winnerWeight, loserWeight, loserCapital, CONSOLATION_BPS, side == winner);
+            
             uint balance = QUID.balanceOf(address(this));
             if (payout > balance) payout = balance;
             if (position.autoRollover) {
@@ -489,28 +558,33 @@ contract Link {
             } else { QUID.transfer(user, payout); }
             emit PayoutPushed(user, side, payout);
         }
-        if (_market.positionsPaidOut >= _market.positionsRevealed) _market.payoutsComplete = true;
+        if (_market.positionsPaidOut >= _market.positionsRevealed) 
+            _market.payoutsComplete = true;
+
         uint gasCost = _gasToQD(gasStart - gasleft() + 21000);
         uint qdBal = QUID.balanceOf(address(this));
         if (gasCost > qdBal) gasCost = qdBal;
-        if (gasCost > 0 && gasCost <= accumulatedFees) { accumulatedFees -= gasCost; _reimburseKeeper(gasCost); }
+        if (gasCost > 0 && gasCost <= accumulatedFees) { 
+            accumulatedFees -= gasCost; _reimburseKeeper(gasCost); 
+        }
     }
-
-    // ─── Internal LMSR helpers ───────────────────────────────────
 
     function _buyTokens(Types.Market storage market, uint8 side, uint netCapital)
         internal returns (uint tokens) { int128 deltaQ;
-        (tokens, deltaQ) = FeeLib.buyTokens(market.q, market.numSides, market.b, side, netCapital);
+        (tokens, deltaQ) = FeeLib.buyTokens(market.q, 
+        market.numSides, market.b, side, netCapital);
         market.q[side] += deltaQ;
     }
 
     function _sellTokens(Types.Market storage market, uint8 side, uint tokensToSell)
         internal returns (uint returned) { int128 deltaQ;
-        (returned, deltaQ) = FeeLib.sellTokens(market.q, market.numSides, market.b, side, tokensToSell);
+        (returned, deltaQ) = FeeLib.sellTokens(market.q, 
+        market.numSides, market.b, side, tokensToSell);
         market.q[side] -= deltaQ;
     }
 
-    function _revealPosition(address user, uint8 side, RevealEntry[] calldata reveals, uint start, uint count) internal {
+    function _revealPosition(address user, uint8 side, 
+        RevealEntry[] calldata reveals, uint start, uint count) internal {
         Types.Position storage position = _positions[user][side];
         Types.PositionEntry[] storage entries = _entries[user][side];
         uint cursor; uint weightedConfidenceSum;
@@ -521,16 +595,23 @@ contract Link {
             } else {
                 if (cursor >= count) revert("not owner");
                 RevealEntry calldata reveal = reveals[start + cursor];
-                if (reveal.confidence < 100 || reveal.confidence > 10000 || reveal.confidence % 100 != 0) revert("bad confidence");
-                if (keccak256(abi.encodePacked(reveal.confidence, reveal.salt)) != entries[entry].commitmentHash) revert("hash mismatch");
+                if (reveal.confidence < 100 || 
+                  reveal.confidence > 10000 || 
+                  reveal.confidence % 100 != 0) revert("bad confidence");
+                
+                if (keccak256(abi.encodePacked(reveal.confidence, reveal.salt)) 
+                    != entries[entry].commitmentHash) revert("hash mismatch");
+                
                 entries[entry].revealedConfidence = reveal.confidence;
                 weightedConfidenceSum += entries[entry].capital * reveal.confidence;
                 cursor++;
             }
         }
         if (cursor != count) revert("not owner");
-        uint avgConf = position.totalCapital > 0 ? weightedConfidenceSum / position.totalCapital : NEUTRAL_CONFIDENCE;
+        uint avgConf = position.totalCapital > 0 ? 
+            weightedConfidenceSum / position.totalCapital : NEUTRAL_CONFIDENCE;
         position.revealed = true; position.revealedConfidence = avgConf;
+        
         _market.positionsRevealed++;
         _confCapAccum[side] += position.totalCapital * avgConf;
         _revealedCapPerSide[side] += position.totalCapital;
@@ -577,22 +658,23 @@ contract Link {
         return _depegSeverityBps[_market.winningSide];
     }
 
-    function getDepegStats(address stablecoin) external view returns (Types.DepegStats memory stats) {
+    function getDepegStats(address stablecoin) 
+        external view returns (Types.DepegStats memory stats) {
         uint8 side = stablecoinToSide[stablecoin];
         if (side == 0 || _market.numSides == 0) return stats;
         stats.capOnSide = _market.capitalPerSide[side];
-        stats.capNone   = _market.capitalPerSide[0];
-        stats.capTotal  = _market.totalCapital;
-        stats.depegged  = _market.resolved &&
+        stats.capNone = _market.capitalPerSide[0];
+        stats.capTotal = _market.totalCapital;
+        stats.depegged = _market.resolved &&
             (_market.winningSide == side || sideDepegged[_market.roundNumber][side]);
-        stats.avgConf   = _lastRoundAvgConf[side];
-        stats.side      = side;
+        
+        stats.avgConf = _lastRoundAvgConf[side]; stats.side = side;
         if (stats.depegged) stats.severityBps = _depegSeverityBps[side];
     }
 
     function getRoundStartTime() external view returns (uint) { return _market.roundStartTime; }
-    function getMarketCapital()  external view returns (uint) { return _market.totalCapital; }
-    function getNumSides()       external view returns (uint8) { return _market.numSides; }
+    function getMarketCapital() external view returns (uint) { return _market.totalCapital; }
+    function getNumSides() external view returns (uint8) { return _market.numSides; }
 
     function getAssertionInfo() external view returns (uint8 phase, uint8 winningSide, uint round) {
         if (_market.resolved) phase = 3;
@@ -614,7 +696,7 @@ contract Link {
         }
     }
 
-    function getMarket()    external view returns (Types.Market memory)   { return _market; }
+    function getMarket() external view returns (Types.Market memory) { return _market; }
     function getPosition(address user, uint8 side) external view returns (Types.Position memory) { return _positions[user][side]; }
     function getPositionEntries(address user, uint8 side) external view returns (Types.PositionEntry[] memory) { return _entries[user][side]; }
 
@@ -625,7 +707,6 @@ contract Link {
         accumulatedFees = 0;
         QUID.turn(address(this), fees);
     }
-
 
     /// @dev Convert gas used to QD via ETH TWAP.
     function _gasToQD(uint gasUsed) internal view returns (uint) {

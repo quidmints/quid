@@ -57,21 +57,24 @@ contract Basket is OFT, // LZ
     address payable public V4;
     address internal jury;
     modifier onlyUs() {
-        if (!auth(msg.sender)) revert Unauthorized(); _;
-    }
-    function auth(address who) public view returns (bool) {
-        return (who == address(AUX) || who == V4 // AAVEUni
-            || who == address(LINK) || who == jury ||
-                      who == court); // vanilla...
+        if (!auth(msg.sender))
+            revert Unauthorized(); _;
     }
 
-    //  QD holders call optInJury() to volunteer for paid jury duty
+    function auth(address who) public view returns (bool) {
+        return (who == address(AUX) || who == V4 
+            || who == address(LINK) || who == jury 
+            || who == court); // vanilla (no hooks)
+    }
+    // QD holders call optInJury() to volunteer for paid jury duty...
     address constant LZ = 0x1a44076050125825900e736c501f859c50fE728c;
-    uint32 public constant SOL_MAINNET_EID = 30168;
+    uint32 public constant SOLANA_EID = 30168;
+    uint32 public constant BASE_EID = 30184;
+    uint32 public constant ARBI_EID = 30110;
+    uint32 public constant POLY_EID = 30109;
 
     uint public l2Deposits;
     address[] internal l2Baskets;
-
     address[] internal juryPool;
     mapping(address => uint) internal juryLocked;
     mapping(address => uint) internal juryPoolIndex;
@@ -94,10 +97,18 @@ contract Basket is OFT, // LZ
                                     revert Unauthorized();
         LINK = Link(payable(_hook)); court = payable(_court);
         jury = _jury; address[] memory stables = AUX.getStables();
+
+        /*
+        setPeer(SOLANA_EID, solanaProgram32Bytes);
+        for (uint i = 0; i < l2Eids.length; i++) {
+            setPeer(l2Eids[i], l2PeerBytes32[i]);
+            _registerL2Basket(l2BasketAddresses[i]);
+        } */
         LINK.createMarket(stables);
+        // renounceOwnership();
     }
 
-    function registerL2Basket(address _l2) external {
+    function _registerL2Basket(address _l2) internal {
         if (msg.sender != owner()
             || isL2Basket[_l2])
             revert Unauthorized();
@@ -114,6 +125,7 @@ contract Basket is OFT, // LZ
         if (l2Deposits == 0) return 0;
         totalOut = BasketLib.distributeL2(
             l2Baskets, to, burned, total);
+
         l2Deposits -= Math.min(l2Deposits, totalOut);
     }
 
@@ -198,7 +210,8 @@ contract Basket is OFT, // LZ
         }
         if (total != amountSentLD) revert PayloadMismatch();
         super._update(msg.sender, address(0), total);
-  }
+    }
+    
     function _lzReceive(Origin calldata _origin,
         bytes32 _guid, bytes calldata _message,
         address, bytes calldata) internal override {
@@ -211,22 +224,33 @@ contract Basket is OFT, // LZ
         address to = _message.sendTo().bytes32ToAddress();
         uint8 msgType = MessageCodec.getMessageType(composeMsg);
         if (msgType == MessageCodec.RESOLUTION_REQUEST) {
-            if (_origin.srcEid != SOL_MAINNET_EID) revert WrongChain();
+            if (_origin.srcEid != SOLANA_EID) revert WrongChain();
             Court(court).receiveResolutionRequest(composeMsg);
             emit OFTReceived(_guid, _origin.srcEid, court, 0);
-        } else if (msgType == MessageCodec.JURY_COMPENSATION) {
-            if (_origin.srcEid != SOL_MAINNET_EID) revert WrongChain();
-            _handleJuryCompensation(_guid, _origin.srcEid, composeMsg);
-        } else require(_handleBasketTransfer(
-         composeMsg, to) == amountReceivedLD);
+        } 
+        else if (msgType == MessageCodec.JURY_COMPENSATION) {
+            if (_origin.srcEid != SOLANA_EID) revert WrongChain();
+            _handleJuryCompensation(_guid, _origin.srcEid, 
+                            composeMsg, amountReceivedLD);
+        } 
+        else if (msgType == MessageCodec.TRANSFER) {
+            if (_origin.srcEid != SOLANA_EID 
+             && _origin.srcEid != BASE_EID
+             && _origin.srcEid != ARBI_EID
+             && _origin.srcEid != POLY_EID) revert WrongChain();
+            require(_handleBasketTransfer(
+                            composeMsg, to) == amountReceivedLD);
+        } else revert BadType();
     }
 
     function _handleJuryCompensation(bytes32 _guid,
-        uint32 srcEid, bytes memory composeMsg) internal {
+        uint32 srcEid, bytes memory composeMsg, 
+        uint amountReceived) internal {
         (uint64 marketId, uint64 amountSolana) =
             MessageCodec.decodeJuryCompensation(composeMsg);
 
         uint amount = MessageCodec.toEthereumAmount(amountSolana);
+        require(amount == amountReceived, "amount mismatch"); 
         _mint(jury, currentMonth() + 1, amount);
 
         Jury(jury).receiveJuryFunds(marketId, amount);
@@ -242,7 +266,7 @@ contract Basket is OFT, // LZ
         if (msgType != MessageCodec.FINAL_RULING) revert BadType();
         // little train, wait for me; once was blind but now I see
 
-        uint32 dstEid = SOL_MAINNET_EID;
+        uint32 dstEid = SOLANA_EID;
         bytes memory options = BasketLib.buildOptions(msgType);
         MessagingFee memory fee = _quote(dstEid,
                     composeMsg, options, false);
@@ -259,14 +283,14 @@ contract Basket is OFT, // LZ
     }
 
     function _handleBasketTransfer(
-       bytes memory msg, address to)
-       internal returns (uint total) {
-        (uint[] memory ids,
-         uint[] memory amounts) = abi.decode(msg,
-                                (uint[], uint[]));
+      bytes memory msg, address to)
+      internal returns (uint total) {
+      (uint[] memory ids,
+       uint[] memory amounts) = abi.decode(msg,
+                              (uint[], uint[]));
 
-        if (ids.length != amounts.length
-         || ids.length == 0) revert MismatchedArrays();
+       if (ids.length != amounts.length
+        || ids.length == 0) revert MismatchedArrays();
 
         uint rate = this.decimalConversionRate();
         for (uint i = 0; i < ids.length; ++i) {
@@ -382,10 +406,12 @@ contract Basket is OFT, // LZ
                     totalSupplies[k] -= amt;
                 if (balanceOf[from][k] == 0)
                     perMonth[from].remove(k);
+                
                 amount -= amt; sent += amt;
             } i -= 1; // liable to be -1
         } // -1 means "no mature batches"
-        if (sent > 0) { super._update(from, to, sent);
+        if (sent > 0) { 
+            super._update(from, to, sent);
             // ^ should burn from totalSupply
             // if necessary (to = address(0))
             if (untouchables[from] > 0) {

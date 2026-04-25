@@ -326,7 +326,16 @@ contract Jury is ReentrancyGuard {
             for (uint i = 0; i < r.jurors.length; i++) {
                 if (commits[marketId][round][r.jurors[i]] != bytes32(0)) commitCount++;
             }
-            if (commitCount < REVEAL_SIZE) revert InsufficientCommits();
+            if (commitCount < REVEAL_SIZE) {
+                // Treat low participation as a hung jury — releases stakes
+                // via _handleHungJury → new voirDire → clears lockedStake.
+                r.finalized = true; // prevent re-entry
+                r.meetsThreshold = false;
+                r.unanimous = false;
+                r.verdict = new uint8[](0);
+                emit RoundFinalized(marketId, round);
+                return (r.verdict, false, false);
+            }
             if (headers.length < 2) revert InsufficientHeaders();
 
             bytes32 seed = RandaoLib.getHistoricalRandaoValue(block.number - 1, headers[0]);

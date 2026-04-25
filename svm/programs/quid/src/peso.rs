@@ -74,65 +74,81 @@ pub fn batch_reveal<'info>(ctx: Context<'_, '_, '_, 'info,
     Ok(())
 }
 
-/// Reveal logic — verifies commitment hashes, computes accuracy, builds buckets.
 fn _do_reveal(position: &mut Position, market: &mut Market,
     accuracy_buckets: &mut AccuracyBuckets, reveals: &[RevealEntry]) -> Result<()> {
-    require!(position.total_capital > 0, PithyQuip::InvalidPosition);
     require!(position.revealed_confidence == 0, PithyQuip::AlreadyRevealed);
-
+    require!(position.total_capital > 0, PithyQuip::InvalidPosition);
     let effective_end = market.resolution_time;
 
-    // Finalize capital_seconds up to resolution time
-    let mut total_capital_seconds = 0u128;
-    for entry in position.entries.iter_mut() {
-        let time_elapsed = (effective_end - entry.last_updated).max(0) as u128;
-        entry.capital_seconds = entry.capital_seconds
-            .saturating_add((entry.capital as u128).saturating_mul(time_elapsed));
-        entry.last_updated = effective_end;
-        total_capital_seconds = total_capital_seconds.saturating_add(entry.capital_seconds);
-    }
-    position.total_capital_seconds = total_capital_seconds;
-
-    // All entries must have commitments (zero hashes rejected at place_order)
+    // ── Single pass: finalize capital_seconds, verify commitments,
+    //    accumulate confidence and joint PAE×confidence signal ──────
     let revealable_count = position.entries.len();
     require!(reveals.len() == revealable_count, PithyQuip::InvalidRevealCount);
 
-    // Verify each commitment and accumulate confidence
+    let mut total_capital_seconds: u128 = 0;
     let mut weighted_confidence_sum: u128 = 0;
-    for (i, entry) in position.entries.iter().enumerate() {
-        let reveal = &reveals[i];
+    let mut weighted_joint_sum: u128 = 0; 
+    // (10_000 - price_at_entry) × confidence, capital-weighted
+    for (i, entry) in position.entries.iter_mut().enumerate() {
+        // Finalize capital_seconds up to resolution time
+        let time_elapsed = (effective_end - entry.last_updated).max(0) as u128;
+        entry.capital_seconds = entry.capital_seconds
+            .saturating_add((entry.capital as u128).saturating_mul(time_elapsed));
+        
+            entry.last_updated = effective_end;
+        total_capital_seconds = total_capital_seconds.saturating_add(entry.capital_seconds);
 
+        // Verify commitment...
+        let reveal = &reveals[i];
         let calculated_hash = hash_commitment_u64(reveal.confidence, reveal.salt);
         require!(calculated_hash == entry.commitment_hash,
                 PithyQuip::CommitmentVerificationFailed);
+
         require!(reveal.confidence >= 500
               && reveal.confidence <= 10_000
-              && reveal.confidence % 500 == 0, PithyQuip::InvalidConfidence);
+              && reveal.confidence % 500 == 0,
+              PithyQuip::InvalidConfidence);
 
+        let cap = entry.capital as u128;
+        let conf = reveal.confidence as u128;
+        // Capital-weighted confidence sum...
         weighted_confidence_sum = weighted_confidence_sum
-            .saturating_add((entry.capital as u128).saturating_mul(reveal.confidence as u128));
-    }
+            .saturating_add(cap.saturating_mul(conf));
 
-    let weighted_avg_confidence = (weighted_confidence_sum / position.total_capital as u128) as u64;
+        // Joint signal: how contrarian × how confident, per entry
+        // Only meaningful for losers, but we compute it unconditionally
+        // and discard for winners below — avoids a second loop.
+        let contrarian = 10_000u128.saturating_sub(entry.price_at_entry as u128);
+        let joint = contrarian.saturating_mul(conf) / 10_000;
+        weighted_joint_sum = weighted_joint_sum.saturating_add(cap.saturating_mul(joint));
+    }
+    position.total_capital_seconds = total_capital_seconds;
+    let total_cap = position.total_capital as u128;
+    let weighted_avg_confidence =
+        (weighted_confidence_sum / total_cap).min(10_000) as u64;
     position.revealed_confidence = weighted_avg_confidence;
 
-    // Raw accuracy: winners rewarded for high confidence, losers for low.
-    // winning_splits do NOT modulate accuracy — they determine pot allocation
-    // in push_payouts. Accuracy is purely about prediction calibration quality.
+    // Winners: pure confidence signal (PAE intentionally excluded —
+    //   applying it here would reward early timing regardless of
+    //   calibration, letting market-timers game the weight system).
+    // Losers: joint (contrarian × confidence) per entry, capital-weighted.
+    //   Rewards users who were both confident AND bought when the
+    //   implied price was low — genuine contrarian signal, not just
+    //   early timing or high confidence alone.
     let is_winner = market.winning_sides.contains(&position.outcome);
     position.accuracy_percentile = if is_winner {
         weighted_avg_confidence
     } else {
-        10_000u64.saturating_sub(weighted_avg_confidence)
+        (weighted_joint_sum / total_cap).min(10_000) as u64
     };
-
     accuracy_buckets.add_position(position.accuracy_percentile)?;
-
     if is_winner {
-        market.total_winner_capital_revealed = market.total_winner_capital_revealed
+        market.total_winner_capital_revealed = market
+            .total_winner_capital_revealed
             .saturating_add(position.total_capital);
     } else {
-        market.total_loser_capital_revealed = market.total_loser_capital_revealed
+        market.total_loser_capital_revealed = market
+            .total_loser_capital_revealed
             .saturating_add(position.total_capital);
     }
     market.positions_revealed += 1;

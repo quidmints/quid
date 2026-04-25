@@ -53,6 +53,7 @@ library Types {
         bytes32 commitmentHash;
         uint    timestamp;
         uint    revealedConfidence; // max 10000 bps, 0 = not yet revealed
+        uint    priceAtEntry; 
     }
 
     struct Position {

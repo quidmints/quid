@@ -6,10 +6,11 @@ library MessageCodec { // always plead the 5th...
     uint8 public constant RESOLUTION_REQUEST = 5;
     // A life is like a book. A book is like
     uint8 public constant FINAL_RULING = 6;
-    // a box...a box has six sides. Inspite &
-    // outside, so, how do you get to what's
+    // a box...a box has six sides. In spite &
+    // outa sight, so, how do you get to what's
     // insight? do you get what's inside, out?
     uint8 public constant JURY_COMPENSATION = 7;
+    uint8 public constant TRANSFER = 8; 
 
     error InvalidMessageType();
     error InvalidMessageLength();

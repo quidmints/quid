@@ -240,15 +240,22 @@ pub fn send_resolution_request(
     //   [7..]   = LZ send accounts
     require!(!ctx.remaining_accounts.is_empty(), PithyQuip::InsufficientAccounts);
     let chain_config_info = &ctx.remaining_accounts[0];
-    let chain_data = chain_config_info.try_borrow_data()?;
-    let chain_config = ChainConfig::try_deserialize(&mut chain_data.as_ref())
-        .map_err(|_| PithyQuip::InvalidPeer)?;
+    require!(chain_config_info.owner == &crate::ID, PithyQuip::InvalidPeer);
 
+    let chain_data = chain_config_info.try_borrow_data()?;
+    require!(chain_data.len() >= 12, PithyQuip::InvalidPeer);
+    let eid_bytes = u32::from_le_bytes(chain_data[8..12].try_into().unwrap()).to_be_bytes();
+    let (expected_pda, _) = Pubkey::find_program_address(&[CHAIN_SEED, &eid_bytes], &crate::ID);
+
+    let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
+                                         .map_err(|_| PithyQuip::InvalidPeer)?;
+    require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
+    
     require!(chain_config.active, PithyQuip::InvalidPeer);
     require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
 
     let jury_config = ctx.accounts.market_evidence.evidence.jury_config.as_ref()
-        .ok_or(PithyQuip::InvalidParameters)?;
+                                            .ok_or(PithyQuip::InvalidParameters)?;
 
     let request = ResolutionRequest { market_id: market.market_id,
         num_sides: market.outcomes.len() as u8, num_winners: market.num_winners,
@@ -333,7 +340,6 @@ pub fn cancel_jury_timeout(ctx: Context<CancelJuryTimeout>) -> Result<()> {
         clock.unix_timestamp >= requested_at + crate::state::JURY_TIMEOUT_SECS,
         PithyQuip::TooSoon
     );
-
     // Enter force majeure: cancelled = true, resolved = true so push_payouts
     // can run and return everyone's capital. winning_sides stays empty —
     // pago::push_payouts already handles the cancelled/force-majeure path.
@@ -350,7 +356,6 @@ pub fn cancel_jury_timeout(ctx: Context<CancelJuryTimeout>) -> Result<()> {
         market_key: market.key(),
         winning_sides: Vec::new(), // empty = force majeure signal
     });
-
     Ok(())
 }
 
@@ -365,15 +370,10 @@ pub fn cancel_jury_timeout(ctx: Context<CancelJuryTimeout>) -> Result<()> {
 ///   [3] = token program
 ///
 /// The OAppStore PDA (OAPP_STORE_SEED) must be the mint authority.
-pub fn handle_oft_receive<'a>(
-    store_key: Pubkey,
-    store_bump: u8,
-    chain_config: &ChainConfig,
-    message: &[u8],
-    mint_info: &AccountInfo<'a>,
-    recipient_info: &AccountInfo<'a>,
-    token_prog: &AccountInfo<'a>,
-) -> Result<()> {
+pub fn handle_oft_receive<'a>(store_key: Pubkey,
+    store_bump: u8, chain_config: &ChainConfig,
+    message: &[u8], mint_info: &AccountInfo<'a>,
+    recipient_info: &AccountInfo<'a>, token_prog: &AccountInfo<'a>) -> Result<()> {
     require!(message.len() >= OFT_BRIDGE_MSG_LEN, PithyQuip::InvalidMessageFormat);
     require!(chain_config.mint != Pubkey::default(), PithyQuip::InvalidParameters);
 
@@ -386,10 +386,8 @@ pub fn handle_oft_receive<'a>(
     require!(amount_sd > 0, PithyQuip::InvalidParameters);
 
     let recipient_pubkey = Pubkey::from(to_bytes);
-
     // Verify mint matches registered chain mint
     require!(mint_info.key() == chain_config.mint, PithyQuip::InvalidMint);
-
     // Verify token account belongs to the declared recipient
     {
         let ata_data = recipient_info.try_borrow_data()?;
@@ -399,7 +397,6 @@ pub fn handle_oft_receive<'a>(
             .map_err(|_| PithyQuip::InvalidParameters)?;
         require!(acct_owner == recipient_pubkey, PithyQuip::InvalidParameters);
     }
-
     // Convert SD → local decimals
     let amount_local = amount_sd.checked_mul(SD_TO_LOCAL)
         .ok_or(PithyQuip::InvalidParameters)?;
@@ -407,7 +404,6 @@ pub fn handle_oft_receive<'a>(
     // Mint QD to recipient using OAppStore PDA as mint authority
     let seeds: &[&[u8]] = &[OAPP_STORE_SEED, &[store_bump]];
     let signer_seeds = &[seeds];
-
     let mint_ix = anchor_lang::solana_program::instruction::Instruction {
         program_id: *token_prog.key,
         accounts: vec![
@@ -423,22 +419,14 @@ pub fn handle_oft_receive<'a>(
             d
         },
     };
-
-    anchor_lang::solana_program::program::invoke_signed(
-        &mint_ix,
-        &[mint_info.clone(), recipient_info.clone()],
-        signer_seeds,
-    )?;
-
-    emit!(QDBridgeReceived {
-        recipient: recipient_pubkey,
-        amount_sd,
-        amount_local,
-    });
+    anchor_lang::solana_program::program::invoke_signed(&mint_ix,
+        &[mint_info.clone(), recipient_info.clone()], signer_seeds)?;
+    
+    emit!(QDBridgeReceived { recipient: recipient_pubkey,
+                             amount_sd, amount_local });
 
     msg!("QD bridge: {} SD → {} local units minted to {}",
-        amount_sd, amount_local, recipient_pubkey);
-    Ok(())
+        amount_sd, amount_local, recipient_pubkey); Ok(())
 }
 
 #[event]
@@ -450,13 +438,11 @@ pub struct QDBridgeReceived {
 
 /// Apply a jury FinalRuling to a market.
 /// Handles normal resolution and force majeure.
-pub fn process_final_ruling(
-    ruling: &FinalRuling,
-    market: &mut Market,
-    _market_key: &Pubkey,
-    timestamp: i64,
-) -> Result<()> {
-    require!(!market.resolution_received, PithyQuip::AlreadyResolved);
+pub fn process_final_ruling(ruling: &FinalRuling,
+    market: &mut Market, _market_key: &Pubkey,
+    timestamp: i64) -> Result<()> {
+    require!(!market.resolution_received, 
+            PithyQuip::AlreadyResolved);
 
     if ruling.is_force_majeure() {
         market.cancelled = true;
@@ -465,7 +451,6 @@ pub fn process_final_ruling(
     } else {
         market.winning_sides = ruling.winning_sides.clone();
     }
-
     market.resolution_received = true;
     market.resolution_finalized = timestamp;
     Ok(())
@@ -492,23 +477,30 @@ pub fn send_jury_compensation(ctx: Context<SendJuryCompensation>) -> Result<()> 
     require!(market.resolution_finalized > 0,
             PithyQuip::ResolutionNotFinal);
 
-    let amount = market.jury_fee_pool;
     market.jury_fee_pool = 0;
+    let amount = market.jury_fee_pool;
     let compensation = JuryCompensation {
-        market_id: market.market_id, amount };
+    market_id: market.market_id, amount };
+    
     let compose_msg = compensation.encode();
     let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED,
                 &[ctx.accounts.oapp_store.bump]]];
 
     // remaining_accounts: [0] = ChainConfig, [1..6] = quote, [7..] = send
     let chain_config_info = &ctx.remaining_accounts[0];
-    let chain_data = chain_config_info.try_borrow_data()?;
-    let chain_config = ChainConfig::try_deserialize(&mut chain_data.as_ref())
-        .map_err(|_| PithyQuip::InvalidPeer)?;
+    require!(chain_config_info.owner == &crate::ID, PithyQuip::InvalidPeer);
 
-    require!(chain_config.active
-    && chain_config.peer_address != [0u8; 32],
-                PithyQuip::PeerNotConfigured);
+    let chain_data = chain_config_info.try_borrow_data()?;
+    require!(chain_data.len() >= 12, PithyQuip::InvalidPeer);
+    let eid_bytes = u32::from_le_bytes(chain_data[8..12].try_into().unwrap()).to_be_bytes();
+    let (expected_pda, _) = Pubkey::find_program_address(&[CHAIN_SEED, &eid_bytes], &crate::ID);
+
+    let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
+                                         .map_err(|_| PithyQuip::InvalidPeer)?;
+    require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
+    
+    require!(chain_config.active, PithyQuip::InvalidPeer);
+    require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
 
     let message = wrap_in_oft_format(compose_msg, chain_config.peer_address);
     let options = chain_config.enforced_options.get_enforced_options(&None::<Vec<u8>>);

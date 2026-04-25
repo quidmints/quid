@@ -80,10 +80,19 @@ pub struct ProgramConfig {
     /// JAM settlement program authority PDA.
     /// flash_borrow requires flash_authority.key() == this field.
     /// Pubkey::default() = flash loans disabled.
-    /// SENSITIVE: resetting this to an attacker-controlled key grants
-    ///   the ability to initiate unlimited flash loans draining all vaults.
-    ///   Must only be changeable via Squads proposal with 48h time_lock.
+    /// SENSITIVE: never written directly after init. All rotations go through
+    ///   update_config (stage) → accept_bebop_authority (commit after 48 h).
+    ///   The on-chain delay gives depositors time to exit before a compromised
+    ///   admin key can activate a malicious flash-loan authority.
     pub bebop_authority: Pubkey,
+    /// Staged replacement for bebop_authority. Set by update_config;
+    /// committed to bebop_authority only after BEBOP_ROTATION_DELAY elapses.
+    /// None = no rotation in progress.
+    pub pending_bebop_authority: Option<Pubkey>,
+    /// Unix timestamp when the current pending rotation was proposed.
+    /// 0 when no rotation is staged.
+    pub bebop_authority_pending_since: i64,
+    pub config_version: u32,
 }
 
 impl ProgramConfig {
@@ -93,7 +102,10 @@ impl ProgramConfig {
         + 32  // token_mint
         + 64  // registered_mints [2]
         + 1   // bump
-        + 32; // bebop_authority  → 201 bytes
+        + 32  // bebop_authority
+        + 33  // pending_bebop_authority (Option<Pubkey>)
+        + 8  // bebop_authority_pending_since
+        + 4; // config_version...total 246
 }
 
 /// Verify that a Switchboard Pull Feed was signed by the trusted oracle function.
@@ -101,10 +113,7 @@ impl ProgramConfig {
 /// is parsed by the Switchboard SDK, which verifies program ownership implicitly.
 pub fn verify_trusted_feed(
     feed_data: &switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData,
-    config: &ProgramConfig,
-) -> bool {
-    feed_data.authority == config.orchestrator
-}
+    config: &ProgramConfig) -> bool { feed_data.authority == config.orchestrator }
 
 /// After resolution, users have 24 hours to reveal commitments.
 /// During this window, unrevealed positions are skipped (not yet forfeited).
@@ -659,23 +668,20 @@ impl AccuracyBuckets {
     /// With ≤1 total positions, percentile ranking is meaningless —
     /// return midpoint (5000) to avoid degenerate weight=0 outcomes
     /// where a solo winner gets no share of the pot.
-    pub fn calculate_percentile(&self, accuracy: u64, total_positions: u64) -> u64 {
+    pub fn calculate_percentile(&self, accuracy: u64, 
+            total_positions: u64) -> u64 {
+                
         if total_positions <= 1 { return 5000; }
         let bucket_idx = ((accuracy as usize)
             .saturating_mul(Self::NUM_BUCKETS) / 10_001)
             .min(Self::NUM_BUCKETS - 1);
-        let mut positions_below = 0u64;
-        for i in 0..bucket_idx {
-            if i < self.buckets.len() {
-                positions_below = positions_below.saturating_add(self.buckets[i]);
-            }
-        }
-        if bucket_idx < self.buckets.len() {
-            positions_below = positions_below.saturating_add(self.buckets[bucket_idx] / 2);
-        }
-        ((positions_below as u128)
-            .saturating_mul(10_000) / (total_positions as u128))
-            .min(10_000) as u64
+     
+        let positions_below_x2 = self.buckets[..bucket_idx].iter()
+            .fold(0u64, |acc, &b| acc.saturating_add(b).saturating_add(b))
+            + self.buckets.get(bucket_idx).copied().unwrap_or(0);
+
+        ((positions_below_x2 as u128).saturating_mul(10_000) / 
+        ((total_positions as u128).saturating_mul(2))).min(10_000) as u64
     }
 }
 
@@ -687,6 +693,13 @@ pub struct PositionEntry {
     pub capital_seconds: u128,
     pub last_updated: i64,
     pub commitment_hash: [u8; 32],
+    /// LMSR TWAP price for this outcome at order placement time, in BPS (0–10_000).
+    /// A Bellman continuation value depends on both time remaining AND current price —
+    /// entries at 0.50 hold maximum optionality; entries near 0.90 hold almost none.
+    /// Storing this lets the reveal phase score genuine information edge (confidence
+    /// vs. market consensus) rather than raw calibration accuracy alone.
+    /// Zero = legacy entry predating this field; edge bonus is skipped for those.
+    pub price_at_entry: u16,
 }
 
 /// Position PDA — one per (market, user, outcome).
@@ -714,8 +727,11 @@ pub struct Position {
 }
 
 impl Position { pub const MAX_ENTRIES: usize = 20;
+    // PositionEntry layout (Borsh): capital(8) + tokens(8) + timestamp(8)
+    //   + capital_seconds(16) + last_updated(8) + commitment_hash(32)
+    //   + price_at_entry(2) = 82 bytes
     pub const SPACE: usize = 8 + 32 + 32 + 1 + 8 + 8 + 16
-        + 4 + (Self::MAX_ENTRIES * 80) + 8 + 8 + 16 + 33 + 1;
+        + 4 + (Self::MAX_ENTRIES * 82) + 8 + 8 + 16 + 33 + 1;
 }
 
 pub fn hash_commitment_u64(confidence: u64, salt: [u8; 32]) -> [u8; 32] {
@@ -1192,23 +1208,26 @@ pub fn calculate_time_decay(position_duration: i64,
         .saturating_mul(10_000) / (market_duration as u128))
         .min(10_000) as u64;
 
-    if lambda <= 100 { return participation; }
-
-    if lambda <= 200 {
+    if lambda < 100 { return participation; }
+    if lambda < 200 {
         let t = lambda - 100;
         let linear = participation as u128;
         let quad = (participation as u128)
             .saturating_mul(participation as u128) / 10_000;
-        return ((linear.saturating_mul((100 - t) as u128)
-            .saturating_add(quad.saturating_mul(t as u128))) / 100) as u64;
+        return (linear.saturating_mul((100 - t) as u128)
+            .saturating_add(quad.saturating_mul(t as u128)) / 100) as u64;
     }
-
-    let quad = ((participation as u128)
-        .saturating_mul(participation as u128) / 10_000) as u64;
-    let cubic = ((quad as u128)
-        .saturating_mul(participation as u128) / 10_000) as u64;
-
-    cubic.max(1000)
+    // C⁰-continuous at λ=200: blend starts at pure quadratic (matches branch above)
+    // and transitions to quartic as λ→1000. Replaces the old cubic + hard floor 1000
+    // which made all entries below ~31.6% participation indistinguishable.
+    let p = participation as u128;
+    let blend = ((lambda - 200) as u128).min(800) * 10_000 / 800;
+    let quadratic = p * p / 10_000;
+    let quartic   = p * p / 10_000 * p / 10_000 * p / 10_000;
+    let blended = (quadratic * (10_000 - blend) / 10_000
+        + quartic * blend / 10_000).min(10_000) as u64;
+    let floor = (participation / 2).max(100);
+    blended.max(floor)
 }
 
 // =============================================================================
@@ -1255,7 +1274,7 @@ pub struct DeviceEnrollment {
     /// device_pubkey, and to allow revocation. Nothing else is stored because
     /// nothing else needs to be re-checked on-chain after enrollment.
     pub device_pubkey: Pubkey,
-
+    pub config_version: u32,
     pub revoked: bool, // admin or device owner can revoke; blocks submit_evidence immediately
     pub bump: u8,
 }
@@ -1264,11 +1283,13 @@ impl DeviceEnrollment {
     pub const SPACE: usize = 8
         + 32  // device_pubkey
         + 1   // revoked
-        + 1;  // bump  → 42 bytes
+        + 4   // config_version
+        + 1;  // bump  → 46 bytes
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct EnrollDeviceParams {
     /// StrongBox-generated Ed25519 pubkey for this device.
     pub device_pubkey: Pubkey,
+    pub config_version: u32, 
 }

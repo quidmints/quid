@@ -173,7 +173,7 @@ contract Aux is // Auxiliary
         address _redeemer) external onlyOwner {
         SPOKE = _spoke; HUB = _hub; // AAVEv4...
         ADAPTER = _adapter; REDEEMER = _redeemer;
-        QUID = Basket(_quid); // top ten stables
+        QUID = Basket(_quid); renounceOwnership();
         LINK = address(QUID.LINK()); JAM = _jam;
         USDC.approve(v3Router, type(uint).max);
         WETH.approve(v3Router, type(uint).max);
@@ -313,37 +313,31 @@ contract Aux is // Auxiliary
                                    amount, address(this));
             /*_supplyAAVE(address(WETH), amount,
             address(this));*/ vogueETH += amount;
-        }
-        else if (op == 1) { // take
+        } else if (op == 1) { // take
             amount = Math.min(amount, vogueETH);
             if (amount == 0) return 0;
             uint weETHAmount = IWeETH(WEETH).getWeETHByeETH(amount);
             uint weETHBal = IERC20(WEETH).balanceOf(address(this));
             if (weETHAmount > weETHBal) weETHAmount = weETHBal;
             if (weETHAmount == 0) return 0;
-
             if (IEtherFiRedemptionManager(REDEEMER).canRedeem(weETHAmount, address(0))) {
                 uint ethBefore = address(this).balance;
                 IEtherFiRedemptionManager(REDEEMER).redeemWeEth(
-                    weETHAmount, address(this), address(0));
+                         weETHAmount, address(this), address(0));
+                
                 sent = address(this).balance - ethBefore;
             } else {
                 uint expectedEth = IWeETH(WEETH).getEETHByWeETH(weETHAmount);
                 sent = IV3SwapRouter(v3Router).exactInputSingle(
-                    IV3SwapRouter.ExactInputSingleParams({
-                        tokenIn: WEETH,
-                        tokenOut: address(WETH),
-                        fee: 500,
-                        recipient: address(this),
-                        amountIn: weETHAmount,
-                        amountOutMinimum: expectedEth * 99 / 100,
-                        sqrtPriceLimitX96: 0
+                    IV3SwapRouter.ExactInputSingleParams({ tokenIn: WEETH, tokenOut: address(WETH),
+                        fee: 500, recipient: address(this), amountIn: weETHAmount, 
+                        amountOutMinimum: expectedEth * 99 / 100, sqrtPriceLimitX96: 0
                     }));
                 WETH.withdraw(sent);
             }
-
             vogueETH -= Math.min(sent, vogueETH);
-            (bool ok, ) = payable(msg.sender).call{value: sent}("");
+            (bool ok, ) = payable(msg.sender).call{
+                                        value: sent}("");
             require(ok, "transfer failed");
         } else { _syncETH(); sent = vogueETH; }
     }
