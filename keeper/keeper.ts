@@ -1090,10 +1090,15 @@ class QuidKeeper {
         }
 
         // ── Step 3: Reveal window — auto-reveal jury votes ──
-        if (roundStart > 0 && now >= roundStart + CONFIG.COMMIT_PERIOD
+        // Guard: eligibleBlock > 0 confirms progressToJurySelection succeeded.
+        // Without this, roundStart > 0 combined with a failed jury selection
+        // means now >= roundStart + COMMIT_PERIOD is trivially true, firing
+        // spurious reveal attempts every cycle indefinitely.
+        if (Number(eligibleBlock) > 0 && roundStart > 0
+            && now >= roundStart + CONFIG.COMMIT_PERIOD
             && now <= roundStart + CONFIG.COMMIT_PERIOD + CONFIG.REVEAL_WINDOW) {
-          await this.autoRevealJuryVotes(chainId, marketId, currentRound)
-          continue
+            await this.autoRevealJuryVotes(chainId, marketId, currentRound)
+            continue
         }
 
         // ── Step 2: Commit period — wait ──
