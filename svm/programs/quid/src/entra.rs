@@ -1,28 +1,42 @@
+
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    self, Mint, TokenAccount,
-    TokenInterface, TransferChecked
+    TokenInterface, TransferChecked,
+    self, Mint, TokenAccount
 };
+
 use switchboard_on_demand::prelude::rust_decimal::prelude::ToPrimitive;
-use crate::stay::*;
-use crate::state::*;
-use crate::etc::{ get_hex,
-    PithyQuip, TickerRisk, SECONDS_PER_HOUR,
+use crate::etc::{ get_hex, PithyQuip, TickerRisk, SECONDS_PER_HOUR,
     SECONDS_PER_DAY, update_price_accumulator,
-    get_twap_price, get_price_deviation };
+    get_twap_price, get_price_deviation 
+};
+
+use crate::stay::*; use crate::state::*;
+use anchor_lang::solana_program::{
+    program::invoke_signed, 
+    system_instruction,
+    sysvar::instructions::{
+        load_current_index_checked, 
+        load_instruction_at_checked,
+        ID as INSTRUCTIONS_SYSVAR_ID 
+    }
+};
 
 #[derive(Accounts)]
 pub struct InitConfig<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
 
-    #[account(init, payer = admin, space = ProgramConfig::SPACE,
+    #[account(init, payer = admin, 
+        space = ProgramConfig::SPACE,
         seeds = [b"program_config"], bump)]
     pub config: Account<'info, ProgramConfig>,
 
-    /// Flash loan state — separate from Depository so core accounting is
+    /// Flash loan state — separate from 
+    /// Depository so core accounting is
     /// never polluted with mid-tx sentinel values.
-    #[account(init, payer = admin, space = 8 + FlashLoan::INIT_SPACE,
+    #[account(init, payer = admin, 
+        space = 8 + FlashLoan::INIT_SPACE,
         seeds = [b"flash_loan"], bump)]
     pub flash_loan: Box<Account<'info, FlashLoan>>,
 
@@ -33,32 +47,32 @@ pub struct InitConfig<'info> {
 // with the hot deploy key to transfer admin to the Squads multisig.
 // After that transfer, all config changes require Squads threshold + 48h timelock.
 pub fn init_config(ctx: Context<InitConfig>,
-    orchestrator: Pubkey,
-    token_mint: Pubkey) -> Result<()> {
+    orchestrator: Pubkey, token_mint: Pubkey) -> Result<()> {
     let config = &mut ctx.accounts.config;
     config.admin = ctx.accounts.admin.key();
     config.orchestrator = orchestrator;
     config.token_mint = token_mint;
-    config.registered_mints = [token_mint, USD_STAR];
-    config.bump = ctx.bumps.config;
+    config.bump = ctx.bumps.config; 
+    config.registered_mints = [
+          token_mint, USD_STAR];
     Ok(())
 }
 
 #[derive(Accounts)]
 pub struct UpdateConfig<'info> {
-    #[account(mut, constraint = admin.key() == config.admin
-        @ PithyQuip::Unauthorized)]
+    #[account(mut, 
+        constraint = admin.key() == config.admin @ PithyQuip::Unauthorized)]
     pub admin: Signer<'info>,
 
-    #[account(mut, seeds = [b"program_config"], bump = config.bump)]
+    #[account(mut, 
+        seeds = [b"program_config"], 
+        bump = config.bump)]
     pub config: Account<'info, ProgramConfig>,
 }
 
 pub fn update_config(ctx: Context<UpdateConfig>,
-    new_orchestrator: Option<Pubkey>,
-    new_admin: Option<Pubkey>,
-    set_bebop_authority: Option<Pubkey>,
-) -> Result<()> {
+    new_orchestrator: Option<Pubkey>, new_admin: Option<Pubkey>,
+    set_bebop_authority: Option<Pubkey>) -> Result<()> {
     let config = &mut ctx.accounts.config;
     if let Some(func) = new_orchestrator {
         // SENSITIVE: replaces the trusted oracle source for all risk calculations.
@@ -90,13 +104,12 @@ pub const BEBOP_ROTATION_DELAY: i64 = 48 * 60 * 60;
 /// Callable by admin only, and only after BEBOP_ROTATION_DELAY has elapsed
 /// since the matching update_config call. Clears the pending fields on commit.
 pub fn accept_bebop_authority(ctx: Context<UpdateConfig>) -> Result<()> {
-    let config = &mut ctx.accounts.config;
+    let config = &mut ctx.accounts.config; let clock = Clock::get()?;
     let pending = config.pending_bebop_authority
         .ok_or(error!(PithyQuip::InvalidParameters))?;
-    let clock = Clock::get()?;
-    require!(
-        clock.unix_timestamp.saturating_sub(config.bebop_authority_pending_since)
-            >= BEBOP_ROTATION_DELAY,
+    
+    require!(clock.unix_timestamp.saturating_sub(
+            config.bebop_authority_pending_since) >= BEBOP_ROTATION_DELAY,
         PithyQuip::TradingFrozen // timelock window not yet elapsed
     );
     config.bebop_authority = pending;
@@ -148,13 +161,14 @@ pub struct Stockup<'info> {
 
 pub fn handle_in(ctx: Context<Stockup>,
     amount: u64, ticker: String) -> Result<()> {
-    require!(amount >= 100_000_000, PithyQuip::InvalidAmount);
+    require!(amount >= 100_000_000, 
+        PithyQuip::InvalidAmount);
 
     let bank = &mut ctx.accounts.bank;
     let clock = Clock::get()?;
     let right_now = clock.unix_timestamp;
-    let customer = &mut ctx.accounts.depositor;
 
+    let customer = &mut ctx.accounts.depositor;
     let transfer_cpi_accounts = TransferChecked {
         from: ctx.accounts.quid.to_account_info(),
         mint: ctx.accounts.mint.to_account_info(),
@@ -163,16 +177,18 @@ pub fn handle_in(ctx: Context<Stockup>,
     };
     let decimals = ctx.accounts.mint.decimals;
     let cpi_program = ctx.accounts.token_program.to_account_info();
-    let cpi_ctx = CpiContext::new(cpi_program, transfer_cpi_accounts);
-    token_interface::transfer_checked(cpi_ctx, amount, decimals)?;
+    let cpi_ctx = CpiContext::new(cpi_program, 
+            transfer_cpi_accounts);
+
+    token_interface::transfer_checked(
+            cpi_ctx, amount, decimals)?;
 
     if customer.owner == Pubkey::default() {
         customer.owner = ctx.accounts.signer.key();
     }
     if ticker.is_empty() {
         // Pool deposit — reuses pool_deposit() from Depositor impl
-        customer.pool_deposit(bank, amount, right_now);
-        return Ok(());
+        customer.pool_deposit(bank, amount, right_now); return Ok(());
     } else { // Stock position — pledge collateral to specific ticker
         customer.accrue(bank, right_now);
         let t: &str = ticker.as_str();
@@ -186,12 +202,10 @@ pub fn handle_in(ctx: Context<Stockup>,
                 risk.actuary.obs_count = 10; // bootstrap: 50% confidence
             }
         }
-        customer.renege(Some(t),
-            amount as i64, None, right_now)?;
-    }
-    customer.last_updated = right_now;
-    bank.last_updated = right_now;
-    Ok(())
+        customer.renege(Some(t), amount as i64, 
+                        None, right_now)?;
+    } customer.last_updated = right_now;
+    bank.last_updated = right_now; Ok(())
 }
 
 #[derive(Accounts)]
@@ -236,8 +250,8 @@ pub struct CreateMarket<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>,
-    params: CreateMarketParams) -> Result<()> {
+pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, 
+    CreateMarket<'info>>, params: CreateMarketParams) -> Result<()> {
     let clock = Clock::get()?;
     let bank = &mut ctx.accounts.bank;
     let market = &mut ctx.accounts.market;
@@ -258,9 +272,9 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
              PithyQuip::InsufficientAccounts);
 
     let validation_feed_info = &ctx.remaining_accounts[0];
-    let validation_feed = switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData
-        ::parse(validation_feed_info.try_borrow_data()?)
-        .map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
+    let validation_feed = switchboard_on_demand::on_demand::accounts
+        ::pull_feed::PullFeedAccountData::parse(validation_feed_info.try_borrow_data()?)
+                                    .map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
 
     // Verify validation feed was generated by trusted oracle function
     require!(verify_trusted_feed(&validation_feed, &ctx.accounts.config),
@@ -268,16 +282,15 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
 
     let val_value = validation_feed.get_value(
         SB_MAX_STALE_SLOTS * 10, u64::MAX, // allow 20 min staleness for validation
-        SB_MIN_SAMPLES, true,
-    ).map_err(|_| error!(PithyQuip::InvalidParameters))?;
+        SB_MIN_SAMPLES, true).map_err(|_| error!(PithyQuip::InvalidParameters))?;
+    
     let val_raw = val_value.to_u64().unwrap_or(0);
-
     // Validation encoding: content_tag * 1_000_000_000_000 + result * 100_000 + score
     // content_tag = SHA256(question || context || exculpatory || outcomes)[0..3]
     // This binds the feed to the SPECIFIC question content. Creator can't
     // validate question A then create market with question B.
-    const TAG: u64 = 1_000_000_000_000;
-    const CONF: u64 = 100_000;
+    const TAG: u64 = 1_000_000_000_000; const CONF: u64 = 100_000;
+
     let validation_tag = val_raw / TAG;
     let validation_payload = val_raw % TAG;
     let validation_result = validation_payload / CONF;
@@ -288,47 +301,61 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
     content_bytes.extend_from_slice(params.question.as_bytes());
     content_bytes.extend_from_slice(params.context.as_bytes());
     content_bytes.extend_from_slice(params.exculpatory.as_bytes());
+    
     for o in params.outcomes.iter() {
         content_bytes.extend_from_slice(o.as_bytes());
     }
-    let content_hash = solana_program::keccak::hashv(&[&content_bytes]).to_bytes();
-    let expected_tag = u32::from_le_bytes([
-        content_hash[0],
-        content_hash[1],
-        content_hash[2],
-        0, // 24-bit tag
+    let content_hash = solana_program::keccak::hashv(
+                        &[&content_bytes]).to_bytes();
+
+    let expected_tag = u32::from_le_bytes([content_hash[0],
+        content_hash[1], content_hash[2], 0, // 24-bit tag
     ]) as u64;
 
-    require!(validation_tag == expected_tag, PithyQuip::InvalidMarketBinding);
+    require!(validation_tag == expected_tag, 
+            PithyQuip::InvalidMarketBinding);
     // Must be APPROVED (result = 1) with sufficient quality score
-    require!(validation_result == 1, PithyQuip::QuestionNotResolvable);
-    require!(validation_score >= MIN_VALIDATION_SCORE, PithyQuip::QuestionNotResolvable);
+    require!(validation_result == 1, 
+    PithyQuip::QuestionNotResolvable);
+
+    require!(validation_score >= MIN_VALIDATION_SCORE, 
+                PithyQuip::QuestionNotResolvable);
+
     require!(!params.question.is_empty()
-          && params.question.len() <= 500, PithyQuip::InvalidParameters);
+          && params.question.len() <= 500, 
+          PithyQuip::InvalidParameters);
 
     // Context required — definitions, condition precedents
     require!(!params.context.is_empty()
-          && params.context.len() <= 1000, PithyQuip::InvalidParameters);
+          && params.context.len() <= 1000, 
+          PithyQuip::InvalidParameters);
 
     // Exculpatory clauses required — force majeure handling
     require!(!params.exculpatory.is_empty()
-          && params.exculpatory.len() <= 1000, PithyQuip::InvalidParameters);
+          && params.exculpatory.len() <= 1000, 
+            PithyQuip::InvalidParameters);
 
-    // Resolution source (optional but bounded)
+    let outcomes = &params.outcomes; // Resolution source (optional but bounded)
     require!(params.resolution_source.len() <= 200, PithyQuip::InvalidParameters);
     // Validate outcomes: 2–20, each non-empty and ≤ 100 chars, no duplicates
-    let outcomes = &params.outcomes;
-    require!(outcomes.len() >= 2 && outcomes.len() <= 20, PithyQuip::InvalidParameters);
+    require!(outcomes.len() >= 2 
+          && outcomes.len() <= 20, 
+    PithyQuip::InvalidParameters);
+
     for (i, o) in outcomes.iter().enumerate() {
-        require!(!o.is_empty() && o.len() <= 100, PithyQuip::InvalidParameters);
+        require!(!o.is_empty() && o.len() <= 100, 
+                    PithyQuip::InvalidParameters);
+
         for j in (i + 1)..outcomes.len() {
-            require!(o != &outcomes[j], PithyQuip::DuplicateOutcome);
+            require!(o != &outcomes[j], 
+            PithyQuip::DuplicateOutcome);
         }
     }
     let num_outcomes = outcomes.len() as u8;
     let duration = params.deadline - right_now;
     require!(duration >= 24 * SECONDS_PER_HOUR
-          && duration <= 365 * SECONDS_PER_DAY, PithyQuip::InvalidParameters);
+          && duration <= 365 * SECONDS_PER_DAY, 
+                PithyQuip::InvalidParameters);
 
     require!(params.creator_bond >= MIN_CREATOR_BOND_LAMPORTS,
              PithyQuip::OrderTooSmall);
@@ -361,7 +388,8 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
     if !params.beneficiaries.is_empty() {
         require!(params.beneficiaries.len() == outcomes.len(),
                  PithyQuip::InvalidParameters);
-        // If winning_splits is set, each split-receiving outcome needs a beneficiary
+        // If winning_splits is set, each 
+        // split-receiving outcome needs a beneficiary
         if !params.winning_splits.is_empty() {
             for (i, &split) in params.winning_splits.iter().enumerate() {
                 if split > 0 {
@@ -375,13 +403,11 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
     // remaining_accounts[0] = validation feed, remaining_accounts[1] = resolution feed
     // (len >= 2 already required above)
     let resolution_feed_info = &ctx.remaining_accounts[1];
-    require!(resolution_feed_info.key() == params.sb_feed,
-             PithyQuip::InvalidParameters);
+    require!(resolution_feed_info.key() == params.sb_feed, PithyQuip::InvalidParameters);
+    
     let resolution_feed = switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData
-        ::parse(resolution_feed_info.try_borrow_data()?)
-        .map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
-    require!(verify_trusted_feed(&resolution_feed, &ctx.accounts.config),
-             PithyQuip::InvalidAccountOwner);
+        ::parse(resolution_feed_info.try_borrow_data()?).map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
+    require!(verify_trusted_feed(&resolution_feed, &ctx.accounts.config), PithyQuip::InvalidAccountOwner);
 
     let lambda_f64 = calculate_adaptive_lambda(duration, num_outcomes as usize);
     let lambda = (lambda_f64 * 100.0).clamp(10.0, 1000.0) as u64;
@@ -389,7 +415,8 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info, CreateMarket<'info>>
     // Initialize accuracy buckets
     let buckets = &mut ctx.accounts.accuracy_buckets;
     buckets.market = market.key();
-    buckets.buckets = vec![0u64; AccuracyBuckets::NUM_BUCKETS];
+    buckets.buckets = vec![0u64; 
+    AccuracyBuckets::NUM_BUCKETS];
     buckets.bump = ctx.bumps.accuracy_buckets;
 
     // Initialize market
@@ -531,16 +558,15 @@ pub fn place_order(ctx: Context<PlaceOrder>,
     let right_now = clock.unix_timestamp;
     let commitment_hash = params.commitment_hash;
 
-    require!(!market.resolved && !market.cancelled, PithyQuip::TradingFrozen);
-    require!(right_now < market.deadline, PithyQuip::TradingClosed);
     require!(capital >= 1000, PithyQuip::OrderTooSmall);
+    require!(right_now < market.deadline, PithyQuip::TradingClosed);
+    require!(!market.resolved && !market.cancelled, PithyQuip::TradingFrozen);
     require!((outcome as usize) < market.outcomes.len(), PithyQuip::InvalidParameters);
     // Zero commitment hash would break reveal math — _do_reveal excludes
     // zero-hash entries from confidence sum but total_capital includes them,
     // deflating the weighted average. Old code handled this for rollovers
     // (assigning neutral confidence 5000); we removed rollovers, so reject.
     require!(commitment_hash != [0u8; 32], PithyQuip::InvalidParameters);
-
     // ─────────────────────────────────────────────────────────────
     // TWAP MANIPULATION RESISTANCE
     // ─────────────────────────────────────────────────────────────
@@ -548,7 +574,6 @@ pub fn place_order(ctx: Context<PlaceOrder>,
     let max_deviation_bps = params.max_deviation_bps.unwrap_or(300);
     let deviation = get_price_deviation(market, outcome, right_now);
     require!(deviation <= max_deviation_bps, PithyQuip::PriceManipulated);
-
     // ─────────────────────────────────────────────────────────────
     // FUND THE BET
     // ─────────────────────────────────────────────────────────────
@@ -564,7 +589,6 @@ pub fn place_order(ctx: Context<PlaceOrder>,
         (depositor.deposited_quid as u128);
         depositor.last_updated = right_now;
     }
-
     let total_needed = capital;
     let from_depositor = depositor.deposited_quid.min(total_needed);
     let from_cpi = total_needed.saturating_sub(from_depositor);
@@ -586,9 +610,9 @@ pub fn place_order(ctx: Context<PlaceOrder>,
                 authority: ctx.accounts.user.to_account_info(),
             },
         );
-        token_interface::transfer_checked(transfer_ctx, from_cpi, decimals)?;
+        token_interface::transfer_checked(
+         transfer_ctx, from_cpi, decimals)?;
     }
-
     // ─────────────────────────────────────────────────────────────
     // LMSR PRICING + POSITION UPDATE
     // ─────────────────────────────────────────────────────────────
@@ -596,11 +620,10 @@ pub fn place_order(ctx: Context<PlaceOrder>,
     let net_capital = capital - creator_fee as u64;
 
     market.liquidity = calculate_adaptive_liquidity(market, right_now);
-
     let current_price = get_twap_price(market, outcome, right_now);
     let tokens_bought = (net_capital as f64 / current_price) as u64;
-
     require!(tokens_bought > 0, PithyQuip::OrderTooSmall);
+
     if position.market == Pubkey::default() {
         position.market = market.key();
         position.user = ctx.accounts.user.key();
@@ -618,13 +641,10 @@ pub fn place_order(ctx: Context<PlaceOrder>,
     }
     require!(position.entries.len() < Position::MAX_ENTRIES,
                                 PithyQuip::TooManyEntries);
-    position.entries.push(PositionEntry {
-        capital: net_capital,
-        tokens: tokens_bought,
-        timestamp: right_now,
-        capital_seconds: 0,
-        last_updated: right_now,
-        commitment_hash,
+
+    position.entries.push(PositionEntry { capital: net_capital,
+        tokens: tokens_bought, timestamp: right_now,
+        capital_seconds: 0, last_updated: right_now, commitment_hash,
         // Clamp to [1, 9_999] so zero is unambiguously "legacy/missing"
         // rather than a genuine extreme price — the reveal phase uses 0
         // as a sentinel to skip the edge-bonus path gracefully.
@@ -896,17 +916,6 @@ pub fn handle_deposit_sol(ctx: Context<DepositSol>, lamports: u64) -> Result<()>
     customer.pool_deposit(bank, sol_usd_floor, now);
     Ok(())
 }
-
-// ─── FlashBorrow ──────────────────────────────────────────────────────────────
-// (sol_usd_contrib zeroed during borrow window: has_capacity() stays conservative)
-
-use anchor_lang::solana_program::{
-    program::invoke_signed, system_instruction,
-    sysvar::instructions::{
-        load_current_index_checked, load_instruction_at_checked,
-        ID as INSTRUCTIONS_SYSVAR_ID,
-    },
-};
 
 #[derive(Accounts)]
 pub struct FlashBorrow<'info> {

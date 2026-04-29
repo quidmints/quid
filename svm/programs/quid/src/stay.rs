@@ -283,17 +283,46 @@ impl Depositor {
     pub fn pool_mark_down(&mut self,
         bank: &mut Depository, usd: u64, now: i64) {
         let dc = now.saturating_sub(self.last_updated) as u64;
-
         self.deposit_seconds = self.deposit_seconds
             .saturating_add(self.deposited_quid as u128 * dc as u128);
-
-        let db = now.saturating_sub(bank.last_updated) as u64;
+        
+            let db = now.saturating_sub(bank.last_updated) as u64;
         bank.total_deposit_seconds = bank.total_deposit_seconds
             .saturating_add(bank.total_deposits as u128 * db as u128);
-            
-        self.deposited_quid = self.deposited_quid.saturating_sub(usd);
+
+        // Drain dq first, then absorb shortfall from open positions' pledged
+        // (largest first). Mirrors Drift's cross-margin model: SOL crashing
+        // forces a margin-call-style deleveraging on positions backed by it.
+        // Without this, dq.saturating_sub silently truncates and leaves the
+        // pool's accounting out of sync with reality.
+        let dq_drop = self.deposited_quid.min(usd);
+        self.deposited_quid -= dq_drop;
+        let mut shortfall = usd - dq_drop;
+        if shortfall > 0 && !self.balances.is_empty() {
+            // Sort largest-pledged first to drain heaviest position before
+            // touching smaller ones — same convention as renege() sweep mode.
+            self.balances.sort_by(|a, b| b.pledged.cmp(&a.pledged));
+            for pod in self.balances.iter_mut() {
+                if shortfall == 0 { break; }
+                let take = pod.pledged.min(shortfall); 
+                
+                pod.pledged -= take;
+                pod.cost_basis = pod.cost_basis.saturating_sub(take);
+                // Conservatively shrink max_liability proportionally without
+                // recomputing collar_bps (would need price+actuary). Keeping
+                // collar_bps stable understates capacity slightly at higher
+                // post-mark leverage, which is the safe direction.
+                let collar_drop = (take as u128 * pod.collar_bps as u128 / 10_000) as u64;
+                bank.max_liability = bank.max_liability.saturating_sub(collar_drop);
+                shortfall -= take;
+            }
+        } self.last_updated = now; bank.last_updated = now;
         bank.total_deposits = bank.total_deposits.saturating_sub(usd);
-        self.last_updated = now; bank.last_updated = now;
+        // Any residual `shortfall` after exhausting dq+pledged means the
+        // user is fully insolvent on their SOL-backed account. T still drops
+        // by full `usd` so has_capacity() will fail and amortise() can fire
+        // on any remaining pod (which by then has pledged=0). Keepers should
+        // call refresh_sol_collateral and amortise in the same tx.
     }
 
     /// Accumulate collar_dollar_seconds on a pod before any pledged/collar mutation.

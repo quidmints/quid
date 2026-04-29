@@ -18,8 +18,8 @@ import {WETH as WETH9} from "solmate/src/tokens/WETH.sol";
 import {IERC4626} from "forge-std/interfaces/IERC4626.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
-import {IUniswapV3Pool} from "./imports/v3/IUniswapV3Pool.sol";
 import {IV3SwapRouter} from "./imports/v3/IV3SwapRouter.sol";
+import {IUniswapV3Pool} from "./imports/v3/IUniswapV3Pool.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "solmate/src/utils/ReentrancyGuard.sol";
@@ -55,7 +55,6 @@ interface IWeETH {
     function getWeETHByeETH(uint _eETHAmount) external view returns (uint);
 }
 
-
 contract Aux is // Auxiliary
     Ownable, ReentrancyGuard {
     address[] public stables;
@@ -88,7 +87,8 @@ contract Aux is // Auxiliary
     // ether.fi contracts...
     address internal REDEEMER;
     address internal ADAPTER;
-    address internal WEETH; // weETH token (set in setQuid)
+    address internal WEETH; 
+    // weETH (set in setQuid)
 
     // AAVE contracts...
     address internal SPOKE;
@@ -106,6 +106,7 @@ contract Aux is // Auxiliary
          && msg.sender != address(this))
             revert Unauthorized(); _;
     }
+
     bytes32 constant CALLBACK_SUCCESS = keccak256(
                "ERC3156FlashBorrower.onFlashLoan");
 
@@ -217,6 +218,7 @@ contract Aux is // Auxiliary
         Types.AuxContext memory ctx = _buildContext();
         (uint160 sqrtPriceX96,,,) = V4.repack();
         stable = toIndex[token] > 0;
+
         if (forETH && stable && token != address(QUID)) {
             if (ILink(LINK).isDepegged(token))
                 revert TokenDepegged();
@@ -237,6 +239,7 @@ contract Aux is // Auxiliary
                         uint share = FullMath.mulDiv(
                             untouchables[stables[i]],
                             seedBurned, burned);
+
                         _tip(share, stables[i], -1);
                     }
                 }
@@ -250,19 +253,19 @@ contract Aux is // Auxiliary
                     amount = _withdraw(address(this),
                                       index, amount);
                 } else require(stable);
+
                 amount = deposit(msg.sender,
                               token, amount);
             } token = address(0);
-        }
-        _syncETH(); uint poolSupplied;
+        } _syncETH(); uint poolSupplied;
         (max, poolSupplied) = BasketLib.routeSwap(ctx,
         Types.RouteParams({ sqrtPriceX96: sqrtPriceX96,
             zeroForOne: zeroForOne, token: token,
             amount: amount, pooled: max,
             v4Price: getTWAP(1800),
             v3Price: getTWAP(0),
-            recipient: msg.sender
-        }));
+            recipient: msg.sender }));
+
         if (poolSupplied > 0) {
             vogueETH += poolSupplied;
             _lastTotalETH = _availableETH();
@@ -282,6 +285,7 @@ contract Aux is // Auxiliary
         onlyUs returns (uint got) { _syncETH();
         (got,) = BasketLib.arbETH(_buildContext(),
                             shortfall, getTWAP(0));
+
         if (got > 0) { vogueETH += got;
             _lastTotalETH = _availableETH();
         }
@@ -312,7 +316,7 @@ contract Aux is // Auxiliary
             IDepositAdapter(ADAPTER).depositWETHForWeETH(
                                    amount, address(this));
             /*_supplyAAVE(address(WETH), amount,
-            address(this));*/ vogueETH += amount;
+            address(this)); */ vogueETH += amount;
         } else if (op == 1) { // take
             amount = Math.min(amount, vogueETH);
             if (amount == 0) return 0;
@@ -320,7 +324,10 @@ contract Aux is // Auxiliary
             uint weETHBal = IERC20(WEETH).balanceOf(address(this));
             if (weETHAmount > weETHBal) weETHAmount = weETHBal;
             if (weETHAmount == 0) return 0;
-            if (IEtherFiRedemptionManager(REDEEMER).canRedeem(weETHAmount, address(0))) {
+
+            if (IEtherFiRedemptionManager(REDEEMER).canRedeem(
+                                      weETHAmount, address(0))) {
+                
                 uint ethBefore = address(this).balance;
                 IEtherFiRedemptionManager(REDEEMER).redeemWeEth(
                          weETHAmount, address(this), address(0));
@@ -329,13 +336,12 @@ contract Aux is // Auxiliary
             } else {
                 uint expectedEth = IWeETH(WEETH).getEETHByWeETH(weETHAmount);
                 sent = IV3SwapRouter(v3Router).exactInputSingle(
-                    IV3SwapRouter.ExactInputSingleParams({ tokenIn: WEETH, tokenOut: address(WETH),
-                        fee: 500, recipient: address(this), amountIn: weETHAmount, 
-                        amountOutMinimum: expectedEth * 99 / 100, sqrtPriceLimitX96: 0
-                    }));
-                WETH.withdraw(sent);
-            }
-            vogueETH -= Math.min(sent, vogueETH);
+                    IV3SwapRouter.ExactInputSingleParams({ tokenIn: WEETH, 
+                        tokenOut: address(WETH), fee: 500, recipient: address(this), 
+                        amountIn: weETHAmount,  amountOutMinimum: expectedEth * 99 / 100, 
+                        sqrtPriceLimitX96: 0 })); WETH.withdraw(sent);
+                        
+            } vogueETH -= Math.min(sent, vogueETH);
             (bool ok, ) = payable(msg.sender).call{
                                         value: sent}("");
             require(ok, "transfer failed");
@@ -373,15 +379,17 @@ contract Aux is // Auxiliary
             (sqrtPriceX96,,,) = V4.repack();
             uint depositedAmount = deposit(
              msg.sender, token, usdcAmount);
+
             uint scale = IERC20(token).decimals() - 6;
             depositedAmount /= scale > 0 ? 10 ** scale : 1;
 
             // stable → ETH → USDC through V4 pool
             CORE.swap(sqrtPriceX96, address(this),
             token1isWETH, token, depositedAmount);
-            uint ethReceived = address(this).balance;
 
+            uint ethReceived = address(this).balance;
             WETH.deposit{value: ethReceived}();
+
             _supplyAAVE(address(WETH),
             ethReceived, address(this));
 

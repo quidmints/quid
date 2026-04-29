@@ -207,10 +207,12 @@ fn verify_strongbox_signature(instructions_sysvar: &AccountInfo,
     // Find the Ed25519 instruction immediately preceding this one
     let current_idx = load_current_index_checked(instructions_sysvar)
                                 .map_err(|_| PithyQuip::Unauthorized)?;
-    
-        require!(current_idx > 0, PithyQuip::Unauthorized);
-    let ed25519_ix = load_instruction_at_checked(
-        (current_idx - 1) as usize, instructions_sysvar).map_err(|_| PithyQuip::Unauthorized)?;
+    require!(current_idx > 0, 
+    PithyQuip::Unauthorized);
+
+    let ed25519_ix = load_instruction_at_checked((current_idx - 1) 
+        as usize, instructions_sysvar).map_err(|_| 
+                        PithyQuip::Unauthorized)?;
 
     require!(ed25519_ix.program_id == switchboard_on_demand::solana_compat::ed25519_program::id(),
             PithyQuip::Unauthorized);
@@ -231,7 +233,10 @@ fn verify_strongbox_signature(instructions_sysvar: &AccountInfo,
     // followed by the raw signature (64), pubkey (32), and message bytes
     require!(data.len() >= 2, PithyQuip::Unauthorized);
     let num_sigs = data[0] as usize;
-    require!(num_sigs >= 1 && data.len() >= 2 + num_sigs * 14, PithyQuip::Unauthorized);
+    
+    require!(num_sigs >= 1 && 
+        data.len() >= 2 + num_sigs * 14, 
+            PithyQuip::Unauthorized);
 
     let h = &data[2..2 + 14]; // first signature header
     let sig_off = u16::from_le_bytes([h[0], h[1]]) as usize;
@@ -297,14 +302,14 @@ pub struct SubmitEvidence<'info> {
     pub market: Box<Account<'info, Market>>,
 
     #[account(mut,
-        seeds = [b"market_evidence", market.key().as_ref()],
+        seeds = [b"market_evidence", 
+            market.key().as_ref()],
         bump = market_evidence.bump,
     )]
     pub market_evidence: Account<'info, MarketEvidence>,
 
     /// StrongBox hardware attestation enrollment for this device.
-    #[account(seeds = [b"device_enrollment", submitter.key().as_ref()],
-        bump = enrollment.bump,
+    #[account(seeds = [b"device_enrollment", submitter.key().as_ref()], bump = enrollment.bump,
         constraint = enrollment.device_pubkey == submitter.key() @ PithyQuip::Unauthorized,
         constraint = !enrollment.revoked                         @ PithyQuip::Unauthorized,
     )]
@@ -315,8 +320,7 @@ pub struct SubmitEvidence<'info> {
         seeds = [b"evidence",
             market.key().as_ref(),
             submitter.key().as_ref(),
-            &[params.nonce],
-        ], bump,
+            &[params.nonce]], bump,
     )]
     pub evidence: Account<'info, EvidenceSubmission>,
 
@@ -330,22 +334,18 @@ pub struct SubmitEvidence<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn submit_evidence(
-    ctx: Context<SubmitEvidence>,
-    params: SubmitEvidenceParams,
-) -> Result<()> {
-    let market   = &ctx.accounts.market;
-    let me       = &mut ctx.accounts.market_evidence;
+pub fn submit_evidence(ctx: Context<SubmitEvidence>,
+    params: SubmitEvidenceParams) -> Result<()> {
+    let market = &ctx.accounts.market;
+    let me = &mut ctx.accounts.market_evidence;
     let evidence = &mut ctx.accounts.evidence;
-    let clock    = Clock::get()?;
+    let clock = Clock::get()?;
 
     // Verify instructions account is the actual sysvar — replaces the removed
     // #[account(address = ...)] constraint to avoid the Accounts derive Pubkey conflict.
-    require_keys_eq!(
-        ctx.accounts.instructions.key(),
+    require_keys_eq!(ctx.accounts.instructions.key(),
         anchor_lang::solana_program::sysvar::instructions::ID,
-        PithyQuip::Unauthorized
-    );
+        PithyQuip::Unauthorized);
 
     require!(!market.resolved && !market.cancelled, PithyQuip::TradingFrozen);
     require!(me.submission_count < me.evidence.max_submissions as u64, PithyQuip::InvalidParameters);
@@ -357,32 +357,24 @@ pub fn submit_evidence(
     // before this one in the same transaction, signing:
     //   SHA256(attestation_hash || nonce || market_pubkey)
     // with the enrolled device key.
-    verify_strongbox_signature(&ctx.accounts.instructions,
-        &ctx.accounts.enrollment.device_pubkey,
-        &params.attestation_hash,
-        params.nonce, &market.key(),
-        &params.strongbox_signature,
-    )?;
+    verify_strongbox_signature(&ctx.accounts.instructions, &ctx.accounts.enrollment.device_pubkey,
+        &params.attestation_hash, params.nonce, &market.key(), &params.strongbox_signature)?;
 
-    evidence.market           = market.key();
-    evidence.submitter        = ctx.accounts.submitter.key();
+    evidence.market = market.key();
+    evidence.submitter = ctx.accounts.submitter.key();
     evidence.attestation_hash = params.attestation_hash;
-    evidence.submitted_at     = clock.unix_timestamp;
-    evidence.content_type     = params.content_type.min(1);
-    evidence.bump             = ctx.bumps.evidence;
-    me.submission_count      += 1;
+    evidence.submitted_at = clock.unix_timestamp;
+    evidence.content_type = params.content_type.min(1);
+    evidence.bump = ctx.bumps.evidence;
+    me.submission_count += 1;
 
-    emit!(crate::state::EvidenceSubmitted {
-        market:       market.key(),
-        submitter:    ctx.accounts.submitter.key(),
+    emit!(crate::state::EvidenceSubmitted { 
+        market: market.key(),
+        submitter: ctx.accounts.submitter.key(),
         content_type: evidence.content_type,
     });
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ENROLL DEVICE
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Enroll a device. Creates a DeviceEnrollment PDA gating all future
 /// submit_evidence calls from this device.
@@ -413,18 +405,15 @@ pub struct EnrollDevice<'info> {
     // Oracle signs to authorize — proves off-chain attestation passed
     pub orchestrator: Signer<'info>,
 
-    #[account(
-        seeds = [b"program_config"],
-        bump = config.bump,
+    #[account(seeds = [b"program_config"], bump = config.bump, 
         constraint = orchestrator.key() == config.orchestrator @ PithyQuip::Unauthorized,
     )]
     pub config: Account<'info, ProgramConfig>,
 
-    #[account(
-        init,
-        payer = payer,
+    #[account(init, payer = payer,
         space = DeviceEnrollment::SPACE,
-        seeds = [b"device_enrollment", params.device_pubkey.as_ref()],
+        seeds = [b"device_enrollment", 
+        params.device_pubkey.as_ref()],
         bump,
     )]
     pub enrollment: Account<'info, DeviceEnrollment>,
@@ -435,12 +424,13 @@ pub struct EnrollDevice<'info> {
 pub fn enroll_device(ctx: Context<EnrollDevice>, 
     params: EnrollDeviceParams) -> Result<()> {
     require!(params.config_version == ctx.accounts.config.config_version,
-        PithyQuip::Unauthorized // stale challenge — re-attest against current config
-    );
+        // stale challenge — re-attest against current config
+        PithyQuip::Unauthorized);
+        
     require!(params.platform == DeviceEnrollment::PLATFORM_ANDROID_STRONGBOX
           || params.platform == DeviceEnrollment::PLATFORM_IOS_SECURE_ENCLAVE,
-        PithyQuip::InvalidParameters
-    );
+        PithyQuip::InvalidParameters);
+
     let e = &mut ctx.accounts.enrollment;
     e.device_pubkey = params.device_pubkey;
     e.config_version = params.config_version;
