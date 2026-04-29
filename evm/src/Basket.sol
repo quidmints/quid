@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 pragma solidity ^0.8.26;
+
 import {Aux} from  "./Aux.sol";
 import {Link} from "./Link.sol";
-
 import {Jury} from "./Jury.sol";
+
 import {Court} from "./Court.sol";
 import {OFT} from "./imports/OFT.sol";
 import {Types} from "./imports/Types.sol";
@@ -92,12 +93,13 @@ contract Basket is OFT, // LZ
     }
 
     function setup(address _hook, address _court,
-        address _jury) external { if (msg.sender != owner()
-                                || address(LINK) != address(0))
-                                    revert Unauthorized();
+        address _jury/*, address[] l2BasketAddrs */) external { 
+            if (msg.sender != owner()
+            || address(LINK) != address(0))
+                revert Unauthorized();
+
         LINK = Link(payable(_hook)); court = payable(_court);
         jury = _jury; address[] memory stables = AUX.getStables();
-
         /*
         setPeer(SOLANA_EID, solanaProgram32Bytes);
         for (uint i = 0; i < l2Eids.length; i++) {
@@ -126,7 +128,8 @@ contract Basket is OFT, // LZ
         totalOut = BasketLib.distributeL2(
             l2Baskets, to, burned, total);
 
-        l2Deposits -= Math.min(l2Deposits, totalOut);
+        l2Deposits -= Math.min(
+          l2Deposits, totalOut);
     }
 
     mapping(address => SortedSetLib.Set) private perMonth;
@@ -149,7 +152,8 @@ contract Basket is OFT, // LZ
     function optInJury() external {
         if (super.balanceOf(msg.sender) <= 500e18) revert NoBalance();
         if (juryPoolIndex[msg.sender] != 0) revert AlreadyIn();
-        juryPool.push(msg.sender); juryPoolIndex[msg.sender] = juryPool.length;
+        juryPool.push(msg.sender); 
+        juryPoolIndex[msg.sender] = juryPool.length;
     }
 
     /// @notice Opt out of the jury pool; can't while
@@ -215,14 +219,16 @@ contract Basket is OFT, // LZ
     function _lzReceive(Origin calldata _origin,
         bytes32 _guid, bytes calldata _message,
         address, bytes calldata) internal override {
-        // peer check is sufficient; LZ nonces prevent replay
-        if (_origin.sender != peers[_origin.srcEid]) revert Unauthorized();
+        // check is sufficient; LZ nonces prevent replay
+        if (_origin.sender != peers[_origin.srcEid]) 
+            revert Unauthorized();
 
         uint64 amountSD = _message.amountSD();
         uint amountReceivedLD = _toLD(amountSD);
         bytes memory composeMsg = _message.composeMsg();
         address to = _message.sendTo().bytes32ToAddress();
         uint8 msgType = MessageCodec.getMessageType(composeMsg);
+        
         if (msgType == MessageCodec.RESOLUTION_REQUEST) {
             if (_origin.srcEid != SOLANA_EID) revert WrongChain();
             Court(court).receiveResolutionRequest(composeMsg);
@@ -238,8 +244,8 @@ contract Basket is OFT, // LZ
              && _origin.srcEid != BASE_EID
              && _origin.srcEid != ARBI_EID
              && _origin.srcEid != POLY_EID) revert WrongChain();
-            require(_handleBasketTransfer(
-                            composeMsg, to) == amountReceivedLD);
+            require(_handleBasketTransfer(composeMsg, 
+                                        to) == amountReceivedLD);
         } else revert BadType();
     }
 

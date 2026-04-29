@@ -5,21 +5,30 @@
 //      Commits the EvidenceRequirements (tags, resolution mode, bond).
 //   2. Devices call submit_evidence. On-chain: DeviceEnrollment PDA verified.
 //      The chain's job is to confirm the transaction came from the right app
-//      on an unmodified device. That's it. The app does the hard part.
+//      on an attested device. That's it. The app does the hard part.
 //   3. Oracle fetches signed feature vector from device via libp2p,
-//      verifies the StrongBox attestation chain, runs the evidence formula.
+//      verifies the attestation chain, runs the evidence formula.
 //      Market resolves against tags, never against session content.
 //
-// Device enrollment:
-//   enroll_device     — StrongBox attestation chain verified at install time.
-//                       Creates DeviceEnrollment PDA with the device pubkey.
+// Device enrollment (gates submit_evidence AND deposit):
+//   enroll_device     — Attestation chain verified off-chain at install time,
+//                       creates DeviceEnrollment PDA with the device pubkey.
+//                       Two platform paths, both producing the same on-chain
+//                       artifact:
+//                         Android: StrongBox-generated Ed25519 key, locked
+//                                  bootloader, hardware-reported APK cert.
+//                         iOS:     software Ed25519 key whose generation was
+//                                  attested by an App Attest assertion over
+//                                  the official bundle ID + team ID.
 //   revoke_enrollment — admin or device marks enrollment revoked immediately.
 //
 // Liveness detection is entirely an app concern, not a chain concern.
-// The StrongBox key is bound to a locked bootloader and the specific APK
-// signing cert. Verifying the submission came from that key is sufficient —
-// it means the app ran, and the app runs liveness. No IdentityAnchor,
-// no biometric hash, no threshold PDA. Nothing biometric touches the chain.
+// On Android the StrongBox key is bound to a locked bootloader and the
+// specific APK signing cert; on iOS the App Attest assertion binds to the
+// app's bundle ID + team ID. Verifying the submission came from an enrolled
+// key is sufficient — it means the app ran, and the app runs liveness.
+// No IdentityAnchor, no biometric hash, no threshold PDA. Nothing biometric
+// touches the chain.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::instructions::{
@@ -80,11 +89,8 @@ pub struct InitMarketEvidence<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn init_market_evidence(
-    ctx: Context<InitMarketEvidence>,
-    _market_id: u64,
-    params: EvidenceRequirementsParams,
-) -> Result<()> {
+pub fn init_market_evidence(ctx: Context<InitMarketEvidence>,
+    _market_id: u64, params: EvidenceRequirementsParams) -> Result<()> {
     require!(ctx.accounts.market.creator == ctx.accounts.creator.key(), PithyQuip::Unauthorized);
     require!(!ctx.accounts.market.resolved && !ctx.accounts.market.cancelled, PithyQuip::TradingFrozen);
 
@@ -119,7 +125,6 @@ pub fn init_market_evidence(
     require!(params.resolution_bond >= min_bond, PithyQuip::InvalidParameters);
     require!(params.min_tag_confidence >= MIN_TAG_CONFIDENCE_FLOOR, PithyQuip::InvalidParameters);
     require!(params.time_window_start < params.time_window_end, PithyQuip::InvalidParameters);
-
     if params.resolution_bond > 0 {
         anchor_lang::system_program::transfer(
             CpiContext::new(
@@ -132,8 +137,7 @@ pub fn init_market_evidence(
             params.resolution_bond,
         )?;
     }
-
-    let me         = &mut ctx.accounts.market_evidence;
+    let me = &mut ctx.accounts.market_evidence;
     let market_key = ctx.accounts.market.key();
     ctx.accounts.market.resolution_mode = params.resolution_mode;
     me.market = market_key;
@@ -169,10 +173,6 @@ pub fn init_market_evidence(
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STRONGBOX SIGNATURE VERIFICATION
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Verify the StrongBox Ed25519 signature via the instructions sysvar.
 ///
 /// The client must include an Ed25519Program instruction immediately before
@@ -193,35 +193,27 @@ pub fn init_market_evidence(
 ///   proves key control. The strongbox_signature proves the specific payload
 ///   (attestation_hash) was produced by StrongBox during this session, not
 ///   replayed from a previous session by the same key holder.
-fn verify_strongbox_signature(
-    instructions_sysvar: &AccountInfo,
-    device_pubkey: &Pubkey,
-    attestation_hash: &[u8; 32],
-    nonce: u8,
-    market_pubkey: &Pubkey,
-    signature: &[u8; 64],
-) -> Result<()> {
+fn verify_strongbox_signature(instructions_sysvar: &AccountInfo,
+    device_pubkey: &Pubkey, attestation_hash: &[u8; 32],
+    nonce: u8, market_pubkey: &Pubkey,
+    signature: &[u8; 64]) -> Result<()> {
     // Build the expected message and hash it
     let mut preimage = Vec::with_capacity(65);
     preimage.extend_from_slice(attestation_hash);
     preimage.push(nonce);
     preimage.extend_from_slice(market_pubkey.as_ref());
+    
     let message = switchboard_on_demand::solana_compat::hash::hash(&preimage).to_bytes(); // SHA256, 32 bytes
-
     // Find the Ed25519 instruction immediately preceding this one
     let current_idx = load_current_index_checked(instructions_sysvar)
-        .map_err(|_| PithyQuip::Unauthorized)?;
-    require!(current_idx > 0, PithyQuip::Unauthorized);
-
+                                .map_err(|_| PithyQuip::Unauthorized)?;
+    
+        require!(current_idx > 0, PithyQuip::Unauthorized);
     let ed25519_ix = load_instruction_at_checked(
-        (current_idx - 1) as usize,
-        instructions_sysvar,
-    ).map_err(|_| PithyQuip::Unauthorized)?;
+        (current_idx - 1) as usize, instructions_sysvar).map_err(|_| PithyQuip::Unauthorized)?;
 
-    require!(
-        ed25519_ix.program_id == switchboard_on_demand::solana_compat::ed25519_program::id(),
-        PithyQuip::Unauthorized
-    );
+    require!(ed25519_ix.program_id == switchboard_on_demand::solana_compat::ed25519_program::id(),
+            PithyQuip::Unauthorized);
 
     let data = &ed25519_ix.data;
 
@@ -229,14 +221,14 @@ fn verify_strongbox_signature(
     //   [0]      num_signatures (u8)
     //   [1]      padding (u8)
     //   [2..16]  per-signature header (14 bytes):
-    //     [0..2]  signature_offset        (u16 LE)
-    //     [2..4]  signature_ix_index      (u16 LE, 0xFFFF = same ix)
-    //     [4..6]  pubkey_offset           (u16 LE)
-    //     [6..8]  pubkey_ix_index         (u16 LE)
-    //     [8..10] message_data_offset     (u16 LE)
-    //     [10..12] message_data_size      (u16 LE)
-    //     [12..14] message_ix_index       (u16 LE)
-    //   followed by the raw signature (64), pubkey (32), and message bytes
+    //   [0..2]  signature_offset        (u16 LE)
+    //   [2..4]  signature_ix_index      (u16 LE, 0xFFFF = same ix)
+    //   [4..6]  pubkey_offset           (u16 LE)
+    //   [6..8]  pubkey_ix_index         (u16 LE)
+    //   [8..10] message_data_offset     (u16 LE)
+    //   [10..12] message_data_size      (u16 LE)
+    //   [12..14] message_ix_index       (u16 LE)
+    // followed by the raw signature (64), pubkey (32), and message bytes
     require!(data.len() >= 2, PithyQuip::Unauthorized);
     let num_sigs = data[0] as usize;
     require!(num_sigs >= 1 && data.len() >= 2 + num_sigs * 14, PithyQuip::Unauthorized);
@@ -249,34 +241,21 @@ fn verify_strongbox_signature(
 
     // Verify signature bytes match what the client passed in params
     require!(data.len() >= sig_off + 64, PithyQuip::Unauthorized);
-    require!(
-        data[sig_off..sig_off + 64] == *signature,
-        PithyQuip::Unauthorized
-    );
-
+    require!(data[sig_off..sig_off + 64] == *signature,
+            PithyQuip::Unauthorized);
+            
     // Verify pubkey matches the enrolled device key
     require!(data.len() >= pk_off + 32, PithyQuip::Unauthorized);
-    require!(
-        data[pk_off..pk_off + 32] == device_pubkey.to_bytes(),
-        PithyQuip::Unauthorized
-    );
+    require!(data[pk_off..pk_off + 32] == device_pubkey.to_bytes(),
+            PithyQuip::Unauthorized);
 
     // Verify message matches SHA256(attestation_hash || nonce || market_pubkey)
-    require!(
-        msg_len == 32 && data.len() >= msg_off + 32,
-        PithyQuip::Unauthorized
-    );
-    require!(
-        data[msg_off..msg_off + 32] == message,
-        PithyQuip::Unauthorized
-    );
+    require!(msg_len == 32 && data.len() >= msg_off + 32,
+            PithyQuip::Unauthorized);
 
-    Ok(())
+    require!(data[msg_off..msg_off + 32] == message,
+            PithyQuip::Unauthorized); Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SUBMIT EVIDENCE
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Device submits evidence for a market.
 ///
@@ -302,33 +281,32 @@ fn verify_strongbox_signature(
 /// nonce and market, preventing replay of a previous session's evidence.
 /// Verified on-chain via the Ed25519Program instructions sysvar.
 ///
-/// Session content never leaves the device. Oracle fetches the signed
-/// feature vector via libp2p
+/// Session content never leaves the device. 
+/// Oracle fetches the signed feature vector via libp2p
+
 #[derive(Accounts)]
 #[instruction(params: SubmitEvidenceParams)]
 pub struct SubmitEvidence<'info> {
     #[account(mut)]
     pub submitter: Signer<'info>,
 
-    #[account(
-        seeds = [b"market", &market.market_id.to_le_bytes()[..6]],
+    #[account(seeds = [b"market", 
+        &market.market_id.to_le_bytes()[..6]],
         bump = market.bump,
     )]
     pub market: Box<Account<'info, Market>>,
 
-    #[account(
-        mut,
+    #[account(mut,
         seeds = [b"market_evidence", market.key().as_ref()],
         bump = market_evidence.bump,
     )]
     pub market_evidence: Account<'info, MarketEvidence>,
 
     /// StrongBox hardware attestation enrollment for this device.
-    #[account(
-        seeds = [b"device_enrollment", submitter.key().as_ref()],
+    #[account(seeds = [b"device_enrollment", submitter.key().as_ref()],
         bump = enrollment.bump,
         constraint = enrollment.device_pubkey == submitter.key() @ PithyQuip::Unauthorized,
-        constraint = !enrollment.revoked                          @ PithyQuip::Unauthorized,
+        constraint = !enrollment.revoked                         @ PithyQuip::Unauthorized,
     )]
     pub enrollment: Account<'info, DeviceEnrollment>,
 
@@ -371,22 +349,18 @@ pub fn submit_evidence(
 
     require!(!market.resolved && !market.cancelled, PithyQuip::TradingFrozen);
     require!(me.submission_count < me.evidence.max_submissions as u64, PithyQuip::InvalidParameters);
-    require!(
-        clock.unix_timestamp <= me.evidence.time_window_end + SUBMISSION_GRACE_SECS,
-        PithyQuip::InvalidParameters
-    );
+    require!(clock.unix_timestamp <= me.evidence.time_window_end + SUBMISSION_GRACE_SECS,
+            PithyQuip::InvalidParameters);
 
     // Verify the StrongBox signature via the Ed25519 instructions sysvar.
     // The client must have included an Ed25519Program instruction immediately
     // before this one in the same transaction, signing:
     //   SHA256(attestation_hash || nonce || market_pubkey)
     // with the enrolled device key.
-    verify_strongbox_signature(
-        &ctx.accounts.instructions,
+    verify_strongbox_signature(&ctx.accounts.instructions,
         &ctx.accounts.enrollment.device_pubkey,
         &params.attestation_hash,
-        params.nonce,
-        &market.key(),
+        params.nonce, &market.key(),
         &params.strongbox_signature,
     )?;
 
@@ -460,24 +434,26 @@ pub struct EnrollDevice<'info> {
 
 pub fn enroll_device(ctx: Context<EnrollDevice>, 
     params: EnrollDeviceParams) -> Result<()> {
-    require!(
-        params.config_version == ctx.accounts.config.config_version,
-        PithyQuip::Unauthorized // stale attestation challenge — re-attest against current config
+    require!(params.config_version == ctx.accounts.config.config_version,
+        PithyQuip::Unauthorized // stale challenge — re-attest against current config
+    );
+    require!(params.platform == DeviceEnrollment::PLATFORM_ANDROID_STRONGBOX
+          || params.platform == DeviceEnrollment::PLATFORM_IOS_SECURE_ENCLAVE,
+        PithyQuip::InvalidParameters
     );
     let e = &mut ctx.accounts.enrollment;
     e.device_pubkey = params.device_pubkey;
+    e.config_version = params.config_version;
     e.revoked = false;
+    e.platform = params.platform;
     e.bump = ctx.bumps.enrollment;
 
     emit!(DeviceEnrolled {
         device_pubkey: params.device_pubkey,
+        platform: params.platform,
     });
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REVOKE ENROLLMENT
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Revoke a device enrollment. Admin or device owner.
 /// Takes effect immediately — next submit_evidence from this device fails
@@ -486,11 +462,12 @@ pub fn enroll_device(ctx: Context<EnrollDevice>,
 /// The PDA is kept alive (not closed) so the device cannot silently re-enroll
 /// under the same key. Re-enrollment requires a new StrongBox key under the
 /// current config_version.
+
 #[derive(Accounts)]
 pub struct RevokeEnrollment<'info> {
-    #[account(
-        mut,
-        seeds = [b"device_enrollment", enrollment.device_pubkey.as_ref()],
+    #[account(mut,
+        seeds = [b"device_enrollment", 
+        enrollment.device_pubkey.as_ref()],
         bump = enrollment.bump,
     )]
     pub enrollment: Account<'info, DeviceEnrollment>,
@@ -509,11 +486,8 @@ pub fn revoke_enrollment(ctx: Context<RevokeEnrollment>) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EVENTS
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[event]
 pub struct DeviceEnrolled {
     pub device_pubkey: Pubkey,
+    pub platform: u8,
 }

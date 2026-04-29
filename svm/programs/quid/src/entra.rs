@@ -912,8 +912,7 @@ use anchor_lang::solana_program::{
 pub struct FlashBorrow<'info> {
     /// JAM authority PDA — equivalent of require(msg.sender == JAM) in Aux.sol.
     /// CHECK: address == config.bebop_authority
-    #[account(
-        signer,
+    #[account(signer,
         address = config.bebop_authority @ PithyQuip::InvalidSettlementProgram,
     )]
     pub flash_authority: AccountInfo<'info>,
@@ -951,35 +950,36 @@ pub struct FlashBorrow<'info> {
 //   [1] mint
 //   [2] borrower_ata — mut
 //   [3] token_program
-pub fn handle_flash_borrow<'info>(ctx: Context<'_, '_, '_, 'info, FlashBorrow<'info>>, lamports: u64, token_amount: u64,
-    vault_bump: u8, // canonical bump for [b"vault", mint]; use create_program_address
+pub fn handle_flash_borrow<'info>(ctx: Context<'_, '_, '_, 
+    'info, FlashBorrow<'info>>, lamports: u64, token_amount: u64,
+    // canonical bump for [b"vault", mint]; use create_program_address
     // instead of find_program_address (~100 CU vs ~2000 CU for the sha256 loop)
-) -> Result<()> {
-    require!(lamports > 0 || token_amount > 0, PithyQuip::InvalidAmount);
+    vault_bump: u8) -> Result<()> { require!(lamports > 0 || token_amount > 0, PithyQuip::InvalidAmount);
     require!(!(lamports > 0 && token_amount > 0), PithyQuip::InvalidAmount); // SOL xor SPL
 
     let bank = &mut ctx.accounts.bank;
-    // FlashLoanActive guard is enforced by the Anchor constraint on flash_loan account.
+    // FlashLoanActive guard is enforced 
+    // by Anchor constraint on flash_loan account.
     let flash = &mut ctx.accounts.flash_loan;
 
-    // Verify flash_repay present later in this tx — same discriminator covers both SOL and SPL.
+    // Verify flash_repay present later 
     let ixs = &ctx.accounts.ix_sysvar;
+    // in this tx — same discriminator covers both SOL and SPL.
     let current_idx = load_current_index_checked(ixs)? as usize;
-    let mut found = false;
-    let mut i = current_idx + 1;
+
+    let mut found = false; let mut i = current_idx + 1;
     loop { match load_instruction_at_checked(i, ixs) {
-            Ok(ix) => {
-                if ix.program_id == crate::ID && ix.data.len() >= 8
-                    && ix.data[..8] == FLASH_REPAY_DISC { found = true; break; }
+            Ok(ix) => { if ix.program_id == crate::ID && ix.data.len() >= 8
+                        && ix.data[..8] == FLASH_REPAY_DISC { found = true; break; }
                 i += 1;
             } Err(_) => break,
         }
     } require!(found, PithyQuip::FlashRepayMissing);
     if lamports > 0 {
-        // ── SOL path (unchanged) ──────────────────────────────────────────────
         require!(lamports <= bank.sol_lamports, PithyQuip::InsufficientFunds);
         // Zero sol_usd_contrib so has_capacity() is conservative during flash window.
         let old_contrib = bank.sol_usd_contrib;
+
         bank.total_deposits = bank.total_deposits.saturating_sub(old_contrib);
         bank.sol_usd_contrib = 0; flash.flash_lamports = lamports;
         bank.sol_lamports = bank.sol_lamports.saturating_sub(lamports);
@@ -1087,58 +1087,51 @@ pub fn handle_flash_borrow<'info>(ctx: Context<'_, '_, '_, 'info, FlashBorrow<'i
         let expected = Pubkey::create_program_address(
             &[b"vault", mint_ai.key.as_ref(), &[vault_bump]], &crate::ID,
         ).map_err(|_| error!(PithyQuip::InvalidParameters))?;
-        require_keys_eq!(vault_ai.key(), expected, PithyQuip::InvalidSettlementProgram);
-
+        
+        require_keys_eq!(vault_ai.key(), expected, 
+            PithyQuip::InvalidSettlementProgram);
         // Only registered_mints may be borrowed.
         require!(
             ctx.accounts.config.registered_mints.contains(mint_ai.key),
             PithyQuip::InvalidMint
         );
-
         // Reject fake token programs — a no-op transfer would let the loan
         // be recorded without tokens leaving the vault (same A9 fix as JAM settle).
-        require!(
-            token_prog.key() == anchor_spl::token::ID
-                || token_prog.key() == anchor_spl::token_2022::ID,
+        require!(token_prog.key() == anchor_spl::token::ID
+              || token_prog.key() == anchor_spl::token_2022::ID,
             PithyQuip::InvalidParameters
         );
-
         // Read vault balance + mint decimals from raw account data
         // (same pattern as state.rs::transfer_from_vaults).
-        let vault_amount = {
-            let d = vault_ai.try_borrow_data()?;
+        let vault_amount = { let d = vault_ai.try_borrow_data()?;
             // SPL token account: amount at bytes 64..72 (165-byte layout).
             require!(d.len() >= 72, PithyQuip::InvalidParameters);
             u64::from_le_bytes(d[64..72].try_into().unwrap())
         };
-        require!(token_amount <= vault_amount, PithyQuip::InsufficientFunds);
+
+        require!(token_amount <= vault_amount, 
+                PithyQuip::InsufficientFunds);
         // SPL token mint layout: decimals at byte offset 44, min size 82 bytes.
         // Hard require rather than silent fallback — if the account is not a
         // valid mint the registered_mints check above should have caught it.
-        let decimals = {
-            let d = mint_ai.try_borrow_data()?;
+        let decimals = { let d = mint_ai.try_borrow_data()?;
             require!(d.len() >= 45, PithyQuip::InvalidParameters);
             d[44]
         };
 
-        flash.flash_token_mint   = *mint_ai.key;
-        flash.flash_token_amount = token_amount;
-
+        flash.flash_token_mint = *mint_ai.key; flash.flash_token_amount = token_amount;
         // Vault PDA signs for itself (same seeds pattern as transfer_from_vaults).
         use anchor_spl::token_interface::{TransferChecked, transfer_checked};
-        transfer_checked(
-            CpiContext::new_with_signer(
-                token_prog.clone(),
-                TransferChecked {
-                    from:      vault_ai.clone(),
-                    mint:      mint_ai.clone(),
-                    to:        borrower_ata.clone(),
+        transfer_checked(CpiContext::new_with_signer(
+                token_prog.clone(), TransferChecked {
+                    from: vault_ai.clone(),
+                    mint: mint_ai.clone(),
+                    to: borrower_ata.clone(),
                     authority: vault_ai.clone(),
-                },
-                &[&[b"vault", mint_ai.key.as_ref(), &[vault_bump]]],
-            ),
-            token_amount, decimals,
+                }, &[&[b"vault", 
+                mint_ai.key.as_ref(), 
+                &[vault_bump]]],
+            ), token_amount, decimals,
         )?;
-    }
-    Ok(())
+    } Ok(())
 }

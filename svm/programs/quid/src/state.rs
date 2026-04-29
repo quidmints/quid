@@ -1259,37 +1259,60 @@ pub fn calculate_time_decay(position_duration: i64,
 
 #[account]
 pub struct DeviceEnrollment {
-    /// Ed25519 pubkey generated in StrongBox at app install time.
-    /// All submit_evidence calls must carry a StrongBox signature
-    /// verifiable against this key.
+    /// Hardware-attested Ed25519 pubkey generated at app install time.
+    /// On Android: StrongBox key, non-exportable, bound to locked bootloader + APK cert.
+    /// On iOS: software-resident Ed25519 key whose generation was attested by an
+    ///         App Attest assertion over the official app's bundle ID + team ID.
     ///
-    /// The oracle verifies off-chain at enrollment time:
-    ///   verifiedBootState = VERIFIED  — locked bootloader, unmodified OS
-    ///   osVersion >= minimum          — StrongBox API availability
-    ///   apk_cert_hash matches expected — hardware-reported APK signing cert
-    ///     (OS writes this into attestApplicationId at key generation time;
-    ///      a bootlegged APK signed with a different key produces a different hash)
+    /// All gated calls (submit_evidence, deposit) must be transaction-signed by
+    /// this key. The PDA's existence + non-revoked + current config_version is
+    /// sufficient proof on-chain that the oracle accepted this device under the
+    /// current attestation policy.
     ///
-    /// On-chain the PDA exists only to record that the oracle accepted this
-    /// device_pubkey, and to allow revocation. Nothing else is stored because
-    /// nothing else needs to be re-checked on-chain after enrollment.
+    /// Oracle off-chain checks vary by platform:
+    ///   Android StrongBox:
+    ///     verifiedBootState = VERIFIED  — locked bootloader, unmodified OS
+    ///     osVersion >= minimum          — StrongBox API availability
+    ///     apk_cert_hash matches expected — hardware-reported APK signing cert
+    ///       (OS writes this into attestApplicationId at key generation time;
+    ///        a bootlegged APK signed with a different key produces a different hash)
+    ///   iOS Secure Enclave (App Attest):
+    ///     attestation key generated under the Apple WebAuthn root
+    ///     bundle ID + team ID match the official app
+    ///     assertion over (key_pubkey || nonce) verified against the attested key
+    ///
+    /// Both paths produce the same on-chain artifact: a device_pubkey the oracle
+    /// has certified came from the official app on a verifiable platform. The
+    /// `platform` field records which path the oracle took, kept for telemetry
+    /// and future per-platform policy (e.g., tighter limits for the weaker path).
     pub device_pubkey: Pubkey,
     pub config_version: u32,
-    pub revoked: bool, // admin or device owner can revoke; blocks submit_evidence immediately
+    pub revoked: bool, // admin or device owner can revoke; blocks gated calls immediately
+    pub platform: u8,  // 0 = Android StrongBox, 1 = iOS Secure Enclave (App Attest)
     pub bump: u8,
 }
 
 impl DeviceEnrollment {
     pub const SPACE: usize = 8
         + 32  // device_pubkey
-        + 1   // revoked
         + 4   // config_version
-        + 1;  // bump  → 46 bytes
+        + 1   // revoked
+        + 1   // platform
+        + 1;  // bump  → 47 bytes
+
+    pub const PLATFORM_ANDROID_STRONGBOX: u8 = 0;
+    pub const PLATFORM_IOS_SECURE_ENCLAVE: u8 = 1;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct EnrollDeviceParams {
-    /// StrongBox-generated Ed25519 pubkey for this device.
+    /// Hardware-attested Ed25519 pubkey for this device. On Android this is
+    /// generated inside StrongBox; on iOS it is software-resident but its
+    /// generation was attested by an App Attest assertion that the orchestrator
+    /// verified off-chain before calling this instruction.
     pub device_pubkey: Pubkey,
-    pub config_version: u32, 
+    pub config_version: u32,
+    /// Which attestation path the orchestrator validated. Must be one of
+    /// DeviceEnrollment::PLATFORM_*.
+    pub platform: u8,
 }

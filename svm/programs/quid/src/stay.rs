@@ -8,6 +8,7 @@ use crate::etc::{ MAX_AGE, MAX_LEN,
     AnchorDeserialize,
     Clone, Copy, Debug,
     PartialEq, Eq)]
+
 pub struct Stock {
     // (b"GOOGL\0\0\0")
     pub ticker: [u8; 8],
@@ -15,6 +16,7 @@ pub struct Stock {
     pub exposure: i64,
     // ^ same precision
     // as USD* (10^6)
+
     pub updated: i64,
     pub rate_bps: u16,
     pub collar_bps: u16,
@@ -22,19 +24,20 @@ pub struct Stock {
     // cost_basis tracks entry cost across renege() adjustments.
     // PnL at close = transfer - cost_basis - interest_paid...
     pub cost_basis: u64,
-    // Cumulative interest paid position across repo() calls
+
+    // Cumulative interest paid 
+    // across repo() calls...
     pub interest_paid: u64,
 
     /// Time-integrated economic capital: sum of (collar_dollars × seconds).
     /// RAROC denominator — how much capital was at risk, for how long...
     pub collar_dollar_seconds: u128,
 }
+
 impl Space for Stock {
-    const INIT_SPACE:
-    usize = 8 + 8 + 8
-          + 8 + 2 + 2
+    const INIT_SPACE: usize = 8 + 8 + 8 + 8 + 2 + 2
           + 8 + 8  // cost_basis + interest_paid
-          + 16;    // collar_dollar_seconds
+          + 16; // collar_dollar_seconds
 }
 
 #[account]
@@ -63,7 +66,7 @@ pub struct Depository {
 #[account]
 #[derive(InitSpace)]
 pub struct FlashLoan {
-    pub flash_lamports:     u64,    // SOL flash loan principal (0 = none)
+    pub flash_lamports: u64, // SOL flash loan principal (0 = none)
     // SPL token flash loan — Pubkey::default()/0 means no active loan.
     // SOL and SPL are mutually exclusive (enforced in flash_borrow).
     pub flash_token_mint:   Pubkey,
@@ -102,7 +105,8 @@ impl Depository {
     /// Solvency requirement: total deposits must cover worst-case losses.
     /// max_liability tracks sum of (exposure × collar_bps) for all positions.
     /// If all positions hit their collar simultaneously, the pool must cover it.
-    pub fn has_capacity(&self, additional_collar: u64) -> bool {
+    pub fn has_capacity(&self, 
+        additional_collar: u64) -> bool {
         if self.total_deposits == 0 { return false; }
         self.max_liability.saturating_add(additional_collar) <= self.total_deposits
     }
@@ -123,10 +127,11 @@ pub struct Depositor {
     pub sol_pledged_usd: u64,
     pub deposit_seconds: u128,
     pub last_updated: i64,
-    pub drawn: u64,     // mirrors Depository.total_drawn for this account;
+    pub drawn: u64, // mirrors Depository.total_drawn for this account;
     // pure depositors (drawn=0) receive full yield share; borrowers receive
     // a share discounted by their proportion of total pool risk (see clutch.rs)
-    #[max_len(MAX_LEN)]
+    
+    #[max_len(MAX_LEN)] // 50
     pub balances: Vec<Stock>,
     pub realized_pnl: i64,
     pub total_interest_paid: u64,
@@ -164,15 +169,16 @@ impl LiabilityUpdate {
     fn compute(old_exposure: u64, old_collar_bps: u16,
         new_exposure: u64, new_pledged: u64, actuary: &Actuary) -> Self {
         let old_collar_dollars = old_exposure.saturating_mul(old_collar_bps as u64) / 10_000;
-        let new_leverage = if new_pledged > 0 {
-            ((new_exposure as u128 * 100) /
-              new_pledged as u128).min(i64::MAX as u128) as i64
+
+        let new_leverage = if new_pledged > 0 { ((new_exposure as u128 * 100) /
+                                                   new_pledged as u128).min(i64::MAX as u128) as i64
         } else { 100 };
 
         let new_collar = collar_bps(new_leverage, actuary);
         let new_collar_dollars = new_exposure.saturating_mul(new_collar as u64) / 10_000;
         Self { old_collar_dollars, new_collar_bps: new_collar as u16, new_collar_dollars }
     }
+
     fn apply(self, pod: &mut Stock,
             depository: &mut Depository) {
         pod.collar_bps = self.new_collar_bps;
@@ -222,61 +228,72 @@ impl Depositor {
     /// Call before any operation that changes deposited_quid on an existing customer.
     pub fn accrue(&mut self, bank: &mut Depository, now: i64) {
         if self.owner == Pubkey::default() { return; }
+
         let dc = now.saturating_sub(self.last_updated) as u64;
         self.deposit_seconds = self.deposit_seconds
             .saturating_add(self.deposited_quid as u128 * dc as u128);
+
         let db = now.saturating_sub(bank.last_updated) as u64;
         bank.total_deposit_seconds = bank.total_deposit_seconds
             .saturating_add(bank.total_deposits as u128 * db as u128);
-        self.last_updated = now;
-        bank.last_updated = now;
+        
+        self.last_updated = now; bank.last_updated = now;
     }
 
     pub fn pool_deposit(&mut self,
-        bank: &mut Depository, usd: u64, now: i64) {
+        bank: &mut Depository, 
+        usd: u64, now: i64) {
         if self.owner != Pubkey::default() {
             let dc = now.saturating_sub(self.last_updated) as u64;
+
             self.deposit_seconds = self.deposit_seconds
                 .saturating_add(self.deposited_quid as u128 * dc as u128);
+
             let db = now.saturating_sub(bank.last_updated) as u64;
             bank.total_deposit_seconds = bank.total_deposit_seconds
                 .saturating_add(bank.total_deposits as u128 * db as u128);
         }
         self.deposited_quid = self.deposited_quid.saturating_add(usd);
         bank.total_deposits = bank.total_deposits.saturating_add(usd);
-        self.last_updated = now;
-        bank.last_updated = now;
+        self.last_updated = now; bank.last_updated = now;
     }
 
-    pub fn pool_withdraw(&mut self,
-        bank: &mut Depository, usd: u64, now: i64) -> Result<()> {
+    pub fn pool_withdraw(
+        &mut self, bank: &mut Depository, 
+        usd: u64, now: i64) -> Result<()> {
         let dc = now.saturating_sub(self.last_updated) as u64;
-        self.deposit_seconds = self.deposit_seconds
-            .saturating_add(self.deposited_quid as u128 * dc as u128);
+        self.deposit_seconds = self.deposit_seconds.saturating_add(
+                          self.deposited_quid as u128 * dc as u128);
+        
         let db = now.saturating_sub(bank.last_updated) as u64;
         bank.total_deposit_seconds = bank.total_deposit_seconds
             .saturating_add(bank.total_deposits as u128 * db as u128);
+        
         let new_total = bank.total_deposits.saturating_sub(usd);
-        require!(new_total >= bank.max_liability, PithyQuip::Undercollateralised);
+
+        require!(new_total >= bank.max_liability, 
+                PithyQuip::Undercollateralised);
+
         self.deposited_quid = self.deposited_quid.saturating_sub(usd);
+        self.last_updated = now; bank.last_updated = now;
         bank.total_deposits = new_total;
-        self.last_updated = now;
-        bank.last_updated = now;
         Ok(())
     }
 
     pub fn pool_mark_down(&mut self,
         bank: &mut Depository, usd: u64, now: i64) {
         let dc = now.saturating_sub(self.last_updated) as u64;
+
         self.deposit_seconds = self.deposit_seconds
             .saturating_add(self.deposited_quid as u128 * dc as u128);
+
         let db = now.saturating_sub(bank.last_updated) as u64;
         bank.total_deposit_seconds = bank.total_deposit_seconds
             .saturating_add(bank.total_deposits as u128 * db as u128);
+            
         self.deposited_quid = self.deposited_quid.saturating_sub(usd);
         bank.total_deposits = bank.total_deposits.saturating_sub(usd);
-        self.last_updated = now;
-        bank.last_updated = now;
+        self.last_updated = now; bank.last_updated = now;
     }
 
     /// Accumulate collar_dollar_seconds on a pod before any pledged/collar mutation.
@@ -288,6 +305,7 @@ impl Depositor {
         if elapsed > 0 && pod.collar_bps > 0 {
             let collar_dollars = pod.pledged
                 .saturating_mul(pod.collar_bps as u64) / 10_000;
+
             pod.collar_dollar_seconds = pod.collar_dollar_seconds
                 .saturating_add(elapsed.saturating_mul(collar_dollars as u128));
         }
@@ -305,6 +323,7 @@ impl Depositor {
         self.realized_pnl = self.realized_pnl.saturating_add(net);
         self.total_interest_paid =
             self.total_interest_paid.saturating_add(interest_paid);
+
         self.total_collar_dollar_seconds =
             self.total_collar_dollar_seconds.saturating_add(collar_dollar_seconds);
     }
@@ -314,7 +333,8 @@ impl Depositor {
     // strategy for protecting against losses...though it limits large gains (under X%);
     // lest borrowers dilute depositors' yield, following solution creates speed bumps
     pub fn repo(&mut self, ticker: &str, // reposition, or repossession (it depends)
-        mut amount: i64, price: u64, current_time: i64, slot: i64, actuary: &Actuary,
+        mut amount: i64, price: u64, // < obtained from Pyth by etc.rs helper function
+        current_time: i64, slot: i64, actuary: &Actuary,
         depository: &mut Depository) -> Result<(i64, u64)> {
         require!(price > 0, PithyQuip::InvalidPrice);
         let padded = Self::pad_ticker(ticker);
@@ -344,6 +364,7 @@ impl Depositor {
 
         let util_factor = (conc as f64 / 10000.0).max(0.1).min(1.0);
         let max_lev = max_leverage_x100(actuary, slot, conc);
+
         pod.pledged = pod.pledged.saturating_sub(accrued_interest);
         pod.interest_paid = pod.interest_paid.saturating_add(accrued_interest);
         if pod.exposure > 0 || (pod.exposure == 0 && amount > 0) {
@@ -366,6 +387,7 @@ impl Depositor {
                     let new_pledged = pod.pledged.saturating_add(net);
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
                             pod.collar_bps, exposure, new_pledged, actuary);
+
                     let collar_increase = lelu.new_collar_dollars.saturating_sub(lelu.old_collar_dollars);
                     require!(depository.has_capacity(collar_increase), PithyQuip::PoolAtCapacity);
 
@@ -375,8 +397,14 @@ impl Depositor {
                     lelu.apply(pod, depository);
                     self.update_drawn(delta as i64);
                     depository.utilisation(delta as i64);
-                    // Don't record take profit, happens when
-                    // calling instruction (avoids double-count)
+                    // Return (delta, AI) matching original drawn semantics.
+                    // clutch's snapshot dispatch sees:
+                    //   dq_delta = -delta (gross), pledged_delta = -AI + net
+                    //   T_delta  = -(dq_delta + pledged_delta) = delta - net + AI
+                    //            = fee + AI    (fee retained in reserve, AI catch-up)
+                    // The return value `delta` is a routing hint only — exposure
+                    // unchanged in this branch so dispatch routes to the else...
+                    // branch and computes T from snapshots, regardless of value.
                     return Ok((delta as i64, accrued_interest));
                 } // need to burn ^ from depository's shares...
                 else if amount != 0 { // caller is not liquidator;
@@ -397,8 +425,9 @@ impl Depositor {
                     // Amortization speed: 0.5x at 10% util, 2.0x at 100% util
                     // Base: 4 days to liquidate, faster at high utilization
                     let speed = 0.5 + 1.5 * util_factor;
-                    let reduce =  ((pod.exposure.unsigned_abs() as f64 *
+                    let reduce = ((pod.exposure.unsigned_abs() as f64 *
                         (time_elapsed as f64 / MAX_AGE as f64)) * speed) as u64;
+                    
                     let reduce = reduce.max(1);
 
                     pod.exposure = pod.exposure.saturating_sub(reduce as i64);
@@ -407,8 +436,8 @@ impl Depositor {
                     pod.updated = current_time;
 
                     let new_exp = (pod.exposure.unsigned_abs() as u128)
-                        .saturating_mul(price as u128)
-                        .min(u64::MAX as u128) as u64;
+                                         .saturating_mul(price as u128)
+                                        .min(u64::MAX as u128) as u64;
 
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
                             pod.collar_bps, new_exp, pod.pledged, actuary);
@@ -419,19 +448,28 @@ impl Depositor {
                     let pod_exposure_after = pod.exposure;
                     let (pod_cb, pod_ip, pod_cds) = (pod.cost_basis,
                         pod.interest_paid, pod.collar_dollar_seconds);
-                    let _ = &pod; // end borrow before &mut self
+                    // Zero RAROC fields before flush so re-entry on this ticker
+                    // doesn't double-count cb/ip/cds into Depositor totals.
+                    if pod_exposure_after == 0 {
+                        pod.cost_basis = 0;
+                        pod.interest_paid = 0;
+                        pod.collar_dollar_seconds = 0;
+                    }
+                    let _ = &pod; 
+                    // end borrow before &mut self
                     self.update_drawn(neg_reduce);
                     depository.utilisation(neg_reduce);
                     if pod_exposure_after == 0 {
-                        self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
-                    }   return Ok((neg_reduce, accrued_interest));
+                        self.flush_raroc(pod_cb,
+                             pod_ip, pod_cds, 0);
+
+                    } return Ok((neg_reduce, accrued_interest));
                 } // ^ (-) indicates amount is (+) to Banks.total_deposits
              // as it performs a credit (ditto for UniV4's PoolManager) and
             // pays the liquidator a small cut (delta - 0.05% gets absorbed)
             } let lower = pod.pledged.saturating_sub(collar_amt);
             if lower > exposure && exposure > 0 { // under-exposed:
-                // exceeding maximum drop of X%
-                // first, try prevent liquidation
+                // exceeding maximum drop of X% first, try to prevent liquidation 
                 let mut delta = lower.saturating_sub(exposure).saturating_sub(collar_amt);
                 delta = delta.saturating_add(delta / 250);
                 if self.deposited_quid >= delta {
@@ -444,21 +482,27 @@ impl Depositor {
 
                     self.deposited_quid -= delta;
                     pod.exposure = pod.exposure.saturating_add(
-                        ((delta.saturating_sub(delta / 250)) as f64 / price as f64) as i64
+                        ((delta.saturating_sub(delta / 250)) 
+                            as f64 / price as f64) as i64
                     );
                     // Track increased exposure
                     pod.updated = current_time;
                     lelu.apply(pod, depository);
                     self.update_drawn(delta as i64);
                     depository.utilisation(delta as i64);
-                    return Ok((delta as i64, accrued_interest));
+                    // pod.pledged unchanged in this branch (only pod.exposure grows).
+                    // dq dropped by `delta` (drain), pledged dropped by AI (line 347).
+                    // clutch's snapshot dispatch yields T_delta = drain + AI,
+                    // i.e. the pool's reserve absorbs the dq drop as solvency
+                    // surplus and catches up the AI deduction in one shot.
+                    return Ok((0, accrued_interest));
                 }
                 else if amount == 0 {
                     require!(time_elapsed > MAX_AGE as i64, PithyQuip::TooSoon);
                     let speed = 0.5 + 1.5 * util_factor;
 
                     let reduce = ((pod.exposure.abs() as f64 *
-                        (time_elapsed as f64 / MAX_AGE as f64)) * speed) as u64;
+                       (time_elapsed as f64 / MAX_AGE as f64)) * speed) as u64;
 
                     let reduce = reduce.max(1);
                     pod.exposure -= reduce as i64;
@@ -486,16 +530,16 @@ impl Depositor {
                 if pod.exposure < 0 {
                     amount = amount.saturating_add(
                      pod.exposure.saturating_neg());
-                    pod.exposure = 0;
-                }
-                // $ value to be sent to depositor is accounted as:
+                     pod.exposure = 0;
+                } // $ value to be sent to depositor is accounted as:
                 let redeem_dollars = (amount.unsigned_abs() as u128)
                                       .saturating_mul(price as u128)
                                      .min(u64::MAX as u128) as u64;
 
                 if redeem_dollars > pod.pledged { // all-in TP...
                     let total = redeem_dollars; // full take-profit...
-                    let from_pool = total.saturating_sub(pod.pledged).saturating_sub(accrued_interest);
+                    let from_pool = total.saturating_sub(pod.pledged)
+                                         .saturating_sub(accrued_interest);
 
                     pod.pledged = 0; pod.updated = current_time;
                     let new_exp = (pod.exposure.unsigned_abs() as u128)
@@ -503,22 +547,60 @@ impl Depositor {
                                         .min(u64::MAX as u128) as u64;
 
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
-                    pod.collar_bps, new_exp, pod.pledged, actuary);
+                            pod.collar_bps, new_exp, pod.pledged, actuary);
 
                     lelu.apply(pod, depository);
                     let util_change = -((amount.unsigned_abs() as i128)
                                          .saturating_mul(price as i128)
                                         .min(i64::MAX as i128) as i64);
-                    // RAROC: extract before update_drawn ends the window to hold pod
-                    let (cb, ip, cds) = (pod.cost_basis, pod.interest_paid, pod.collar_dollar_seconds);
+
+                    // RAROC: extract before update_drawn ends the window to hold pod.
+                    // Zero on the pod itself so re-entry doesn't double-count
+                    // cb/ip/cds into Depositor totals on the next close.
+                    let (cb, ip, cds) = (pod.cost_basis, pod.interest_paid, 
+                                                pod.collar_dollar_seconds);
+                    pod.cost_basis = 0; 
+                    pod.interest_paid = 0;
+                    pod.collar_dollar_seconds = 0;
+                    let _ = &pod; 
+                    // end borrow before &mut self
                     self.update_drawn(util_change);
                     depository.utilisation(util_change);
                     self.flush_raroc(cb, ip, cds, total);
                     return Ok((-(from_pool as i64), total));
-                } else { // partial take-profit
-                    pod.pledged = pod.pledged.saturating_sub(redeem_dollars);
-                    let transfer = redeem_dollars.saturating_sub(accrued_interest);
+                } else { // partial take-profit — capitalize into deposited_quid
+                    // User intent: small early TP as a hedge. No fee, gain banked
+                    // for redeployment or later withdrawal.
+                    //
+                    // Return signal: delta = pledged_reduce + AI, interest = user_credit.
+                    // clutch dispatches by (delta>0, interest>0, exposure_decreased)
+                    // and computes total_deposits delta from snapshots so the vault
+                    // invariant `dq + Σpledged + T = vault` holds:
+                    //   customer.deposited_quid += interest        (= user_credit)
+                    //   T_delta = pledged_reduce + AI - user_credit  (signed)
+                    //
+                    // Profit case → T_delta < 0: pool reserve funds the gain.
+                    // Loss case   → T_delta > 0: pool reserve absorbs the loss.
+                    //
+                    let amt_frac_num = redeem_dollars as u128;
+                    let amt_frac_den = old_exposure_value as u128;
+
+                    let ai_share = ((accrued_interest as u128).saturating_mul(amt_frac_num)
+                                    .checked_div(amt_frac_den).unwrap_or(0)) as u64;
+
+                    let user_credit = redeem_dollars.saturating_sub(ai_share);
+
+                    let pledged_reduce = ((pod.pledged as u128).saturating_mul(amt_frac_num)
+                        .checked_div(amt_frac_den).unwrap_or(0)).min(pod.pledged as u128) as u64;
+
+                    pod.pledged = pod.pledged.saturating_sub(pledged_reduce);
+
+                    let cb_reduce = ((pod.cost_basis as u128).saturating_mul(amt_frac_num)
+                                    .checked_div(amt_frac_den).unwrap_or(0)) as u64;
+
+                    pod.cost_basis = pod.cost_basis.saturating_sub(cb_reduce);
                     pod.updated = current_time;
+
                     let new_exp = (pod.exposure.unsigned_abs() as u128)
                                          .saturating_mul(price as u128)
                                                  .min(u64::MAX as u128) as u64;
@@ -526,27 +608,50 @@ impl Depositor {
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
                     pod.collar_bps, new_exp, pod.pledged, actuary);
 
+                    // Snapshot RAROC. Partial branch can also fully close when
+                    // amount = -pod.exposure with redeem_dollars <= pod.pledged
+                    // (flat or losing close routed here). Zero on the pod first
+                    // so re-entry doesn't double-count cb/ip/cds into Depositor totals.
+                    let pod_exp_after = pod.exposure;
+                    let (pod_cb, pod_ip, pod_cds) = (pod.cost_basis,
+                        pod.interest_paid, pod.collar_dollar_seconds);
+
+                    if pod_exp_after == 0 {
+                        pod.cost_basis = 0;
+                        pod.interest_paid = 0;
+                        pod.collar_dollar_seconds = 0;
+                    }
                     lelu.apply(pod, depository);
-                    let util_change = -((amount.unsigned_abs() as i128)
-                                           .saturating_mul(price as i128)
-                                           .min(i64::MAX as i128) as i64);
-                    let _ = &pod; // end borrow before &mut self
+                    let _ = &pod;
+
+                    let util_change = -(redeem_dollars as i64);
                     self.update_drawn(util_change);
                     depository.utilisation(util_change);
-                    return Ok((0, transfer));
+
+                    if pod_exp_after == 0 {
+                        self.flush_raroc(pod_cb, pod_ip, 
+                                    pod_cds, user_credit);
+                    }
+                    let delta_signal = pledged_reduce.saturating_add(accrued_interest);
+                    return Ok((delta_signal as i64, user_credit));
                 }
             } else { // Adding exposure
                 let new_exp = (pod.exposure as u64).saturating_mul(price);
                 let post_lev = if pod.pledged > 0 {
                     ((new_exp as u128 * 100) / pod.pledged as u128).min(i64::MAX as u128) as i64
                 } else { 100 };
+
                 require!(post_lev <= max_lev, PithyQuip::Undercollateralised);
                 let delta = pod.pledged.saturating_add(collar_amt);
+                let mut taken_from_pool: u64 = 0;
                 if new_exp > delta {
                     let excess = new_exp.saturating_sub(delta);
                     if self.deposited_quid >= excess {
                         self.deposited_quid -= excess;
                         pod.pledged = pod.pledged.saturating_add(excess);
+                        // dq → pledged transfer; clutch's snapshot dispatch
+                        // sees dq drop and pledged grow, T_delta picks up AI.
+                        taken_from_pool = excess;
                     } else {
                         pod.exposure = pod.exposure.saturating_sub(
                              (excess as f64 / price as f64) as i64);
@@ -576,7 +681,11 @@ impl Depositor {
 
                 self.update_drawn(util_change);
                 depository.utilisation(util_change);
-                return Ok((0, accrued_interest));
+                // Return `taken_from_pool` (=excess drained, or 0 if none).
+                // Pledged grew (excess moved from dq → pledged), exposure grew,
+                // so clutch falls through to the snapshot-based "else" branch:
+                //   T_delta = -(dq_delta + pledged_delta) absorbs the dq drain
+                return Ok((taken_from_pool as i64, accrued_interest));
             }
         } let exposure = ((-pod.exposure) as u64).saturating_mul(price);
         let pivot = pod.pledged.saturating_sub(collar_amt);
@@ -587,24 +696,30 @@ impl Depositor {
             if self.deposited_quid >= delta {
                 let new_exp = exposure.saturating_add(delta).saturating_sub(delta / 250);
                 let lelu = LiabilityUpdate::compute(old_exposure_value, pod.collar_bps,
-                                                    new_exp, pod.pledged, actuary);
+                                                        new_exp, pod.pledged, actuary);
 
                 let collar_increase = lelu.new_collar_dollars.saturating_sub(lelu.old_collar_dollars);
                 require!(depository.has_capacity(collar_increase), PithyQuip::PoolAtCapacity);
 
                 self.deposited_quid -= delta;
                 pod.exposure = pod.exposure.saturating_add((
-                    ((delta.saturating_sub(delta / 250)) as f64) / price as f64) as i64);
+                    ((delta.saturating_sub(delta / 250)) 
+                        as f64) / price as f64) as i64);
 
                 pod.updated = current_time;
                 lelu.apply(pod, depository);
                 let util_change = (amount as i128)
                     .saturating_mul(price as i128)
-                    .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+                    .clamp(i64::MIN as i128, 
+                    i64::MAX as i128) as i64;
 
-                self.update_drawn(util_change);
-                depository.utilisation(util_change);
-                return Ok((delta as i64, accrued_interest));
+                self.update_drawn(util_change); depository.utilisation(util_change);
+                // pod.pledged unchanged in this branch (only pod.exposure changes).
+                // dq dropped by `delta` (drain), pledged dropped by AI (line 347).
+                // clutch's snapshot dispatch yields T_delta = drain + AI; the pool
+                // retains the dq drop as solvency surplus and catches up the AI
+                // deduction. User gains short exposure as a price-drop hedge.
+                return Ok((0, accrued_interest));
             }
             else if amount != 0 {
                 return Err(PithyQuip::Undercollateralised.into());
@@ -635,6 +750,13 @@ impl Depositor {
                 let (pod_cb, pod_ip, pod_cds) = (pod.cost_basis,
                     pod.interest_paid, pod.collar_dollar_seconds);
 
+                if pod_exp == 0 {
+                    pod.cost_basis = 0;
+                    pod.interest_paid = 0;
+                    pod.collar_dollar_seconds = 0;
+                }
+                let _ = &pod; 
+                // end borrow before &mut self
                 self.update_drawn(dollars);
                 depository.utilisation(dollars);
                 // RAROC: short liquidation nibble
@@ -650,8 +772,10 @@ impl Depositor {
             if exposure > upper {
                 let mut delta = exposure.saturating_sub(upper);
                 delta = delta.saturating_add(delta / 250);
+
                 if self.deposited_quid >= delta {
-                    let new_pledged = pod.pledged.saturating_add(delta).saturating_sub(delta / 250);
+                    let net = delta.saturating_sub(delta / 250);
+                    let new_pledged = pod.pledged.saturating_add(net);
                     let lelu = LiabilityUpdate::compute(old_exposure_value, pod.collar_bps,
                                                             exposure, new_pledged, actuary);
 
@@ -664,6 +788,13 @@ impl Depositor {
                     lelu.apply(pod, depository);
                     self.update_drawn(delta as i64);
                     depository.utilisation(delta as i64);
+                    // Same shape as long over-profit auto-protect:
+                    //   dq -= delta (gross), pledged += net (= delta - fee).
+                    // Drawn tracking uses delta (gross) to match original — the
+                    // fee is part of the user's commitment to the pool's risk
+                    // pool, not a separate income flow that should be excluded.
+                    // clutch's snapshot dispatch sees pledged_delta = net - AI,
+                    // dq_delta = -delta, so T_delta = fee + AI keeps invariant.
                     return Ok((delta as i64, accrued_interest));
                 }
                 else if amount == 0 {
@@ -681,7 +812,7 @@ impl Depositor {
                                         .min(u64::MAX as u128) as u64;
 
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
-                    pod.collar_bps, new_exp, pod.pledged, actuary);
+                            pod.collar_bps, new_exp, pod.pledged, actuary);
 
                     lelu.apply(pod, depository);
                     let dollars = -((reduce as i128).saturating_mul(price as i128)
@@ -690,68 +821,111 @@ impl Depositor {
                     let (pod_cb, pod_ip, pod_cds) = (pod.cost_basis,
                         pod.interest_paid, pod.collar_dollar_seconds);
 
+                    if pod_exp == 0 {
+                        pod.cost_basis = 0;
+                        pod.interest_paid = 0;
+                        pod.collar_dollar_seconds = 0;
+                    }
+                    let _ = &pod; // end borrow before &mut self
                     self.update_drawn(dollars);
                     depository.utilisation(dollars);
                     // RAROC: short over-profit liquidation nibble
                     if pod_exp == 0 {
-                        self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
+                        self.flush_raroc(pod_cb, 
+                            pod_ip, pod_cds, 0);
                     }
                     return Ok((dollars, accrued_interest));
                 } else {
                     return Err(PithyQuip::Undercollateralised.into());
                 }
-            }
-            let old_exp = exposure;
-            let mut drawn_delta_608: i64 = 0;
+            } let old_exp = exposure; let mut drawn_delta_608: i64 = 0;
             // deferred update for the one non-returning branch
             pod.exposure = pod.exposure.saturating_add(amount);
             if amount > 0 && old_exp > 0 {
-                // Redeeming short
-                if pod.exposure > 0 {
-                    amount = amount.saturating_sub(pod.exposure);
+                // Redeeming short — capitalize into deposited_quid (mirrors long partial TP).
+                // No fee on partial close; user banks the gain to redeploy or withdraw later.
+                if pod.exposure > 0 { 
+                    amount = amount.saturating_sub(pod.exposure); 
                     pod.exposure = 0;
-                }
-                let amt_frac = if old_exp > 0 {
-                    amount as f64 / old_exp as f64
-                } else { 0.0 };
-                let profit = ((((pod.pledged.saturating_sub(old_exp)) as f64) *
-                            amt_frac) as u64).saturating_sub(accrued_interest);
+                } // Units: redeem_dollars and old_exp are both dollar-denominated, so
+                // amt_frac is a clean fraction. (amount is in shares; multiplying by
+                // price brings it into dollar space.)
+                let redeem_dollars = (amount.unsigned_abs() as u128)
+                                      .saturating_mul(price as u128)
+                                     .min(u64::MAX as u128) as u64;
 
-                let pledged_reduce = (pod.pledged as f64 * amt_frac) as i64;
-                pod.pledged = pod.pledged.saturating_sub(pledged_reduce.unsigned_abs());
+                let amt_frac_num = redeem_dollars as u128;
+                let amt_frac_den = if old_exp > 0 { old_exp as u128 } else { 1 };
+
+                let ai_share = ((accrued_interest as u128).saturating_mul(amt_frac_num)
+                                .checked_div(amt_frac_den).unwrap_or(0)) as u64;
+
+                let pledged_reduce = ((pod.pledged as u128).saturating_mul(amt_frac_num)
+                    .checked_div(amt_frac_den).unwrap_or(0)).min(pod.pledged as u128) as u64;
+
+                // For shorts: cost_basis_share = pre-AI pledged × amt_frac
+                //                              = pledged_reduce + ai_share.
+                // Signed P&L on slice = cost_basis_share − redeem_dollars.
+                // Profit (price dropped): positive — user gains.
+                // Loss (price rose): negative — user loses, pool absorbs.
+                // user_credit = pledged_reduce + signed_pnl, clamped at 0...
+                let cost_basis_share = pledged_reduce.saturating_add(ai_share);
+                let signed_pnl: i128 = (cost_basis_share as i128) - (redeem_dollars as i128);
+                let raw_credit: i128 = (pledged_reduce as i128).saturating_add(signed_pnl);
+                let user_credit: u64 = raw_credit.max(0) as u64;
+
+                pod.pledged = pod.pledged.saturating_sub(pledged_reduce);
+                let cb_reduce = ((pod.cost_basis as u128).saturating_mul(amt_frac_num)
+                               .checked_div(amt_frac_den).unwrap_or(0)) as u64;
+
+                pod.cost_basis = pod.cost_basis.saturating_sub(cb_reduce);
+                pod.updated = current_time;
 
                 let new_exp = (pod.exposure.unsigned_abs() as u128)
                                      .saturating_mul(price as u128)
                                     .min(u64::MAX as u128) as u64;
 
                 let lelu = LiabilityUpdate::compute(old_exposure_value,
-                pod.collar_bps, new_exp, pod.pledged, actuary);
+                        pod.collar_bps, new_exp, pod.pledged, actuary);
 
-                lelu.apply(pod, depository);
-                let util_change = -((pledged_reduce as i128)
-                              .saturating_mul(price as i128)
-                                    .clamp(i64::MIN as i128,
-                                           i64::MAX as i128) as i64);
-
-                let pod_exp = pod.exposure;
+                let pod_exp_after = pod.exposure;
                 let (pod_cb, pod_ip, pod_cds) = (pod.cost_basis,
                     pod.interest_paid, pod.collar_dollar_seconds);
+
+                if pod_exp_after == 0 {
+                    pod.cost_basis = 0;
+                    pod.interest_paid = 0;
+                    pod.collar_dollar_seconds = 0;
+                }
+                lelu.apply(pod, depository); let _ = &pod;
+                let util_change = -(redeem_dollars as i64);
 
                 self.update_drawn(util_change);
                 depository.utilisation(util_change);
 
-                let transfer_out = (profit as i64).saturating_add(pledged_reduce) as u64;
-                // RAROC: short TP - record when position fully closed
-                if pod_exp == 0 {
-                    self.flush_raroc(pod_cb, pod_ip, pod_cds, transfer_out);
+                if pod_exp_after == 0 {
+                    self.flush_raroc(pod_cb, pod_ip, 
+                                pod_cds, user_credit);
                 }
-                return Ok((-(profit as i64), transfer_out));
-            } else if amount < 0 { // issue short exposure...
+                // Return signal: delta = pledged_reduce + AI, interest = user_credit.
+                // clutch dispatches: delta>0 + interest>0 + exposure_decreased
+                //   → partial TP capitalize: deposited_quid += interest;
+                //                       T_delta computed from snapshots.
+                let delta_signal = pledged_reduce.saturating_add(accrued_interest);
+                return Ok((delta_signal as i64, user_credit));
+            } 
+            else if amount < 0 { // issue short exposure...
                 let new_exp = ((-pod.exposure) as u64).saturating_mul(price);
                 let post_lev = if pod.pledged > 0 {
-                    ((new_exp as u128 * 100) / pod.pledged as u128).min(i64::MAX as u128) as i64
-                } else { 100 };
-                require!(post_lev <= max_lev, PithyQuip::Undercollateralised);
+                    ((new_exp as u128 * 100) / 
+                    pod.pledged as u128).min(
+                        i64::MAX as u128) as i64
+                } 
+                else { 100 };
+                
+                require!(post_lev <= max_lev, 
+                PithyQuip::Undercollateralised);
+
                 let upper = pod.pledged.saturating_add(collar_amt);
                 if pod.pledged > new_exp {
                     // ^ not a valid state unless we
@@ -770,17 +944,23 @@ impl Depositor {
                         pod.exposure = pod.exposure.saturating_sub(
                                 (room as f64 / price as f64) as i64);
 
-                        pod.updated = current_time;
+                        pod.updated = current_time; 
                         lelu.apply(pod, depository);
-                        self.update_drawn(room as i64);
+                        self.update_drawn(room as i64); 
                         depository.utilisation(room as i64);
-                        return Ok((room as i64, accrued_interest));
-                } else { return Err(PithyQuip::UnderExposed.into()); }
+                        // pod.pledged unchanged (only pod.exposure becomes more
+                        // negative). Same shape as long under-exposed and short ITM:
+                        // dq drained by `room`, AI deducted from pledged, clutch's
+                        // snapshot dispatch yields T_delta = room + AI. Pool absorbs
+                        // the dq drop as solvency surplus while user gains short...
+                        return Ok((0, accrued_interest));
+
+                    } else { return Err(PithyQuip::UnderExposed.into()); }
                 } else if new_exp > upper { // to prevent OverExposed,
                 // adding positive number shrinks negative exposure...
                     pod.exposure = pod.exposure.saturating_add(
-                        (((new_exp.saturating_sub(upper)) as f64) / price as f64) as i64
-                    );
+                      (((new_exp.saturating_sub(upper)) as f64) / price as f64) as i64);
+                    
                     drawn_delta_608 = -((new_exp.saturating_sub(upper)) as i64);
                     depository.utilisation(drawn_delta_608);
                 }
@@ -792,8 +972,9 @@ impl Depositor {
             let final_exp = (pod.exposure.unsigned_abs() as u128)
                                     .saturating_mul(price as u128)
                                     .min(u64::MAX as u128) as u64;
+
             let lelu = LiabilityUpdate::compute(old_exposure_value,
-            pod.collar_bps, final_exp, pod.pledged, actuary);
+                    pod.collar_bps, final_exp, pod.pledged, actuary);
 
             lelu.apply(pod, depository);
             let _ = &pod; // end borrow before deferred self.update_drawn
@@ -826,7 +1007,6 @@ impl Depositor {
                 } else {
                     pod.pledged / 10
                 };
-
                 let max: u64 = if pod.exposure > 0 {
                     let exposure_value = (pod.exposure as u64).saturating_mul(price);
                     (pod.pledged.saturating_add(collar_amt)).saturating_sub(exposure_value)

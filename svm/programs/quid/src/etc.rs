@@ -521,8 +521,8 @@ impl Actuary {
     ///
     /// Step 1: is already complete: USYC wraps every USDC entering the basket,
     /// giving every USDC a T-bill floor yield. The basket already has rates
-    /// exposure embedded in its composition: Morpho vaults on L2 Base &
-    /// Polygon, AAVE on Arbitrum, generating yield while bridging to L1
+    /// exposure embedded in its composition: Morpho vaults on L2 (Base &
+    /// Polygon), AAVE on Arbitrum, generate yield while bridging to L1 
     ///
     /// Step 2: What needs to exist is a maker network quoting & physically
     /// delivering tokenised FX, equity, or commodity positions; Bebop's
@@ -622,10 +622,9 @@ impl Actuary {
     #[inline]
     pub fn imbalance_bps(&self) -> i64 {
         let t = self.get_total();
-        if t == 0 {
-            0
-        } else {
-            ((self.get_net() as i128) * (BPS as i128) / (t as i128)) as i64
+        if t == 0 { 0 } else {
+            ((self.get_net() as i128) * 
+          (BPS as i128) / (t as i128)) as i64
         }
     }
 

@@ -5,7 +5,8 @@ use anchor_spl::token_interface::{ self, Mint,
 };
 use anchor_lang::solana_program::{
     program::invoke_signed,
-    system_instruction};
+    system_instruction
+};
 
 use crate::stay::*;
 use crate::state::{
@@ -13,6 +14,7 @@ use crate::state::{
     transfer_from_vaults,
     ProgramConfig, USD_STAR,
     SOL_POOL_SEED, FLASH_REPAY_DISC,
+    DeviceEnrollment,
 };
 use crate::etc::{ get_account,
     PithyQuip, fetch_price,
@@ -190,12 +192,34 @@ pub struct Withdraw<'info> {
     #[account(mut, seeds = [b"risk", ticker.as_bytes()], bump = ticker_risk.bump)]
     pub ticker_risk: Option<Account<'info, TickerRisk>>,
 
+    /// Hardware-attestation gate, REQUIRED only when growing exposure
+    /// (amount > 0 && exposure == true) — the branch in handle_out that calls
+    /// repo()'s "Adding exposure" path, which pulls from deposited_quid to
+    /// expand pod.pledged. This is the second cycling vector: after an all-in
+    /// TP leaves a zombie pod (pledged=0, exposure=0) in balances, this branch
+    /// can repower it from the user's pool balance without ever calling
+    /// handle_in.
+    ///
+    /// Pass None for all exit paths — TP withdrawals, pool withdrawals,
+    /// withdraw-pledged-only. Funds must remain withdrawable even if the
+    /// device's enrollment is later revoked or the admin rotates
+    /// config_version.
+    ///
+    /// Constraints are checked in the handler, only on the gated branch,
+    /// because Anchor account-level constraints would fire for all callers.
+    #[account(
+        seeds = [b"device_enrollment", signer.key().as_ref()],
+        bump,
+    )]
+    pub enrollment: Option<Account<'info, DeviceEnrollment>>,
+
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_out<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>, mut amount: i64,
+pub fn handle_out<'info>(ctx: Context<'_, '_, 'info, 
+    'info, Withdraw<'info>>, mut amount: i64,
     ticker: String, exposure: bool) -> Result<()> {
     require!(amount != 0, PithyQuip::InvalidAmount);
 
@@ -286,16 +310,23 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>, mu
         if !exposure { // < withdraw pledged from specific ticker (no exposure change)
             require!(amount < 0, PithyQuip::InvalidAmount);
             customer.renege(Some(t), amount, None, right_now)?;
-
-            transfer_from_vault(
-                &ctx.accounts.bank_token_account,
-                &ctx.accounts.mint,
-                &ctx.accounts.customer_token_account,
-                ctx.bumps.bank_token_account,
-                &ctx.accounts.token_program,
-                -amount as u64,
+            transfer_from_vault(&ctx.accounts.bank_token_account,
+                &ctx.accounts.mint, &ctx.accounts.customer_token_account,
+                ctx.bumps.bank_token_account, &ctx.accounts.token_program,
+                -amount as u64, // TODO make sure frontend always passes a negative here
             )?;
         } else {
+            // Position-growth gate: when amount > 0, this branch can pull
+            // from deposited_quid to expand pod.pledged (or repower a zombie
+            // pod left by a prior all-in TP). Same trio of checks as Stockup;
+            // only enforced for the growth direction so exits stay open.
+            let enr = ctx.accounts.enrollment.as_ref()
+                .ok_or(error!(PithyQuip::Unauthorized))?;
+
+            require!(!enr.revoked, PithyQuip::Unauthorized);
+            require!(enr.device_pubkey == ctx.accounts.signer.key(), PithyQuip::Unauthorized);
+            require!(enr.config_version == ctx.accounts.config.config_version, PithyQuip::Unauthorized);
+        
             let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
             let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
             let first: &AccountInfo = &ctx.remaining_accounts[0];
@@ -311,40 +342,93 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>, mu
                 .trim_end_matches('\0') == t)
                 .ok_or(PithyQuip::DepositFirst)?;
 
-            let prior_exposure = pos.exposure;
+            let prior_exposure = pos.exposure; let pre_pledged = pos.pledged;
             let leverage = if pos.pledged > 0 { (pos.exposure.abs() as u64
                               * adjusted_price * 100 / pos.pledged) as i64
             } else { 100 };
             let fee = fee_bps(Banks.concentration(), prior_exposure,
                                 amount, &risk.actuary, leverage);
-
-            let (mut delta, mut interest) = customer.repo(t, amount,
+            // Pre-call snapshot of deposited_quid. Combined with pre_pledged
+            // and post-call reads, lets clutch compute total_deposits delta
+            // directly from vault invariant: dq + Σpledged + T = vault
+            // (token-account balance). For any in-program mutation, T must
+            // change to absorb the dq + pledged delta plus any wallet payout
+            // that drops the vault. This makes clutch a thin invariant-preserving
+            // shell over repo's pod/dq mutations.
+            let pre_dq = customer.deposited_quid;
+            let (delta, interest) = customer.repo(t, amount,
             adjusted_price, right_now, slot, &risk.actuary, Banks)?;
 
-            if delta != 0 { // Take Profit:
-                if delta < 0 { delta *= -1; // // < first, remove control flow meaning
-                    let fee_amount = (interest as u128 * fee as u128 / 10_000) as u64;
-                    let payout = interest.saturating_sub(fee_amount);
+            // Post-call snapshot. Position may have been zeroed out by all-in TP;
+            // treat absent pod as exposure=0, pledged=0.
+            let (post_pledged, post_exposure) = customer.balances.iter().find(|p|
+                std::str::from_utf8(&p.ticker).unwrap().trim_end_matches('\0') == t)
+                .map_or((0u64, 0i64), |p| (p.pledged, p.exposure));
 
-                    transfer_from_vault(
-                        &ctx.accounts.bank_token_account,
-                        &ctx.accounts.mint,
-                        &ctx.accounts.customer_token_account,
-                        ctx.bumps.bank_token_account,
-                        &ctx.accounts.token_program,
-                        payout,
-                    )?;
-                    // interest includes (partially) the pod.pledged
-                    // (delta was obtained from total_deposits)...
-                    Banks.total_deposits += fee_amount as u64; interest = 0;
-                    // so we don't add it back to the total_deposits later ^
-                } else { // was auto-protected against liquidation
+            let dq_delta_repo: i128 = (customer.deposited_quid as i128)
+                                        .saturating_sub(pre_dq as i128);
+
+            let pledged_delta: i128 = (post_pledged as i128)
+                        .saturating_sub(pre_pledged as i128);
+
+            // Dispatch by delta sign and exposure motion. For T_delta:
+            //   wallet TP:  T_delta = -(dq_delta + pledged_delta) - payout
+            //   capitalize: credit dq first, then T_delta = -(dq_delta_total + pledged_delta)
+            //   else:       T_delta = -(dq_delta + pledged_delta)
+            // Signed math (i128) — partial TP profit yields negative T_delta;
+            // auto-protect (with fee retention) yields positive T_delta.
+            let signed_t_delta: i128 = if delta < 0 {
+                // All-in TP wallet: interest = total payout, fee carved.
+                let fee_amount = (interest as u128 * fee as u128 / 10_000) as u64;
+                let payout = interest.saturating_sub(fee_amount);
+
+                transfer_from_vault(&ctx.accounts.bank_token_account,
+                    &ctx.accounts.mint, &ctx.accounts.customer_token_account,
+                    ctx.bumps.bank_token_account, &ctx.accounts.token_program, payout)?;
+
+                -(dq_delta_repo.saturating_add(pledged_delta)).saturating_sub(payout as i128)
+            } 
+            else if interest > 0 && post_exposure.abs() < prior_exposure.abs() {
+                // Partial TP capitalize. Credit user_credit to deposited_quid;
+                // T_delta absorbs the resulting invariant gap (negative for
+                // profit, positive for loss/AI absorption). No fee on partial.
+                // Note: we route here whenever interest > 0 AND exposure shrank,
+                // regardless of delta sign. The dust case (highly leveraged
+                // position closing tiny slice) yields delta_signal = 0 due to
+                // integer rounding on pledged_reduce, but user_credit is still
+                // owed and must be capitalized — the delta value is a routing
+                // hint, not a gate. Only auto-protect/drain paths reach the
+                // `else` branch (they grow exposure, not shrink it).
+                customer.deposited_quid = customer.deposited_quid.saturating_add(interest);
+                let dq_delta_total: i128 = dq_delta_repo.saturating_add(interest as i128);
+                
+                time_delta = right_now - customer.last_updated; 
+                customer.last_updated = right_now; 
+                
+                customer.deposit_seconds = customer.deposit_seconds.saturating_add(
+                (time_delta as u128).saturating_mul(customer.deposited_quid as u128));
+                
+                -(dq_delta_total.saturating_add(pledged_delta))
+            } else {
+                // Auto-protect (over-profit / over-loss / Adding-exp drain) or
+                // pure-exposure paths (under-exposed / short-ITM) where dq drops
+                // but pledged stays. T_delta picks up fee + AI for protect cases
+                // and AI alone for pure-exposure cases.
+                if delta > 0 {
                     time_delta = right_now - customer.last_updated;
-                    customer.deposit_seconds += (time_delta as u128) *
-                    ((customer.deposited_quid + delta as u64) as u128);
                     customer.last_updated = right_now;
-                } Banks.total_deposits -= delta as u64;
-            }     Banks.total_deposits += interest;
+                    customer.deposit_seconds = customer.deposit_seconds.saturating_add(
+                                    (time_delta as u128).saturating_mul(pre_dq as u128));
+                }
+                -(dq_delta_repo.saturating_add(pledged_delta))
+            };
+            if signed_t_delta >= 0 {
+                Banks.total_deposits = Banks.total_deposits
+                    .saturating_add(signed_t_delta as u64);
+            } else {
+                Banks.total_deposits = Banks.total_deposits
+                    .saturating_sub((-signed_t_delta) as u64);
+            }
             risk.actuary.record_activity(prior_exposure,
                 amount, leverage, slot, amount.abs(),
                 Banks.total_deposits as i64);
@@ -378,22 +462,23 @@ pub struct WithdrawSol<'info> {
 }
 
 pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
-    lamports: u64) -> Result<()> { require!(lamports > 0, PithyQuip::InvalidAmount);
+             lamports: u64) -> Result<()> { 
+    require!(lamports > 0, PithyQuip::InvalidAmount);
     require!(lamports <= ctx.accounts.customer_account.deposited_lamports,
             PithyQuip::InsufficientFunds);
 
-    require!(lamports <= ctx.accounts.bank.sol_lamports,
+    require!(lamports <= ctx.accounts.bank.sol_lamports, 
             PithyQuip::InsufficientFunds);
 
     let now = Clock::get()?.unix_timestamp;
     let slot = Clock::get()?.slot as i64;
     let pyth = ctx.remaining_accounts.first();
     let sol_price = crate::etc::fetch_price("SOL", pyth)?;
-    ctx.accounts.sol_risk.actuary
-        .update_price(sol_price as i64, slot);
+    ctx.accounts.sol_risk.actuary.update_price(
+                        sol_price as i64, slot);
 
-    let customer = &mut ctx.accounts.customer_account;
     let bank = &mut ctx.accounts.bank;
+    let customer = &mut ctx.accounts.customer_account;
     // Proportional share of the locked USD contribution being withdrawn
     let locked_fraction = (lamports as u128)
         .saturating_mul(customer.sol_pledged_usd as u128)
@@ -402,7 +487,6 @@ pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
 
     // Current collar-adjusted value of the lamports being withdrawn
     let current_floor = collar_adjusted_usd(lamports, sol_price, &ctx.accounts.sol_risk.actuary);
-
     // Use min(locked, current): prevents withdrawing stale value if SOL has dropped.
     // If SOL rose: depositor gets no windfall (conservative, matches Aux headroom logic).
     // If SOL fell: depositor can only take out what it's worth now — no pool theft.
@@ -415,12 +499,12 @@ pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
     bank.sol_lamports = bank.sol_lamports.saturating_sub(lamports);
     customer.pool_withdraw(bank, usd_reduction, now)?;
 
-    invoke_signed(&system_instruction::transfer(ctx.accounts.sol_pool.key, ctx.accounts.depositor.key, lamports),
-        &[ctx.accounts.sol_pool.to_account_info(), ctx.accounts.depositor.to_account_info(),
+    invoke_signed(&system_instruction::transfer(ctx.accounts.sol_pool.key, 
+                                                ctx.accounts.depositor.key, lamports),
+        &[ctx.accounts.sol_pool.to_account_info(), 
+          ctx.accounts.depositor.to_account_info(),
           ctx.accounts.system_program.to_account_info()],
-        &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool]]])?;
-
-    Ok(())
+        &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool]]])?; Ok(())
 }
 
 
@@ -455,7 +539,8 @@ pub struct RefreshSolCollateral<'info> {
     // remaining_accounts[0] = Pyth SOL/USD price account
 }
 
-pub fn handle_refresh_sol_collateral(ctx: Context<RefreshSolCollateral>) -> Result<()> {
+pub fn handle_refresh_sol_collateral(
+    ctx: Context<RefreshSolCollateral>) -> Result<()> {
     let slot = Clock::get()?.slot as i64;
     let now = Clock::get()?.unix_timestamp;
     let pyth = ctx.remaining_accounts.first();
@@ -468,7 +553,8 @@ pub fn handle_refresh_sol_collateral(ctx: Context<RefreshSolCollateral>) -> Resu
         return Ok(()); // nothing to refresh
     }
     let current_floor = collar_adjusted_usd(
-        customer.deposited_lamports, sol_price, &ctx.accounts.sol_risk.actuary,
+        customer.deposited_lamports, sol_price, 
+        &ctx.accounts.sol_risk.actuary,
     );
     if current_floor >= customer.sol_pledged_usd {
         return Ok(()); // SOL has not dropped below locked value — nothing to do
@@ -517,76 +603,63 @@ pub struct FlashRepay<'info> {
 //   [2] repayer_ata — mut
 //   [3] token_program
 // remaining_accounts[0] = Pyth SOL/USD price account (SOL repay only)
-pub fn handle_flash_repay<'info>(ctx: Context<'_, '_, '_, 'info, FlashRepay<'info>>, tip_lamports: u64, tip_token_amount: u64,
-    vault_bump: u8, // canonical [b"vault", mint] bump; 0 for SOL path
-) -> Result<()> {
+pub fn handle_flash_repay<'info>(ctx: Context<'_, '_, '_, 'info, 
+    FlashRepay<'info>>, tip_lamports: u64, tip_token_amount: u64,
+    // canonical [b"vault", mint] bump; 0 for SOL path
+    vault_bump: u8) -> Result<()> {
     let bank = &mut ctx.accounts.bank;
     let flash = &mut ctx.accounts.flash_loan;
-
     if flash.flash_token_amount > 0 {
-        // ── SPL repay ─────────────────────────────────────────────────────────
-        let principal = flash.flash_token_amount;
-        let total     = principal.saturating_add(tip_token_amount);
-
         let ra = ctx.remaining_accounts;
+        let principal = flash.flash_token_amount;
+        let total = principal.saturating_add(tip_token_amount);
         require!(ra.len() >= 4, PithyQuip::InvalidParameters);
         let (vault_ai, mint_ai, repayer_ata, token_prog) =
             (&ra[0], &ra[1], &ra[2], &ra[3]);
 
         // Validate vault PDA using caller-supplied bump (create_program_address,
         // single sha256, vs find_program_address's up-to-255-iteration loop).
-        let expected = Pubkey::create_program_address(
-            &[b"vault", mint_ai.key.as_ref(), &[vault_bump]], &crate::ID,
-        ).map_err(|_| error!(PithyQuip::InvalidParameters))?;
+        let expected = Pubkey::create_program_address(&[b"vault", 
+            mint_ai.key.as_ref(), &[vault_bump]], &crate::ID).map_err(|_| 
+                                 error!(PithyQuip::InvalidParameters))?;
+        
         require_keys_eq!(vault_ai.key(), expected, PithyQuip::InvalidSettlementProgram);
         require_keys_eq!(*mint_ai.key, flash.flash_token_mint, PithyQuip::InvalidMint);
         // Reject fake token programs — no-op transfer would zero flash state
         // without returning principal to the vault.
-        require!(
-            token_prog.key() == anchor_spl::token::ID
-                || token_prog.key() == anchor_spl::token_2022::ID,
-            PithyQuip::InvalidParameters
-        );
-
-        let decimals = {
-            let d = mint_ai.try_borrow_data()?;
+        require!(token_prog.key() == anchor_spl::token::ID
+              || token_prog.key() == anchor_spl::token_2022::ID, PithyQuip::InvalidParameters);
+        
+        let decimals = { let d = mint_ai.try_borrow_data()?;
             require!(d.len() >= 45, PithyQuip::InvalidParameters);
             d[44]
         };
-
         use anchor_spl::token_interface::{TransferChecked, transfer_checked};
-        transfer_checked(
-            CpiContext::new(
-                token_prog.clone(),
+        transfer_checked(CpiContext::new(token_prog.clone(),
                 TransferChecked {
-                    from:      repayer_ata.clone(),
-                    mint:      mint_ai.clone(),
-                    to:        vault_ai.clone(),
+                    from: repayer_ata.clone(),
+                    mint: mint_ai.clone(),
+                    to: vault_ai.clone(),
                     authority: ctx.accounts.repayer.to_account_info(),
-                },
-            ),
-            total, decimals,
-        )?;
-
-        flash.flash_token_mint   = Pubkey::default();
+                }), total, decimals)?;
+                
+        flash.flash_token_mint = Pubkey::default();
         flash.flash_token_amount = 0;
-    } else {
-        // ── SOL repay ─────────────────────────────────────────────────────────
-        require!(flash.flash_lamports > 0, PithyQuip::NoActiveFlashLoan);
+    } else { // SOL repay
+        require!(flash.flash_lamports > 0, 
+            PithyQuip::NoActiveFlashLoan);
+            
         let principal = flash.flash_lamports;
         // Flash loans are free (tip_lamports is optional protocol revenue).
         let total = principal.saturating_add(tip_lamports);
-        anchor_lang::system_program::transfer(
-            CpiContext::new(
+        anchor_lang::system_program::transfer(CpiContext::new(
                 ctx.accounts.system_program.to_account_info(),
                 anchor_lang::system_program::Transfer {
                     from: ctx.accounts.repayer.to_account_info(),
-                    to:   ctx.accounts.sol_pool.to_account_info(),
-                },
-            ), total,
-        )?;
-        flash.flash_lamports  = 0;
-        bank.sol_lamports    = bank.sol_lamports.saturating_add(total);
+                    to: ctx.accounts.sol_pool.to_account_info() }), total)?;
+        
+        flash.flash_lamports = 0;
+        bank.sol_lamports = bank.sol_lamports.saturating_add(total);
         // Restore sol_usd_contrib at current price.
         // If SOL rose during loan: restored > original → tiny protocol gain.
         // If SOL fell: restored < original → conservative, correct.
@@ -594,12 +667,9 @@ pub fn handle_flash_repay<'info>(ctx: Context<'_, '_, '_, 'info, FlashRepay<'inf
         let pyth = ctx.remaining_accounts.first();
         let sol_price = crate::etc::fetch_price("SOL", pyth)?;
         ctx.accounts.sol_risk.actuary.update_price(sol_price as i64, slot);
-        let restored = collar_adjusted_usd(
-            bank.sol_lamports, sol_price,
-            &ctx.accounts.sol_risk.actuary,
-        );
-        bank.total_deposits  = bank.total_deposits.saturating_add(restored);
+        let restored = collar_adjusted_usd(bank.sol_lamports, sol_price,
+                                          &ctx.accounts.sol_risk.actuary);
+        bank.total_deposits = bank.total_deposits.saturating_add(restored);
         bank.sol_usd_contrib = restored;
-    }
-    Ok(())
+    } Ok(())
 }
