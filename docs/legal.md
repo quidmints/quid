@@ -95,13 +95,13 @@ The Act was designed for issuers who have no market-based mechanism for demonstr
 Sets a ceiling on what regulators can require of issuers — capital requirements may not exceed what is sufficient for ongoing operations.  
 It is a constraint on regulatory overreach, however, not a definition of what capital reserves are for in general.
 
-The `untouchables` tranche is not a capital reserve in the regulatory sense at all.  
+The tranche is not a capital reserve in the regulatory sense at all.  
 It is a cost-recovery mechanism for a documented accounting loss from years ago...   
 
 Collateral damage absorbed in the course of research and development  
 is projected to be fully amortised (breakeven) as part of "**fair launch**":
 
-from the basket's perspective, `untouchables` represent a senior liability to seed funders,  
+from the basket's perspective, the tranche represent a senior liability to seed funders,  
 structurally subordinating regular depositor claims below it at the accounting level  
 while preserving regular depositors' dollar-equivalent redemption guarantee intact  
 because the 1:1 peg is fully maintained on their portion (excl. the tranche).  
@@ -120,13 +120,13 @@ The tranche is an issuance spread — the difference between the dollar deposite
 and the QD issued — which is standard in any *instrumentos quidados*  
 that has a spread between issue price and face value.  
 
-The liability column of `untouchbales` in Basket.sol is not simply a tranche  
+The liability column of of the tranche in Basket.sol is not simply a quantity  
 of deposited stablecoin value set aside. It is QD minted on underbacked terms:  
 seed funders receive QD with the multiplier (up to 2x) without that QD being  
 fully backed by an equivalent dollar value in the basket at the time of minting.  
 
 The QD exists as a liability before the backing exists for it.  
-Aux.sol's asset column of `untouchables` is what capitalises  
+Aux.sol's asset column of the tranche is what capitalises  
 that underbacked liability and makes it whole over time. The two    
 legs existing simultaneously is what allows the mechanism to work.  
 
@@ -159,8 +159,8 @@ The prohibition exists for a specific policy reason articulated in the CSBS impl
 The basket holds yield-bearing instruments, generating income  
 under the independent governance of the instruments' respective  
 protocols. QU!D holds these instruments without discretion over  
-their respective rates, and without risking QU!D's own capital  
-(i.e. `untouchables`) to produce said rates.  
+their respective rates, and without risking  
+QU!D's own `CAP` to produce said rates...    
 
 Upon minting QD (basket shares) in exchange for their dollars, depositors accept a binding surrender of redemption optionality for a defined term — precisely the material economic risk the CSBS implementation letter identifies as the permissibility threshold: *"any payment should require a holder to engage in effort or accept risks beyond the ordinary course of holding, using, or retaining a payment stablecoin."*
 
@@ -199,13 +199,13 @@ is whether the manager's *ongoing* efforts steer the project toward profitabilit
 Deployment and initial bootstrapping are ongoing efforts...until they are fulfilled.
 
 It cannot be steered toward profitability by any managerial decision because no managerial decision  
-can accelerate or expand the recovery beyond what the `untouchables` mechanism represents. A promoter   
+can accelerate or expand the recovery beyond what the tranche mechanism represents. A promoter   
 whose enterprise produces no profit until a specific, documented, terminating threshold is crossed  
 and whose distribution mechanism is enforced by contract rather than discretion — is not the kind of  
 promoter Howey's prong 3 was designed for. (requires an expectation of profits from the issuer's efforts).
 
 During the seed funder phase, QU!D's enterprise produces no profits.  
-After breakeven, the `untouchables` mechanism terminates   
+After breakeven, the tranche mechanism terminates   
 and QU!D has no further extraction mechanism at all.  
 
 The secondary market severs the remaining thread. *SEC v. Ripple Labs* distinguished institutional sales — where buyers specifically relied on the issuer's efforts — from programmatic secondary market sales where anonymous buyers cannot know whose efforts produce returns and therefore cannot form the expectation prong 3 requires. QD's DCF-priced secondary market is analogous: secondary buyers acquire a discount instrument whose value is determined by basket mechanics and time-to-maturity, not by any QU!D managerial decision made after deployment.
@@ -229,4 +229,5 @@ The virtual upfront `normalized` allocation in the `mint()` function of Basket.s
 
 The CSBS implementation comment letter, interpreting Section 4(a)(11)'s scope, specifically distinguishes "irregular or unpredictable payments" from structured accrual entitlements tied to maturity choices. A depositor who selects a longer maturity accepts lock-up risk in exchange for a larger claim on future basket yield. This is option-like compensation for a commitment decision, in the category of capital allocation rights rather than issuer payments.
 
-The GENIUS Act's language at Section 4(a)(1)(A) provides that capital requirements "may not exceed what is sufficient to ensure the permitted payment stablecoin issuer's ongoing operations." While QU!ID is not a a stablecoin issuer per se and this provision may or may not govern it directly, the principle it codifies — that capital retention is legitimate when calibrated to operational necessity — applies to basket managers by analogy and supports QU!ID's position in any regulatory dialogue about the `untouchables` tranche's purpose.
+The GENIUS Act's language at Section 4(a)(1)(A) provides that capital requirements "may not exceed what is sufficient to ensure the permitted payment stablecoin issuer's ongoing operations." While QU!ID is not a a stablecoin issuer per se and this provision may or may not govern it directly, the principle it codifies — that capital retention is legitimate when calibrated to operational necessity — applies   
+to basket managers by analogy and supports QU!ID's position in any regulatory dialogue about the tranche's purpose.  

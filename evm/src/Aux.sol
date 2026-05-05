@@ -70,7 +70,7 @@ contract Aux is // Auxiliary
     uint internal _lastTotalETH; // AAVE WETH at last sync
     uint public vogueETH; // WETH attributed to Vogue pool
 
-    mapping(address => uint) public untouchables;
+    mapping(address => uint) public tranche;
     mapping(address => address) public vaults;
     mapping(address => address) public tokens;
     mapping(address => uint) internal toIndex;
@@ -237,7 +237,7 @@ contract Aux is // Auxiliary
                 if (seedBurned > 0) {
                     for (uint i = 0; i < stables.length; i++) {
                         uint share = FullMath.mulDiv(
-                            untouchables[stables[i]],
+                            tranche[stables[i]],
                             seedBurned, burned);
 
                         _tip(share, stables[i], -1);
@@ -459,7 +459,7 @@ contract Aux is // Auxiliary
         address stable = stables[9];
         address vault = vaults[stable];
         (uint spTotal, uint spYieldWeighted) = BasketLib.calcSPValue(vault, address(this),
-                                                                untouchables[stable], sp);
+                                                                tranche[stable], sp);
         if (spTotal > 0) { amounts[12] += spTotal;
                            amounts[10] = spTotal;
                            amounts[0] += spYieldWeighted;
@@ -619,11 +619,11 @@ contract Aux is // Auxiliary
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);
         if (sign > 0) { untouchable += cut;
-            untouchables[token] += cut;
+            tranche[token] += cut;
         } else { cut = Math.min(cut,
-                untouchables[token]);
+                tranche[token]);
 
-            untouchables[token] -= cut;
+            tranche[token] -= cut;
             untouchable -= Math.min(
                    untouchable, cut);
         }

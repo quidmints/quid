@@ -87,7 +87,7 @@ contract AuxArb is // Auxiliary
     mapping(address => uint) internal toIndex;
     mapping(address => uint) internal deposits;
     mapping(address => address) internal vaults;
-    mapping(address => uint) internal untouchables;
+    mapping(address => uint) internal tranche;
     /*
     bytes32 constant CALLBACK_SUCCESS = keccak256(
                "ERC3156FlashBorrower.onFlashLoan");
@@ -302,7 +302,7 @@ contract AuxArb is // Auxiliary
                 if (seedBurned > 0) {
                     for (uint i = 0; i < stables.length; i++) {
                         uint share = FullMath.mulDiv(
-                            untouchables[stables[i]],
+                            tranche[stables[i]],
                             seedBurned, burned);
                         _tip(share, stables[i], -1);
                     }
@@ -528,7 +528,7 @@ contract AuxArb is // Auxiliary
         returns (uint[14] memory amounts) {
         uint balance; uint i; uint reserved;
         for (; i < 2;) { // USDC, USDT - Morpho vaults (6 dec)
-            reserved = untouchables[stables[i]];
+            reserved = tranche[stables[i]];
             balance = IERC4626(vaults[stables[i]]).maxWithdraw(address(this));
             uint res6 = reserved / 1e12; // scale 18→6 for comparison
             amounts[i + 2] = (balance > res6 ? balance - res6 : 0) * 1e12;
@@ -539,7 +539,7 @@ contract AuxArb is // Auxiliary
         amounts[1] += amounts[2] + amounts[3]; // < gains accounted
         for (; i < 5;) { // DAI, FRAX, and GHO are aTokens...
             address stable = stables[i];
-            reserved = untouchables[stable];
+            reserved = tranche[stable];
             balance = IERC20(vaults[stable]).balanceOf(address(this));
             balance = balance > reserved ? balance - reserved : 0;
             amounts[i + 2] = balance;
@@ -551,7 +551,7 @@ contract AuxArb is // Auxiliary
         uint len = stables.length;
         for (i = 5; i < len;) {
             address stable = stables[i];
-            reserved = untouchables[stable];
+            reserved = tranche[stable];
             balance = IERC20(stable).balanceOf(address(this));
             balance = balance > reserved ? balance - reserved : 0;
             amounts[0] += balance;
@@ -627,7 +627,7 @@ contract AuxArb is // Auxiliary
                 max = IERC20(token).balanceOf(address(this));
 
             reserved = BasketLib.scaleTokenAmount(
-                untouchables[token], token, false); // native dec
+                tranche[token], token, false); // native dec
             max = max > reserved ? max - reserved : 0;
             i = max > 0 ? (getFee(token) * WAD) / 10000 : 0;
 
@@ -794,10 +794,10 @@ contract AuxArb is // Auxiliary
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);
         if (sign > 0) {
-            untouchables[token] += cut; untouchable += cut;
+            tranche[token] += cut; untouchable += cut;
         } else {
-            cut = Math.min(cut, untouchables[token]);
-            untouchables[token] -= cut;
+            cut = Math.min(cut, tranche[token]);
+            tranche[token] -= cut;
             untouchable -= Math.min(untouchable, cut);
         }
     }

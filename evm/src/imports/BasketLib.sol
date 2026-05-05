@@ -14,7 +14,7 @@ import {Types} from "./Types.sol";
 
 interface IAux {
     function vaults(address) external returns (address);
-    function untouchables(address) external returns (uint);
+    function tranche(address) external returns (uint);
     function take(address who,
         uint amount, address token,
         uint seed) external returns (uint);
@@ -282,7 +282,7 @@ library BasketLib {
             }
             if (balance > 0) { balance *= i < 3 ? 1e12 : 1;
                          yieldWeighted *= i < 3 ? 1e12 : 1;
-                uint reserved = IAux(aux).untouchables(stable);
+                uint reserved = IAux(aux).tranche(stable);
                 if (reserved > 0) { uint cap = Math.min(balance, reserved);
                     balance -= cap; yieldWeighted -= Math.min(yieldWeighted, cap);
                 } amounts[i + 1] = balance; amounts[12] += balance;
@@ -291,7 +291,7 @@ library BasketLib {
         } for (i = 4; i < 9; i++) {
             stable = stables[i]; vault = IAux(aux).vaults(stable);
             uint shares = IERC4626(vault).balanceOf(address(this));
-            uint reserved = IAux(aux).untouchables(stable);
+            uint reserved = IAux(aux).tranche(stable);
             if (reserved > 0) shares -= Math.min(shares,
                 IERC4626(vault).convertToShares(reserved));
             if (shares > 0) {
@@ -311,7 +311,7 @@ library BasketLib {
                      vault, address(this));
 
         if (usycValue > 0) {
-            uint usycReserved = IAux(aux).untouchables(stable);
+            uint usycReserved = IAux(aux).tranche(stable);
             usycValue -= Math.min(usycValue, usycReserved);
             amounts[11] = usycValue; amounts[12] += usycValue;
             // Yield-weighted: usycValue × teller growth rate.

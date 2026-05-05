@@ -399,7 +399,7 @@ impl Actuary {
     /// The +10 denominator term controls how quickly confidence builds.
     /// Lower values = faster confidence gain but more susceptible to noise.
     ///
-    /// This asymptotic shape is also the shape of the untouchables tranche
+    /// This asymptotic shape is also the shape of the tranche tranche
     /// recovery curve: the protocol accumulates confidence in its own solvency
     /// the same way the Actuary accumulates confidence in a ticker's true vol —
     /// asymptotically, never claiming certainty, always with a structural floor.
@@ -1119,7 +1119,7 @@ pub fn fee_bps(conc: i64, exposure: i64,
     // === Component 3: Jump premium — expected loss from collar breaches ===
     // The gap_bps component is the fee's memory of the 2022 cascade:
     // the gap between last mark and liquidation price
-    // that QuidMint amortises through untouchables...
+    // that QuidMint amortises through tranche...
 
     // jump_count > 0 AND eta > collar means the expected
     // jump magnitude exceeds the collar buffer — the pool is exposed to

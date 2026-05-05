@@ -68,7 +68,7 @@ contract AuxPoly is // Auxiliary
     mapping(address => uint) internal deposits;
     mapping(address => uint) internal toIndex;
 
-    mapping(address => uint) internal untouchables;
+    mapping(address => uint) internal tranche;
     bytes32 constant CALLBACK_SUCCESS = keccak256(
                "ERC3156FlashBorrower.onFlashLoan");
 
@@ -240,7 +240,7 @@ contract AuxPoly is // Auxiliary
                 if (seedBurned > 0) {
                     for (uint i = 0; i < stables.length; i++) {
                         uint share = FullMath.mulDiv(
-                            untouchables[stables[i]],
+                            tranche[stables[i]],
                             seedBurned, burned);
                         _tip(share, stables[i], -1);
                     }
@@ -374,7 +374,7 @@ contract AuxPoly is // Auxiliary
         // USDC + USDT: Morpho vaults, 6-dec → scale to 18
         for (uint i; i < 2;) {
             address stable = stables[i];
-            reserved = untouchables[stable];
+            reserved = tranche[stable];
             balance = IERC4626(vaults[stable]).maxWithdraw(address(this));
             uint res6 = reserved / 1e12;
             amounts[i + 2] = (balance > res6 ? balance - res6 : 0) * 1e12;
@@ -385,7 +385,7 @@ contract AuxPoly is // Auxiliary
         amounts[1] = amounts[2] + amounts[3];
         // DAI - AAVE aToken (18 dec)
         { address stable = stables[2];
-          reserved = untouchables[stable];
+          reserved = tranche[stable];
           balance = IERC20(vaults[stable]).balanceOf(address(this));
           amounts[4] = balance > reserved ? balance - reserved : 0;
           amounts[0] += IERC20(stable).balanceOf(address(this));
@@ -394,7 +394,7 @@ contract AuxPoly is // Auxiliary
         // FRAX + CRVUSD: direct balances (18 dec)
         for (uint i = 3; i < 5;) {
             address stable = stables[i];
-            reserved = untouchables[stable];
+            reserved = tranche[stable];
             balance = IERC20(stable).balanceOf(address(this));
             balance = balance > reserved ? balance - reserved : 0;
             amounts[i + 2] = balance;
@@ -404,7 +404,7 @@ contract AuxPoly is // Auxiliary
         }
         // SFRAX - ERC4626 vault, price via share conversion (18 dec)
         { address stable = stables[5];
-          reserved = untouchables[stable];
+          reserved = tranche[stable];
           balance = IERC20(stable).balanceOf(address(this));
           uint net = balance > reserved ? balance - reserved : 0;
           amounts[0] += net;
@@ -468,7 +468,7 @@ contract AuxPoly is // Auxiliary
                 max = IERC20(vaults[token]).balanceOf(address(this));
             else max = IERC20(token).balanceOf(address(this));
             reserved = BasketLib.scaleTokenAmount(
-                untouchables[token], token, false);
+                tranche[token], token, false);
 
             max = max > reserved ? max - reserved : 0;
             uint fee = max > 0 ? (getFee(token) * WAD) / 10000 : 0;
@@ -631,10 +631,10 @@ contract AuxPoly is // Auxiliary
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);
         if (sign > 0) {
-            untouchables[token] += cut; untouchable += cut;
+            tranche[token] += cut; untouchable += cut;
         } else {
-            cut = Math.min(cut, untouchables[token]);
-            untouchables[token] -= cut;
+            cut = Math.min(cut, tranche[token]);
+            tranche[token] -= cut;
             untouchable -= Math.min(untouchable, cut);
         }
     }

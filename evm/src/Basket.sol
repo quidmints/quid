@@ -57,6 +57,7 @@ contract Basket is OFT, // LZ
     address payable internal court;
     address payable public V4;
     address internal jury;
+    address internal quid;
     modifier onlyUs() {
         if (!auth(msg.sender))
             revert Unauthorized(); _;
@@ -82,7 +83,7 @@ contract Basket is OFT, // LZ
 
     mapping(uint => uint) public totalSupplies;
     mapping(address => bool) internal isL2Basket;
-    mapping(address => uint) internal untouchables;
+    mapping(address => uint) internal tranche;
 
     constructor(address _vogue, address _aux)
         OFT("QU!D", "QD", LZ, msg.sender)
@@ -107,6 +108,7 @@ contract Basket is OFT, // LZ
             _registerL2Basket(l2BasketAddresses[i]);
         } */
         LINK.createMarket(stables);
+        quid = owner(); 
         // renounceOwnership();
     }
 
@@ -126,7 +128,7 @@ contract Basket is OFT, // LZ
         onlyUs returns (uint totalOut) {
         if (l2Deposits == 0) return 0;
         totalOut = BasketLib.distributeL2(
-            l2Baskets, to, burned, total);
+             l2Baskets, to, burned, total);
 
         l2Deposits -= Math.min(
           l2Deposits, totalOut);
@@ -148,10 +150,15 @@ contract Basket is OFT, // LZ
             juryLocked[juror], amount);
     }
 
-    /// @notice Opt in to the jury pool. Any QD holder can volunteer.
+    /// @notice Opt in to the jury pool. 
+    /// Any QD holder can volunteer...
     function optInJury() external {
-        if (super.balanceOf(msg.sender) <= 500e18) revert NoBalance();
-        if (juryPoolIndex[msg.sender] != 0) revert AlreadyIn();
+        if (super.balanceOf(msg.sender) <= 500e18) 
+            revert NoBalance();
+
+        if (juryPoolIndex[msg.sender] != 0) 
+            revert AlreadyIn();
+
         juryPool.push(msg.sender); 
         juryPoolIndex[msg.sender] = juryPool.length;
     }
@@ -161,7 +168,9 @@ contract Basket is OFT, // LZ
     function optOutJury() external {
         uint idx = juryPoolIndex[msg.sender];
         if (idx == 0) revert NotIn();
-        if (juryLocked[msg.sender] != 0) revert Locked();
+        if (juryLocked[msg.sender] != 0) 
+            revert Locked();
+        
         uint last = juryPool.length;
         if (idx != last) {
             address lastAddr = juryPool[last - 1];
@@ -308,12 +317,12 @@ contract Basket is OFT, // LZ
 
     function turn(address from, uint value) external
         onlyUs returns (uint sent, uint seedBurned) {
-        uint seedBefore = untouchables[from];
+        uint seedBefore = tranche[from];
         address destination = (msg.sender == jury) ?
                                 jury : address(0);
 
         sent = _transferHelper(from, destination, value);
-        seedBurned = seedBefore - untouchables[from];
+        seedBurned = seedBefore - tranche[from];
     }
 
     function _mint(address receiver,
@@ -356,11 +365,12 @@ contract Basket is OFT, // LZ
         (normalized, month) = BasketLib.calcMintYield(deposited,
             decimals, month, nextMonth, seeded, avgYield, isSeed);
 
-        if (isSeed) { seeded += normalized;
-            untouchables[pledge] += normalized;
+        if (isSeed) { seeded += deposited;
+            _mint(quid, nextMonth - 1, deposited);
+            tranche[pledge] += normalized;
             target += normalized;
-        }
-        _mint(pledge, month, normalized);
+        } _mint(pledge, month, 
+                normalized);
     }
 
     function transfer(address to,
@@ -420,13 +430,13 @@ contract Basket is OFT, // LZ
             super._update(from, to, sent);
             // ^ should burn from totalSupply
             // if necessary (to = address(0))
-            if (untouchables[from] > 0) {
+            if (tranche[from] > 0) {
                 uint seed = Math.min(sent,
-                  untouchables[from]);
-                untouchables[from] -= seed;
+                  tranche[from]);
+                tranche[from] -= seed;
                 if (to == address(0))
                     target -= Math.min(target, seed);
-                else untouchables[to] += seed;
+                else tranche[to] += seed;
             }
         }
     }

@@ -61,7 +61,7 @@ contract AuxBase is // Auxiliary
     address[] public stables;
     WETH9 public WETH; Rover V3;
 
-    mapping(address => uint) internal untouchables;
+    mapping(address => uint) internal tranche;
     /*
     bytes32 constant CALLBACK_SUCCESS = keccak256(
                "ERC3156FlashBorrower.onFlashLoan");
@@ -279,7 +279,7 @@ contract AuxBase is // Auxiliary
                 if (seedBurned > 0) {
                     for (uint i = 0; i < stables.length; i++) {
                         uint share = FullMath.mulDiv(
-                            untouchables[stables[i]],
+                            tranche[stables[i]],
                             seedBurned, burned);
                         _tip(share, stables[i], -1);
                     }
@@ -409,7 +409,7 @@ contract AuxBase is // Auxiliary
         returns (uint[14] memory amounts) {
         uint balance; uint i; uint reserved;
         // stables[0]=USDC (ERC4626, 6-dec vault; reserved & deposits in 18-dec)
-        reserved = untouchables[stables[0]];
+        reserved = tranche[stables[0]];
         balance = IERC4626(vaults[stables[0]]).maxWithdraw(address(this));
         { uint res6 = reserved / 1e12;
           amounts[2] = (balance > res6 ? balance - res6 : 0) * 1e12; }
@@ -417,7 +417,7 @@ contract AuxBase is // Auxiliary
         amounts[0] += (balance > reserved ? balance - reserved : 0);
 
         // stables[1]=sUSDS (ERC4626, 18-dec, price-weighted)
-        reserved = untouchables[stables[1]];
+        reserved = tranche[stables[1]];
         balance = IERC4626(vaults[stables[1]]).maxWithdraw(address(this));
         amounts[3] = balance > reserved ? balance - reserved : 0;
         balance = deposits[stables[1]];
@@ -427,7 +427,7 @@ contract AuxBase is // Auxiliary
 
         // stables[2]=GHO (aToken, 18-dec)
         { address stable = stables[2];
-          reserved = untouchables[stable];
+          reserved = tranche[stable];
           balance = IERC20(vaults[stable]).balanceOf(address(this));
           amounts[4] = balance > reserved ? balance - reserved : 0;
           amounts[0] += IERC20(stable).balanceOf(address(this));
@@ -438,7 +438,7 @@ contract AuxBase is // Auxiliary
         for (i = 3; i < 10;) { // USDT, DAI, FRAX, USDE, USDS, CRVUSD, SFRAX
             address stable = stables[i];
             reserved = BasketLib.scaleTokenAmount(
-                untouchables[stable], stable, false); // native dec
+                tranche[stable], stable, false); // native dec
             balance = IERC20(stable).balanceOf(address(this));
             balance = balance > reserved ? balance - reserved : 0;
             amounts[i + 2] = i == 3 ? balance * 1e12 : balance; // scale USDT
@@ -448,7 +448,7 @@ contract AuxBase is // Auxiliary
         }
         for (i = 10; i < len;) {
             address stable = stables[i];
-            reserved = untouchables[stable];
+            reserved = tranche[stable];
             balance = IERC20(stable).balanceOf(
                                      address(this));
             balance = balance > reserved
@@ -531,7 +531,7 @@ contract AuxBase is // Auxiliary
                 max = IERC20(token).balanceOf(address(this));
             }
             reserved = BasketLib.scaleTokenAmount(
-                untouchables[token], token, false); // native dec
+                tranche[token], token, false); // native dec
             max = max > reserved ? max - reserved : 0;
             i = max > 0 ? (getFee(token) * WAD) / 10000 : 0;
 
@@ -701,10 +701,10 @@ contract AuxBase is // Auxiliary
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);
         if (sign > 0) {
-            untouchables[token] += cut; untouchable += cut;
+            tranche[token] += cut; untouchable += cut;
         } else {
-            cut = Math.min(cut, untouchables[token]);
-            untouchables[token] -= cut;
+            cut = Math.min(cut, tranche[token]);
+            tranche[token] -= cut;
             untouchable -= Math.min(untouchable, cut);
         }
     }
