@@ -430,7 +430,7 @@ impl Depositor {
                     // clutch's snapshot dispatch sees:
                     //   dq_delta = -delta (gross), pledged_delta = -AI + net
                     //   T_delta  = -(dq_delta + pledged_delta) = delta - net + AI
-                    //            = fee + AI    (fee retained in reserve, AI catch-up)
+                    //            = fee + AI (fee retained in reserve, AI catch-up)
                     // The return value `delta` is a routing hint only — exposure
                     // unchanged in this branch so dispatch routes to the else...
                     // branch and computes T from snapshots, regardless of value.
@@ -566,7 +566,7 @@ impl Depositor {
                                      .min(u64::MAX as u128) as u64;
 
                 if redeem_dollars > pod.pledged { // all-in TP...
-                    let total = redeem_dollars; // full take-profit...
+                    let total = redeem_dollars; // full take-profit
                     let from_pool = total.saturating_sub(pod.pledged)
                                          .saturating_sub(accrued_interest);
 
@@ -591,6 +591,7 @@ impl Depositor {
                     pod.cost_basis = 0; 
                     pod.interest_paid = 0;
                     pod.collar_dollar_seconds = 0;
+
                     let _ = &pod; 
                     // end borrow before &mut self
                     self.update_drawn(util_change);
@@ -605,7 +606,7 @@ impl Depositor {
                     // clutch dispatches by (delta>0, interest>0, exposure_decreased)
                     // and computes total_deposits delta from snapshots so the vault
                     // invariant `dq + Σpledged + T = vault` holds:
-                    //   customer.deposited_quid += interest        (= user_credit)
+                    //   customer.deposited_quid += interest (= user_credit)
                     //   T_delta = pledged_reduce + AI - user_credit  (signed)
                     //
                     // Profit case → T_delta < 0: pool reserve funds the gain.
@@ -613,23 +614,19 @@ impl Depositor {
                     //
                     let amt_frac_num = redeem_dollars as u128;
                     let amt_frac_den = old_exposure_value as u128;
-
                     let ai_share = ((accrued_interest as u128).saturating_mul(amt_frac_num)
                                     .checked_div(amt_frac_den).unwrap_or(0)) as u64;
 
                     let user_credit = redeem_dollars.saturating_sub(ai_share);
-
                     let pledged_reduce = ((pod.pledged as u128).saturating_mul(amt_frac_num)
                         .checked_div(amt_frac_den).unwrap_or(0)).min(pod.pledged as u128) as u64;
 
                     pod.pledged = pod.pledged.saturating_sub(pledged_reduce);
-
                     let cb_reduce = ((pod.cost_basis as u128).saturating_mul(amt_frac_num)
                                     .checked_div(amt_frac_den).unwrap_or(0)) as u64;
 
                     pod.cost_basis = pod.cost_basis.saturating_sub(cb_reduce);
                     pod.updated = current_time;
-
                     let new_exp = (pod.exposure.unsigned_abs() as u128)
                                          .saturating_mul(price as u128)
                                                  .min(u64::MAX as u128) as u64;
@@ -650,9 +647,7 @@ impl Depositor {
                         pod.interest_paid = 0;
                         pod.collar_dollar_seconds = 0;
                     }
-                    lelu.apply(pod, depository);
-                    let _ = &pod;
-
+                    lelu.apply(pod, depository); let _ = &pod;
                     let util_change = -(redeem_dollars as i64);
                     self.update_drawn(util_change);
                     depository.utilisation(util_change);

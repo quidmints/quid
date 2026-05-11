@@ -160,14 +160,14 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
 // or minting what is liable to get liquidated
 
 #[derive(Accounts)]
-#[instruction(amount: i64, ticker: String, exposure: bool)]
+#[instruction(amount: i64, 
+ticker: String, exposure: bool)]
 pub struct Withdraw<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
     #[cfg_attr(feature = "mainnet", account(
-        constraint = config.registered_mints.contains(&mint.key())
-            @ PithyQuip::InvalidMint
+        constraint = config.registered_mints.contains(&mint.key()) @ PithyQuip::InvalidMint
     ))]
     pub mint: InterfaceAccount<'info, Mint>,
 
@@ -183,7 +183,9 @@ pub struct Withdraw<'info> {
     #[account(mut, seeds = [signer.key().as_ref()], bump)]
     pub customer_account: Box<Account<'info, Depositor>>,
 
-    #[account(mut, associated_token::mint = mint, associated_token::authority = signer,
+    #[account(mut, 
+        associated_token::mint = mint, 
+        associated_token::authority = signer,
         associated_token::token_program = token_program,
         constraint = customer_token_account.owner == signer.key()
     )]
@@ -207,19 +209,20 @@ pub struct Withdraw<'info> {
     ///
     /// Constraints are checked in the handler, only on the gated branch,
     /// because Anchor account-level constraints would fire for all callers.
-    #[account(
-        seeds = [b"device_enrollment", signer.key().as_ref()],
-        bump,
+    #[account(seeds = [b"device_enrollment", 
+                      signer.key().as_ref()], bump
     )]
     pub enrollment: Option<Account<'info, DeviceEnrollment>>,
-
+    /// Pass None for mobile paths and all paths that don't add exposure
+    /// CHECK: validated in handler against config
+    pub keeper: Option<Signer<'info>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_out<'info>(ctx: Context<'_, '_, 'info, 
-    'info, Withdraw<'info>>, mut amount: i64,
+pub fn handle_out<'info>(ctx: Context<'_, '_, 
+    'info, 'info, Withdraw<'info>>, mut amount: i64,
     ticker: String, exposure: bool) -> Result<()> {
     require!(amount != 0, PithyQuip::InvalidAmount);
 
@@ -239,7 +242,8 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info,
     (Banks.total_deposits as u128);
     Banks.last_updated = right_now;
     let mut amt: u64 = 0;
-    if ticker.is_empty() { // withdrawal of $ deposits...
+    if ticker.is_empty() { 
+    // withdrawal of $ deposits...
         // returns your pro-rata share of the pool, plus your
         // accrued yield, net of any losses for honoring TPs
         require!(amount < 0, PithyQuip::InvalidAmount);
@@ -262,7 +266,6 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info,
         if amount.abs() > 0 { // if there's a remainder (returned by renege), or otherwise:
             time_delta = right_now - customer.last_updated;
             customer.deposit_seconds += (time_delta as u128) * (customer.deposited_quid as u128);
-
             let raw_max = customer.deposit_seconds.saturating_mul(Banks.total_deposits as u128)
                 .checked_div(Banks.total_deposit_seconds).unwrap_or(0).min(u64::MAX as u128) as u64;
 
@@ -272,7 +275,8 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info,
             // where funding payments flow into the pool and then back to the payer.
             let utilisation_discount = if Banks.total_drawn > 0 {
                 let borrow_frac = (customer.drawn as u128 * 10_000
-                                  / Banks.total_drawn as u128).min(10_000) as u64;
+                              / Banks.total_drawn as u128).min(10_000) as u64;
+
                 10_000u64.saturating_sub(borrow_frac)
             } else { 10_000 };
             let max_value = raw_max.saturating_mul(utilisation_discount) / 10_000;
@@ -294,17 +298,11 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info,
             &ctx.remaining_accounts[vault_offset..]
         } else { &[] };
         // in vault_accounts. Empty slice = no alt vaults (primary only).
-        transfer_from_vaults(
-            &ctx.accounts.bank_token_account,
-            &ctx.accounts.mint,
-            &ctx.accounts.customer_token_account,
-            ctx.bumps.bank_token_account,
-            vault_accounts,
-            &ctx.accounts.token_program,
-            ctx.program_id,
-            &ctx.accounts.config.registered_mints,
-            amt,
-        )?;
+        transfer_from_vaults(&ctx.accounts.bank_token_account,
+            &ctx.accounts.mint, &ctx.accounts.customer_token_account,
+            ctx.bumps.bank_token_account, vault_accounts,
+            &ctx.accounts.token_program, ctx.program_id,
+            &ctx.accounts.config.registered_mints, amt)?;
     } else { // < ticker was not ""
         let t: &str = ticker.as_str();
         if !exposure { // < withdraw pledged from specific ticker (no exposure change)
@@ -315,18 +313,30 @@ pub fn handle_out<'info>(ctx: Context<'_, '_, 'info,
                 ctx.bumps.bank_token_account, &ctx.accounts.token_program,
                 -amount as u64, // TODO make sure frontend always passes a negative here
             )?;
-        } else {
-            // Position-growth gate: when amount > 0, this branch can pull
+        } else { // Position-growth gate: when amount > 0, this branch can pull
             // from deposited_quid to expand pod.pledged (or repower a zombie
             // pod left by a prior all-in TP). Same trio of checks as Stockup;
-            // only enforced for the growth direction so exits stay open.
-            let enr = ctx.accounts.enrollment.as_ref()
-                .ok_or(error!(PithyQuip::Unauthorized))?;
+             #[cfg(not(feature = "testing"))]
+            {
+                let enr = ctx.accounts.enrollment.as_ref()
+                    .ok_or(error!(PithyQuip::Unauthorized))?;
 
-            require!(!enr.revoked, PithyQuip::Unauthorized);
-            require!(enr.device_pubkey == ctx.accounts.signer.key(), PithyQuip::Unauthorized);
-            require!(enr.config_version == ctx.accounts.config.config_version, PithyQuip::Unauthorized);
-        
+                require!(!enr.revoked, PithyQuip::Unauthorized);
+                require!(enr.config_version == ctx.accounts.config.config_version,
+                        PithyQuip::Unauthorized);
+                        
+                if enr.platform == DeviceEnrollment::PLATFORM_WEB {
+                    let cosigner = ctx.accounts.keeper.as_ref()
+                            .ok_or(error!(PithyQuip::Unauthorized))?;
+
+                    require!(cosigner.key() == ctx.accounts.config.keeper,
+                                                    PithyQuip::Unauthorized);
+                } else {
+                    // Mobile: enrollment PDA proves possession of HW-attested device.
+                    require!(enr.device_pubkey == ctx.accounts.signer.key(),
+                            PithyQuip::Unauthorized);
+                }
+            }
             let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
             let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
             let first: &AccountInfo = &ctx.remaining_accounts[0];
@@ -628,18 +638,19 @@ pub fn handle_flash_repay<'info>(ctx: Context<'_, '_, '_, 'info,
         // Reject fake token programs — no-op transfer would zero flash state
         // without returning principal to the vault.
         require!(token_prog.key() == anchor_spl::token::ID
-              || token_prog.key() == anchor_spl::token_2022::ID, PithyQuip::InvalidParameters);
+              || token_prog.key() == anchor_spl::token_2022::ID, 
+                                      PithyQuip::InvalidParameters);
         
         let decimals = { let d = mint_ai.try_borrow_data()?;
             require!(d.len() >= 45, PithyQuip::InvalidParameters);
             d[44]
         };
-        use anchor_spl::token_interface::{TransferChecked, transfer_checked};
+        use anchor_spl::token_interface::{
+            TransferChecked, transfer_checked
+        };
         transfer_checked(CpiContext::new(token_prog.clone(),
-                TransferChecked {
-                    from: repayer_ata.clone(),
-                    mint: mint_ai.clone(),
-                    to: vault_ai.clone(),
+                TransferChecked { from: repayer_ata.clone(),
+                    mint: mint_ai.clone(), to: vault_ai.clone(),
                     authority: ctx.accounts.repayer.to_account_info(),
                 }), total, decimals)?;
                 

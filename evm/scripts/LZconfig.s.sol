@@ -23,14 +23,22 @@ contract LZconfig is Script {
     bytes32[] l2Peers;
     address[] l2BasketAddrs;
 
-    // LZ send/receive lib addresses for this chain (look up per-chain in LZ docs)
-    address constant SEND_LIB    = 0x...;
-    address constant RECEIVE_LIB = 0x...;
+    // Ethereum Mainnet (EID 30101)
+    // SendUln302
+    address constant SEND_LIB =
+        0xbB2Ea70C9E858123480642Cf96acbcCE1372dCe1;
 
-    // DVNs to require (e.g. LZ DVN + Google Cloud DVN)
-    address constant DVN_A = 0x...;
-    address constant DVN_B = 0x...;
+    // ReceiveUln302
+    address constant RECEIVE_LIB =
+        0xc02Ab410f0734EFa3F14628780e6e695156024C2;
 
+    // LayerZero Labs DVN
+    address constant DVN_A =
+        0x589dEDbD617e0CBcB916A9223F4d1300c294236b;
+
+    // Google Cloud DVN
+    address constant DVN_B =
+        0x8fafae7dd957044088b3d0f67359c327c6200d18;
     uint32 constant SOL_EID = 30168;
 
     function run() external {

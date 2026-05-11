@@ -1,9 +1,8 @@
 
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, MintTo};
 use crate::etc::PithyQuip;
+use crate::state::{Market, MIN_JURY_POOL, KEEPER_GRACE_SECS};
 
-use crate::state::{Market, MarketEvidence, MIN_JURY_POOL};
 pub const OAPP_STORE_SEED: &[u8] = b"Store";
 pub const CHAIN_SEED: &[u8] = b"Chain";
 pub const LZ_RECEIVE_TYPES_SEED: &[u8] = b"LzReceiveTypes";
@@ -17,7 +16,6 @@ pub const FINAL_RULING: u8 = 6;
 pub const JURY_COMPENSATION: u8 = 7;
 
 /// OFT message format: toAddress[32] + amountSD[8], no leading type byte.
-/// Detected by message length == 40 and chain_config.mint != default.
 pub const OFT_BRIDGE_MSG_LEN: usize = 40;
 
 /// QD shared decimals on L1 (matches Basket.sol sharedDecimals()).
@@ -25,7 +23,7 @@ pub const OFT_SHARED_DECIMALS: u8 = 6;
 /// QD local decimals on Solana.
 pub const QD_LOCAL_DECIMALS: u8 = 9;
 /// Multiply amountSD by this to get local token units.
-pub const SD_TO_LOCAL: u64 = 1_000; // 10^(9-6)
+pub const SD_TO_LOCAL: u64 = 1_000;
 
 #[account]
 pub struct OAppStore {
@@ -114,9 +112,6 @@ pub struct ResolutionRequest {
 }
 
 impl ResolutionRequest {
-    /// Wire format (52 bytes): [type 1B][marketId LE 8B][numSides 1B]
-    /// [numWinners 1B][requiresUnanimous 1B]
-    /// [appealCost LE 8B][requester 32B]
     pub fn encode(&self) -> Vec<u8> {
         let mut message = vec![RESOLUTION_REQUEST];
         message.extend_from_slice(&self.market_id.to_le_bytes());
@@ -144,19 +139,11 @@ impl JuryCompensation {
     }
 }
 
-/// Wrap a compose message in OFT format for cross-chain delivery
-/// OFT message format (from OFTMsgCodec.sol):
-///   [0-31]  = sendTo (bytes32) - recipient/peer address on destination
-///   [32-39] = amountSD (uint64 BE) - 0 for non-token messages
-///   [40+]   = composeMsg - the actual payload
-///
-/// Note: Standard OFT compose includes composeFrom (msg.sender) at [40:72],
-/// but Basket.sol expects raw payload starting at [40] without composeFrom.
 pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32]) -> Vec<u8> {
     let mut message = Vec::with_capacity(40 + compose_msg.len());
-    message.extend_from_slice(&send_to);             // sendTo: bytes[0:32]
-    message.extend_from_slice(&0u64.to_be_bytes());  // amountSD: bytes[32:40] (big-endian)
-    message.extend(compose_msg);                     // composeMsg: bytes[40:]
+    message.extend_from_slice(&send_to);
+    message.extend_from_slice(&0u64.to_be_bytes());
+    message.extend(compose_msg);
     message
 }
 
@@ -205,17 +192,25 @@ pub fn register_chain_handler(ctx: Context<RegisterChain>,
     Ok(())
 }
 
+// =============================================================================
+// SEND RESOLUTION REQUEST — escalate to LZ jury
+// =============================================================================
+//
+// Permissionless callable. Allowed in any of these states:
+//   - MODE_JURY_ONLY market past deadline (no keeper Claude pass at all)
+//   - Any mode past deadline + KEEPER_GRACE_SECS (keeper liveness fallback)
+//   - challenged + force_jury_pending (challenger requested LZ over keeper rerun)
+//
+// Reads jury_config directly from Market (was MarketEvidence in old design).
+
 #[derive(Accounts)]
 pub struct SendResolutionRequest<'info> {
     #[account(mut)]
     pub requester: Signer<'info>,
 
-    #[account(mut, seeds = [b"market", &market.market_id.to_le_bytes()[..6]], bump = market.bump)]
+    #[account(mut, seeds = [b"market", &market.market_id.to_le_bytes()[..6]],
+              bump = market.bump)]
     pub market: Account<'info, Market>,
-
-    #[account(seeds = [b"market_evidence", market.key().as_ref()],
-              bump = market_evidence.bump)]
-    pub market_evidence: Account<'info, MarketEvidence>,
 
     #[account(seeds = [OAPP_STORE_SEED], bump = oapp_store.bump)]
     pub oapp_store: Account<'info, OAppStore>,
@@ -226,13 +221,29 @@ pub struct SendResolutionRequest<'info> {
 pub fn send_resolution_request(
     ctx: Context<SendResolutionRequest>) -> Result<()> {
     let market = &mut ctx.accounts.market; let clock = Clock::get()?;
+
     require!(!market.resolution_received, PithyQuip::AlreadyResolved);
-    require!(!market.resolved && !market.cancelled, PithyQuip::AlreadyComplete);
+    require!(!market.cancelled, PithyQuip::AlreadyComplete);
     require!(!market.resolution_requested, PithyQuip::AlreadyRequested);
     require!(market.total_capital >= MIN_JURY_POOL,
                 PithyQuip::RequesterPositionTooSmall);
-    require!(clock.unix_timestamp >= market.resolution_time,
+    require!(clock.unix_timestamp >= market.deadline,
                 PithyQuip::TooEarlyToResolve);
+
+    // Three permitted gates:
+    //   A. Originally MODE_JURY_ONLY (skips keeper entirely)
+    //   B. Past keeper grace window (any mode) — keeper liveness fallback
+    //   C. Challenge with force_jury_pending — challenger overrides keeper rerun
+    let past_grace = clock.unix_timestamp >= market.deadline + KEEPER_GRACE_SECS;
+    let force_jury = market.challenged && market.force_jury_pending;
+    let jury_only = market.resolution_mode == crate::state::MODE_JURY_ONLY;
+
+    require!(jury_only || past_grace || force_jury, PithyQuip::Unauthorized);
+
+    // For non-force_jury paths, market must not yet be resolved.
+    if !force_jury {
+        require!(!market.resolved, PithyQuip::AlreadyComplete);
+    }
 
     // remaining_accounts layout:
     //   [0]     = ChainConfig PDA
@@ -250,21 +261,33 @@ pub fn send_resolution_request(
     let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
                                          .map_err(|_| PithyQuip::InvalidPeer)?;
     require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
-    
+
     require!(chain_config.active, PithyQuip::InvalidPeer);
     require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
 
-    let jury_config = ctx.accounts.market_evidence.evidence.jury_config.as_ref()
-                                            .ok_or(PithyQuip::InvalidParameters)?;
+    // Read jury_config directly from Market (folded in from removed MarketEvidence).
+    let jury_config = market.jury_config.as_ref()
+                                .ok_or(PithyQuip::InvalidParameters)?;
 
-    let request = ResolutionRequest { market_id: market.market_id,
+    let request = ResolutionRequest {
+        market_id: market.market_id,
         num_sides: market.outcomes.len() as u8, num_winners: market.num_winners,
         requires_unanimous: jury_config.requires_unanimous,
         appeal_cost: jury_config.appeal_cost,
         requester: ctx.accounts.requester.key(),
-    };  market.resolution_requested = true;
+    };
+
+    market.resolution_requested = true;
     market.resolution_requested_time = Some(clock.unix_timestamp);
     market.resolution_requester = Some(ctx.accounts.requester.key());
+    // Clear force_jury_pending — request is now in flight.
+    market.force_jury_pending = false;
+    // If force_jury overrode a keeper verdict, also clear resolved/challenged
+    // so the jury ruling becomes authoritative.
+    if force_jury {
+        market.challenged = false;
+        market.resolved = false;
+    }
 
     let compose_msg = request.encode();
     let message = wrap_in_oft_format(compose_msg, chain_config.peer_address);
@@ -300,22 +323,20 @@ pub fn send_resolution_request(
             native_fee: quote_result.native_fee,
             lz_token_fee: quote_result.lz_token_fee,
         })?;
+
+    emit!(crate::state::JuryRequested {
+        market_key: market.key(),
+        requester: ctx.accounts.requester.key(),
+    });
     Ok(())
 }
 
-/// Permissionless force-majeure escape hatch for stalled jury markets.
-///
-/// If a ruling has not arrived within JURY_TIMEOUT_SECS of
-/// `send_resolution_request`, anyone may call this to cancel the market
-/// and unblock refunds via push_payouts. This covers two failure modes:
-///   1. The LZ message was never delivered (infra failure).
-///   2. The jury never reached a verdict (hung indefinitely).
-///
-/// Callable by anyone — no stake required. The 14-day window is generous
-/// enough that calling early is not possible for any real network condition.
+// =============================================================================
+// CANCEL JURY TIMEOUT — permissionless force-majeure escape
+// =============================================================================
+
 #[derive(Accounts)]
 pub struct CancelJuryTimeout<'info> {
-    /// Anyone may trigger — permissionless.
     pub caller: Signer<'info>,
 
     #[account(mut, seeds = [b"market",
@@ -328,48 +349,32 @@ pub fn cancel_jury_timeout(ctx: Context<CancelJuryTimeout>) -> Result<()> {
     let market = &mut ctx.accounts.market;
     let clock = Clock::get()?;
 
-    // Must have actually sent a resolution request (not just a jury-mode market).
     require!(market.resolution_requested, PithyQuip::InvalidParameters);
-    // Must not already be resolved or cancelled.
     require!(!market.resolution_received && !market.cancelled,
              PithyQuip::AlreadyComplete);
-    // Must be past the timeout window.
     let requested_at = market.resolution_requested_time
         .ok_or(PithyQuip::InvalidParameters)?;
     require!(
         clock.unix_timestamp >= requested_at + crate::state::JURY_TIMEOUT_SECS,
         PithyQuip::TooSoon
     );
-    // Enter force majeure: cancelled = true, resolved = true so push_payouts
-    // can run and return everyone's capital. winning_sides stays empty —
-    // pago::push_payouts already handles the cancelled/force-majeure path.
     market.cancelled = true;
     market.resolved = true;
-    market.resolution_received = true; // prevent duplicate triggers
+    market.resolution_received = true;
     market.resolution_finalized = clock.unix_timestamp;
     market.winning_sides = Vec::new();
     market.winning_splits = Vec::new();
     market.resolution_time = clock.unix_timestamp;
-    market.weights_complete = true; // no weigh phase needed for refunds
+    market.weights_complete = true;
 
     emit!(crate::state::JuryRulingReceived {
         market_key: market.key(),
-        winning_sides: Vec::new(), // empty = force majeure signal
+        winning_sides: Vec::new(),
     });
     Ok(())
 }
 
 /// Handle an incoming OFT QD bridge transfer from L1.
-///
-/// Called from lib.rs lz_receive when message.len() == OFT_BRIDGE_MSG_LEN
-/// and chain_config.mint is set. Mints QD to the recipient.
-///
-/// remaining_accounts layout for OFT receive (after ChainConfig at [0]):
-///   [1] = QD mint (mut) — must match chain_config.mint
-///   [2] = recipient token account (mut) — must be for the QD mint
-///   [3] = token program
-///
-/// The OAppStore PDA (OAPP_STORE_SEED) must be the mint authority.
 pub fn handle_oft_receive<'a>(store_key: Pubkey,
     store_bump: u8, chain_config: &ChainConfig,
     message: &[u8], mint_info: &AccountInfo<'a>,
@@ -377,7 +382,6 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
     require!(message.len() >= OFT_BRIDGE_MSG_LEN, PithyQuip::InvalidMessageFormat);
     require!(chain_config.mint != Pubkey::default(), PithyQuip::InvalidParameters);
 
-    // Decode OFT message: toAddress[32] + amountSD[8 BE]
     let to_bytes: [u8; 32] = message[..32].try_into()
         .map_err(|_| PithyQuip::InvalidMessageFormat)?;
     let amount_sd = u64::from_be_bytes(
@@ -386,22 +390,17 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
     require!(amount_sd > 0, PithyQuip::InvalidParameters);
 
     let recipient_pubkey = Pubkey::from(to_bytes);
-    // Verify mint matches registered chain mint
     require!(mint_info.key() == chain_config.mint, PithyQuip::InvalidMint);
-    // Verify token account belongs to the declared recipient
     {
         let ata_data = recipient_info.try_borrow_data()?;
-        // SPL token account: owner at bytes [32..64]
         require!(ata_data.len() >= 64, PithyQuip::InvalidParameters);
         let acct_owner = Pubkey::try_from(&ata_data[32..64])
             .map_err(|_| PithyQuip::InvalidParameters)?;
         require!(acct_owner == recipient_pubkey, PithyQuip::InvalidParameters);
     }
-    // Convert SD → local decimals
     let amount_local = amount_sd.checked_mul(SD_TO_LOCAL)
         .ok_or(PithyQuip::InvalidParameters)?;
 
-    // Mint QD to recipient using OAppStore PDA as mint authority
     let seeds: &[&[u8]] = &[OAPP_STORE_SEED, &[store_bump]];
     let signer_seeds = &[seeds];
     let mint_ix = anchor_lang::solana_program::instruction::Instruction {
@@ -411,17 +410,15 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
             anchor_lang::solana_program::instruction::AccountMeta::new(*recipient_info.key, false),
             anchor_lang::solana_program::instruction::AccountMeta::new_readonly(store_key, true),
         ],
-        // spl-token MintTo discriminator: [7] for legacy, [14] for 2022
-        // Use raw invoke_signed with the token program's mint_to instruction
         data: {
-            let mut d = vec![7u8]; // MintTo instruction index for spl-token
+            let mut d = vec![7u8];
             d.extend_from_slice(&amount_local.to_le_bytes());
             d
         },
     };
     anchor_lang::solana_program::program::invoke_signed(&mint_ix,
         &[mint_info.clone(), recipient_info.clone()], signer_seeds)?;
-    
+
     emit!(QDBridgeReceived { recipient: recipient_pubkey,
                              amount_sd, amount_local });
 
@@ -437,11 +434,10 @@ pub struct QDBridgeReceived {
 }
 
 /// Apply a jury FinalRuling to a market.
-/// Handles normal resolution and force majeure.
 pub fn process_final_ruling(ruling: &FinalRuling,
     market: &mut Market, _market_key: &Pubkey,
     timestamp: i64) -> Result<()> {
-    require!(!market.resolution_received, 
+    require!(!market.resolution_received,
             PithyQuip::AlreadyResolved);
 
     if ruling.is_force_majeure() {
@@ -477,16 +473,15 @@ pub fn send_jury_compensation(ctx: Context<SendJuryCompensation>) -> Result<()> 
     require!(market.resolution_finalized > 0,
             PithyQuip::ResolutionNotFinal);
 
-    market.jury_fee_pool = 0;
     let amount = market.jury_fee_pool;
+    market.jury_fee_pool = 0;
     let compensation = JuryCompensation {
-    market_id: market.market_id, amount };
-    
+        market_id: market.market_id, amount };
+
     let compose_msg = compensation.encode();
     let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED,
                 &[ctx.accounts.oapp_store.bump]]];
 
-    // remaining_accounts: [0] = ChainConfig, [1..6] = quote, [7..] = send
     let chain_config_info = &ctx.remaining_accounts[0];
     require!(chain_config_info.owner == &crate::ID, PithyQuip::InvalidPeer);
 
@@ -498,7 +493,7 @@ pub fn send_jury_compensation(ctx: Context<SendJuryCompensation>) -> Result<()> 
     let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
                                          .map_err(|_| PithyQuip::InvalidPeer)?;
     require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
-    
+
     require!(chain_config.active, PithyQuip::InvalidPeer);
     require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
 
@@ -575,11 +570,7 @@ pub fn lz_receive_types_handler(ctx: Context<LzReceiveTypes>,
     require!(!params.message.is_empty(), PithyQuip::InvalidMessageType);
     let mut accounts = vec![];
 
-    // OFT bridge transfer: toAddress[32] + amountSD[8], no type byte
     if params.message.len() == OFT_BRIDGE_MSG_LEN {
-        // Caller must include: ChainConfig, QD mint, recipient ATA, token program
-        // These are passed as remaining_accounts in lz_receive.
-        // lz_receive_types returns empty here — accounts are caller-specified.
         return Ok(accounts);
     }
 
@@ -617,7 +608,6 @@ pub struct InitOAppStore<'info> {
     /// CHECK: Verified via constraint - program data must be derived from program
     #[account(
         constraint = {
-            // Derive the expected programdata address from the program ID
             let (expected_programdata, _) = Pubkey::find_program_address(
                 &[program.key().as_ref()],
                 &anchor_lang::solana_program::bpf_loader_upgradeable::id()
@@ -631,11 +621,6 @@ pub struct InitOAppStore<'info> {
     #[account(
         constraint = {
             let data = program_data.try_borrow_data()?;
-            // UpgradeableLoaderState::ProgramData layout:
-            // - bytes 0..4: enum variant (3 = ProgramData)
-            // - bytes 4..12: slot (u64)
-            // - byte 12: Option discriminant (0 = None, 1 = Some)
-            // - bytes 13..45: upgrade_authority pubkey (if Some)
             if data.len() < 45 { return Err(PithyQuip::InvalidParameters.into()); }
             let variant = u32::from_le_bytes(data[0..4].try_into().unwrap());
             if variant != 3 { return Err(PithyQuip::InvalidParameters.into()); }
@@ -674,9 +659,7 @@ impl LzReceiveTypesAccounts {
     pub const SIZE: usize = 8 + 32;
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct LzReceiveParams {
     pub src_eid: u32,
     pub sender: [u8; 32],
@@ -686,9 +669,7 @@ pub struct LzReceiveParams {
     pub extra_data: Vec<u8>,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct SendParams {
     pub dst_eid: u32,
     pub receiver: [u8; 32],
@@ -698,9 +679,7 @@ pub struct SendParams {
     pub lz_token_fee: u64,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct ClearParams {
     pub receiver: Pubkey,
     pub src_eid: u32,
@@ -710,25 +689,19 @@ pub struct ClearParams {
     pub message: Vec<u8>,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct RegisterOAppParams {
     pub delegate: Pubkey,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct LzAccount {
     pub pubkey: Pubkey,
     pub is_signer: bool,
     pub is_writable: bool,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct QuoteParams {
     pub sender: Pubkey,
     pub dst_eid: u32,
@@ -738,9 +711,7 @@ pub struct QuoteParams {
     pub pay_in_lz_token: bool,
 }
 
-#[derive(Clone,
-    AnchorSerialize,
-    AnchorDeserialize)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct MessagingFee {
     pub native_fee: u64,
     pub lz_token_fee: u64,

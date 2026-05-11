@@ -1,8 +1,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::Mint;
-use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
-use switchboard_on_demand::prelude::rust_decimal::prelude::ToPrimitive;
+
 use crate::state::*;
 use crate::stay::*;
 use crate::etc::*;

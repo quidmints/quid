@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
 
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
 import {Aux} from  "./Aux.sol";
@@ -52,7 +52,7 @@ contract Basket is OFT, // LZ
     error NoEndpoint(); error BadType();
     // since the pre-seed was in 2022...
     uint internal seeded; // seed round
-    uint public target; // to recap...
+    uint public target; // to breakeven
     Link public LINK; Aux public AUX;
     address payable internal court;
     address payable public V4;
@@ -78,13 +78,12 @@ contract Basket is OFT, // LZ
     uint public l2Deposits;
     address[] internal l2Baskets;
     address[] internal juryPool;
-    mapping(address => uint) internal juryLocked;
+
     mapping(address => uint) internal juryPoolIndex;
-
-    mapping(uint => uint) public totalSupplies;
+    mapping(address => uint) internal juryLocked;
     mapping(address => bool) internal isL2Basket;
+    mapping(uint => uint) public totalSupplies;
     mapping(address => uint) internal tranche;
-
     constructor(address _vogue, address _aux)
         OFT("QU!D", "QD", LZ, msg.sender)
         Ownable(msg.sender) {
@@ -112,7 +111,8 @@ contract Basket is OFT, // LZ
         // renounceOwnership();
     }
 
-    function _registerL2Basket(address _l2) internal {
+    function _registerL2Basket(
+        address _l2) internal {
         if (msg.sender != owner()
             || isL2Basket[_l2])
             revert Unauthorized();
@@ -178,8 +178,10 @@ contract Basket is OFT, // LZ
             juryPoolIndex[lastAddr] = idx;
         } juryPool.pop();
         juryPoolIndex[msg.sender] = 0;
-    } function juryPoolSize()
-        external view returns (uint) {
+    } 
+    
+    function juryPoolSize() external 
+        view returns (uint) {
         return juryPool.length;
     }
 
@@ -275,7 +277,6 @@ contract Basket is OFT, // LZ
     function sendToSolana(bytes memory composeMsg)
         external onlyUs payable returns (bytes32) {
         if (composeMsg.length == 0) revert EmptyPayload();
-
         if (address(endpoint) == address(0)) revert NoEndpoint();
         uint8 msgType = MessageCodec.getMessageType(composeMsg);
         if (msgType != MessageCodec.FINAL_RULING) revert BadType();
@@ -306,7 +307,6 @@ contract Basket is OFT, // LZ
 
        if (ids.length != amounts.length
         || ids.length == 0) revert MismatchedArrays();
-
         uint rate = this.decimalConversionRate();
         for (uint i = 0; i < ids.length; ++i) {
             uint scaled = amounts[i] * rate;
@@ -317,11 +317,13 @@ contract Basket is OFT, // LZ
 
     function turn(address from, uint value) external
         onlyUs returns (uint sent, uint seedBurned) {
-        uint seedBefore = tranche[from];
         address destination = (msg.sender == jury) ?
                                 jury : address(0);
 
-        sent = _transferHelper(from, destination, value);
+        uint seedBefore = tranche[from];
+        sent = _transferHelper(from, 
+                destination, value);
+
         seedBurned = seedBefore - tranche[from];
     }
 
@@ -330,7 +332,9 @@ contract Basket is OFT, // LZ
         internal override {
         totalSupplies[when] += amount;
         perMonth[receiver].insert(when);
-        super._update(address(0), receiver, amount);
+        super._update(address(0), 
+                receiver, amount);
+
         balanceOf[receiver][when] += amount;
         emit Transfer(msg.sender, address(0),
                     receiver, when, amount);
@@ -379,13 +383,16 @@ contract Basket is OFT, // LZ
                           to, value)); return true;
     }
 
-    function transfer(address to, uint256, uint256 amount)
-        public override returns (bool) {
-        require(amount == _transferHelper(msg.sender, to, amount));
-        return true;
+    function transfer(address to, 
+	    uint256, uint256 amount) public 
+        override returns (bool) {// 6909 transfer...
+        require(amount == _transferHelper(msg.sender, 
+                                to, amount)); 
+                                 return true;
     }
 
-    function transferFrom(address from, address to, uint256, uint256 amount)
+    function transferFrom(address from, 
+	    address to, uint256, uint256 amount)
         public override returns (bool) {
         _spendAllowance(from, _msgSender(), amount);
         _transferHelper(from, to, amount); return true;
@@ -426,16 +433,19 @@ contract Basket is OFT, // LZ
                 amount -= amt; sent += amt;
             } i -= 1; // liable to be -1
         } // -1 means "no mature batches"
-        if (sent > 0) { 
-            super._update(from, to, sent);
+        if (sent > 0) { super._update(
+                        from, to, sent);
             // ^ should burn from totalSupply
             // if necessary (to = address(0))
             if (tranche[from] > 0) {
                 uint seed = Math.min(sent,
-                  tranche[from]);
-                tranche[from] -= seed;
-                if (to == address(0))
-                    target -= Math.min(target, seed);
+	                    tranche[from]);
+                
+		        tranche[from] -= seed;
+                if (to == address(0)) 
+		            target -= Math.min(
+                          target, seed);
+
                 else tranche[to] += seed;
             }
         }

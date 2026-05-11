@@ -8,9 +8,6 @@ use state::*;
 pub mod entra;
 use entra::*;
 
-pub mod acta;
-use acta::*;
-
 pub mod clutch;
 use clutch::*;
 
@@ -34,13 +31,13 @@ declare_id!("HFNXYaADSSToPmgSpV6Jnsd3UcyKdkhHt5T8Am2c7wRe");
 #[program]
 pub mod quid {
     use super::*;
-    pub fn deposit(ctx: Context<Stockup>, amount: u64,
-        ticker: String) -> Result<()> { entra::handle_in(ctx, amount, ticker) }
+    pub fn deposit(ctx: Context<Stockup>, 
+        amount: u64, ticker: String) -> Result<()> { entra::handle_in(ctx, amount, ticker) }
     // if you're obtaining short leverage, flip the signs respectively for amount; otherwise (long):
     // positive amount = increase exposure; negative = withdraw QUID (or) redeem exposure for QUID
 
-    pub fn withdraw<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>,
-        amount: i64, ticker: String, exposure: bool) -> Result<()> {
+    pub fn withdraw<'info>(ctx: Context<'_, '_, 
+        'info, 'info, Withdraw<'info>>, amount: i64, ticker: String, exposure: bool) -> Result<()> {
         clutch::handle_out(ctx, amount, ticker, exposure) // no ticker = withdraw collateral from all positions;
         // at least one Pyth key must be passed into remaining_accounts (all keys if empty string ticker)
     } // this sort of cross-margining is also re-used in the liquidation process (a means of protection)
@@ -75,20 +72,27 @@ pub mod quid {
         entra::create_market(ctx, params)
     }
 
-    pub fn resolve<'info>(ctx: Context<'_, '_, '_, 'info,
-        ResolveMarket<'info>>) -> Result<()> {
-        out::resolve_market(ctx)
+    /// thread_url + thread_content_hash are the published canonical resolution
+    /// transcript (mongo-served), pinned on-chain so a force_jury challenge can
+    /// route a verifiable artifact to Court.sol via LayerZero.
+    pub fn resolve(ctx: Context<ResolveMarket>,
+        winning_sides: Vec<u8>, confidence: u64,
+        thread_url: String, thread_content_hash: [u8; 32]) -> Result<()> {
+        out::resolve_market(ctx, winning_sides, confidence,
+                            thread_url, thread_content_hash)
     }
 
-    pub fn challenge(ctx: Context<ChallengeResolution>) -> Result<()> {
-        out::challenge_resolution(ctx) // alte liebe rostet nicht?
+    pub fn challenge(ctx: Context<ChallengeResolution>,
+        force_jury: bool) -> Result<()> {
+        out::challenge_resolution(ctx, force_jury)
     }
 
-    pub fn resolve_challenge<'info>(ctx: Context<'_, '_, '_, 'info,
-        ResolveChallenge<'info>>) -> Result<()> {
-        // it's called "out" because that's where
-        // we figure it all out...
-        out::resolve_challenge(ctx)
+    /// Keeper rerun after a non-force_jury challenge...
+    pub fn resolve_challenge(ctx: Context<ResolveChallenge>,
+        winning_sides: Vec<u8>, confidence: u64,
+        thread_url: String, thread_content_hash: [u8; 32]) -> Result<()> {
+        out::resolve_challenge(ctx, winning_sides, confidence,
+                               thread_url, thread_content_hash)
     }
 
     pub fn bid(ctx: Context<PlaceOrder>,
@@ -99,16 +103,6 @@ pub mod quid {
     pub fn sell(ctx: Context<SellPosition>,
         tokens_to_sell: u64, max_deviation_bps: Option<u64>) -> Result<()> {
         pago::sell_position(ctx, tokens_to_sell, max_deviation_bps)
-    }
-
-    pub fn init_market_evidence(ctx: Context<InitMarketEvidence>,
-        market_id: u64, params: EvidenceRequirementsParams) -> Result<()> {
-        acta::init_market_evidence(ctx, market_id, params)
-    }
-
-    pub fn submit_evidence(ctx: Context<SubmitEvidence>,
-        params: SubmitEvidenceParams) -> Result<()> {
-        acta::submit_evidence(ctx, params)
     }
 
     pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
@@ -122,24 +116,28 @@ pub mod quid {
     /// the current on-chain configuration.
     pub fn enroll_device(ctx: Context<EnrollDevice>,
         params: EnrollDeviceParams) -> Result<()> {
-        acta::enroll_device(ctx, params)
+        entra::enroll_device(ctx, params)
     }
 
     /// Revoke a device enrollment. Callable by admin or the device itself.
     /// After revocation, submit_evidence will reject submissions from this device
     /// until re-enrollment with the current config_version.
     pub fn revoke_enrollment(ctx: Context<RevokeEnrollment>) -> Result<()> {
-        acta::revoke_enrollment(ctx)
+        entra::revoke_enrollment(ctx)
     }
 
     pub fn init_config(ctx: Context<InitConfig>,
-        orchestrator: Pubkey, token_mint: Pubkey) -> Result<()> {
-        entra::init_config(ctx, orchestrator, token_mint)
+        keeper: Pubkey, token_mint: Pubkey) -> Result<()> {
+        entra::init_config(ctx, keeper, token_mint)
     }
 
-    pub fn update_config(ctx: Context<UpdateConfig>, new_orchestrator: Option<Pubkey>, 
-        new_admin: Option<Pubkey>, set_bebop_authority: Option<Pubkey>) -> Result<()> {
-        entra::update_config(ctx, new_orchestrator, new_admin, set_bebop_authority)
+    /// Rotate keeper, admin, or stage a bebop_authority rotation.
+    /// Pass None for any field to leave it unchanged.
+    pub fn update_config(ctx: Context<UpdateConfig>,
+        new_keeper: Option<Pubkey>, new_admin: Option<Pubkey>,
+        set_bebop_authority: Option<Pubkey>) -> Result<()> {
+        entra::update_config(ctx, new_keeper, 
+            new_admin, set_bebop_authority)
     }
 
     /// Commit a staged bebop_authority rotation after the 48 h on-chain delay.
@@ -148,11 +146,13 @@ pub mod quid {
         entra::accept_bebop_authority(ctx)
     }
 
-    pub fn deposit_sol(ctx: Context<DepositSol>, lamports: u64) -> Result<()> {
+    pub fn deposit_sol(ctx: Context<DepositSol>, 
+         lamports: u64) -> Result<()> {
         entra::handle_deposit_sol(ctx, lamports)
     }
 
-    pub fn withdraw_sol(ctx: Context<WithdrawSol>, lamports: u64) -> Result<()> {
+    pub fn withdraw_sol(ctx: Context<WithdrawSol>,
+          lamports: u64) -> Result<()> {
         clutch::handle_withdraw_sol(ctx, lamports)
     }
 
@@ -181,8 +181,11 @@ pub mod quid {
     }
 
     /// Send resolution request to Court.sol via LayerZero.
-    /// Callable by anyone after deadline, if market has jury config.
-    /// Requester must hold a position >= MIN_JURY_STAKE.
+    /// Permissionless. Allowed when:
+    ///   - market is MODE_JURY_ONLY past deadline; OR
+    ///   - past deadline + KEEPER_GRACE_SECS in any mode (keeper liveness fallback); OR
+    ///   - challenged with force_jury_pending (challenger overrode keeper).
+    /// Requester must hold capital >= MIN_JURY_POOL.
     pub fn resolve_jury(ctx: Context<SendResolutionRequest>) -> Result<()> {
         LZ::send_resolution_request(ctx)
     }
@@ -217,14 +220,15 @@ pub mod quid {
         // but ownership must be confirmed first.
         require!(chain_config_info.owner == ctx.program_id,
                  PithyQuip::InvalidAccountOwner);
+
         let chain_data = chain_config_info.try_borrow_data()?;
         let chain_config = ChainConfig::try_deserialize(&mut chain_data.as_ref())
-            .map_err(|_| PithyQuip::InvalidParameters)?;
-        drop(chain_data);
+            .map_err(|_| PithyQuip::InvalidParameters)?; drop(chain_data);
 
         require!(chain_config.active, PithyQuip::InvalidParameters);
         require!(chain_config.eid == params.src_eid,
                  PithyQuip::InvalidParameters);
+
         require!(chain_config.peer_address == params.sender,
                  PithyQuip::InvalidParameters);
 

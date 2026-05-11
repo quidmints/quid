@@ -10,10 +10,10 @@
     "@pythnetwork/pyth-solana-receiver": "^0.8.0",
     "@solana/spl-token": "0.4.8",
     "@solana/web3.js": "1.94.0",
-    "@switchboard-xyz/on-demand": "^3.9.0",
     "bn.js": "^5.2.1",
     "js-sha3": "^0.9.3",
-    "rpc-websockets": "7.11.0"
+    "rpc-websockets": "7.11.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.5",
@@ -22,7 +22,7 @@
     "@types/node": "^20.14.10",
     "chai": "^4.4.1",
     "mocha": "^10.7.0",
-    "ts-mocha": "^10.0.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.5.3"
   }
 }

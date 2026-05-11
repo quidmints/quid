@@ -9,7 +9,8 @@ import { AUX_ABI, BASKET_ABI, VOGUE_ABI, HOOK_ABI } from '@/lib/abi'
 
 // Solana SDK — replaces hand-rolled Borsh serialization and ATA derivation
 import { Connection, PublicKey, Transaction, TransactionInstruction,
-  SystemProgram as SolSystemProgram } from '@solana/web3.js'
+  SystemProgram as SolSystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
 import { Program, AnchorProvider, BN } from '@coral-xyz/anchor'
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token'
@@ -26,7 +27,6 @@ import { PYTH_ACCOUNTS } from '@/lib/tickers'
 import PredictionMarketTab, { type MarketInfo, type PositionInfo, type RegistryTag,
   SOLANA_CHAIN_IDS,
   generateSalt, generateCommitHash } from './PredictionMarketTab'
-import EvidenceTab from './EvidenceTab'
 
 
 declare global {
@@ -273,6 +273,65 @@ async function sendSolTx(
   return signature
 }
 
+// Checks DeviceEnrollment PDA for a web wallet; calls /api enroll if absent.
+async function ensureWebEnrolled(
+  connection: Connection, walletPubkey: PublicKey, programId: PublicKey
+): Promise<void> {
+  const [enrollmentPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('device_enrollment'), walletPubkey.toBuffer()], programId
+  )
+  const existing = await connection.getAccountInfo(enrollmentPda)
+  const REVOKED_OFFSET = 44
+  if (existing && !existing.data[REVOKED_OFFSET]) return // already enrolled and live
+
+  const resp = await fetch('/api', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'enroll', walletPubkey: walletPubkey.toString() }),
+  })
+  if (!resp.ok) {
+    const { error } = await resp.json().catch(() => ({ error: 'enroll failed' }))
+    throw new Error(`Web enrollment failed: ${error}`)
+  }
+}
+
+// Partially signs a transaction server-side, then has Phantom add the user sig.
+// Use in place of sendSolTx for gated instructions (exposure growth, submit_evidence).
+async function sendCosignedSolTx(
+  connection: Connection, phantom: any,
+  instructions: TransactionInstruction[], feePayer: PublicKey,
+): Promise<string> {
+  const { blockhash } = await connection.getLatestBlockhash('confirmed')
+  const tx = new Transaction()
+  tx.recentBlockhash = blockhash
+  tx.feePayer = feePayer
+  instructions.forEach(ix => tx.add(ix))
+
+  // Server adds web_cosigner partial signature
+  const unsigned = tx.serialize({ requireAllSignatures: false }).toString('base64')
+  const resp = await fetch('/api', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'cosign',
+      walletPubkey: feePayer.toString(),
+      txBase64: unsigned,
+    }),
+  })
+  if (!resp.ok) {
+    const { error } = await resp.json().catch(() => ({ error: 'cosign failed' }))
+    throw new Error(`Server cosign failed: ${error}`)
+  }
+  const { txBase64: cosigned } = await resp.json()
+  const cosignedTx = Transaction.from(Buffer.from(cosigned, 'base64'))
+
+  // Phantom adds user signature
+  const signedTx = await phantom.signTransaction(cosignedTx)
+  const sig = await connection.sendRawTransaction(signedTx.serialize())
+  await connection.confirmTransaction(sig, 'confirmed')
+  return sig
+}
+
 export default function QuidApp() {
   const [chainId, setChainId] = useState(137)
   const [protocol, setProtocol] = useState<'v3' | 'v4'>('v4')
@@ -386,11 +445,9 @@ export default function QuidApp() {
   const [solTokenMint, setSolTokenMint] = useState('') // fetched from on-chain ProgramConfig
   const [registryTags, setRegistryTags] = useState<RegistryTag[]>([]) // from active ModelEntry PDAs
 
-  // Evidence pipeline + match notifications state
-  const [solanaEvidenceMarkets, setSolanaEvidenceMarkets] = useState<import('./EvidenceTab').EvidenceMarket[]>([])
-  const [myEvidenceSubmissions, setMyEvidenceSubmissions] = useState<import('./EvidenceTab').EvidenceSubmission[]>([])
-  const [myMatchNotifications, setMyMatchNotifications] = useState<import('./EvidenceTab').MatchNotification[]>([])
-  const [bucketStatuses, setBucketStatuses] = useState<import('./EvidenceTab').BucketStatus[]>([])
+  // Evidence pipeline removed — evidence now flows via the keeper resolution
+  // path (per-bid URL hash bound into commit-reveal, bytes content-addressed
+  // on /api?action=evidence_upload). See PredictionMarketTab.tsx.
   const solanaNetworkLabel = getActiveSolanaNetwork() === -3 ? 'Mainnet' : getActiveSolanaNetwork() === -2 ? 'Devnet' : 'Localnet'
   const solanaChainId = SOLANA_CHAIN_IDS[
     getActiveSolanaNetwork() === -3 ? 'mainnet' : getActiveSolanaNetwork() === -2 ? 'devnet' : 'localnet'
@@ -1591,9 +1648,12 @@ export default function QuidApp() {
       const capital = ethers.parseUnits(hookOrderAmount, 18) // QD is 18 decimals
       if (capital < ethers.parseUnits('1', 18)) throw new Error('Minimum order is 1 QD')
 
-      // Generate salt and commit hash
+      // Generate salt and commit hash. EVM Hook.sol uses a 2-value commit
+      // (confidence + salt only); we pass a zero32 urlHash so the same
+      // helper works on both chains.
       const salt = generateSalt()
-      const commitHashBytes = await generateCommitHash(hookConfidence, salt)
+      const zeroUrlHash = new Uint8Array(32)
+      const commitHashBytes = await generateCommitHash(hookConfidence, zeroUrlHash, salt)
       const commitHash = toHex(commitHashBytes)
       const saltHex = toHex(salt)
 
@@ -1621,9 +1681,9 @@ export default function QuidApp() {
         localStorage.setItem(storageKey, JSON.stringify(existing))
       } catch { localStorage.setItem(storageKey, JSON.stringify([confEntry])) }
       // Post to backend API for keeper retrieval
-      const confData = { user: address, mktId: MARKET_ID, side: hookOrderSide, confidence: hookConfidence, salt: saltHex, chainId, commitHash }
+      const confData = { action: 'confidence_store', user: address, mktId: MARKET_ID, side: hookOrderSide, confidence: hookConfidence, salt: saltHex, chainId, commitHash }
       try {
-        await fetch('/api/confidences', {
+        await fetch('/api', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(confData),
@@ -1706,7 +1766,7 @@ export default function QuidApp() {
         }
       } else {
         // API fallback — returns all entries sorted by createdAt
-        const resp = await fetch(`/api/confidences?user=${address}&mktId=${MARKET_ID}&side=${hookOrderSide}&chainId=${chainId}`)
+        const resp = await fetch(`/api?action=confidence_fetch&user=${address}&mktId=${MARKET_ID}&side=${hookOrderSide}&chainId=${chainId}`)
         if (resp.ok) {
           const data = await resp.json()
           if (data.confidences?.length > 0) {
@@ -1750,7 +1810,8 @@ export default function QuidApp() {
 
     try {
       const salt = generateSalt()
-      const commitHashBytes = await generateCommitHash(hookConfidence, salt)
+      const zeroUrlHash = new Uint8Array(32) // EVM uses 2-value commit
+      const commitHashBytes = await generateCommitHash(hookConfidence, zeroUrlHash, salt)
       const commitHash = toHex(commitHashBytes)
       const saltHex = toHex(salt)
 
@@ -1765,10 +1826,10 @@ export default function QuidApp() {
       const confEntry = { confidence: hookConfidence, salt: saltHex, commitHash }
       localStorage.setItem(storageKey, JSON.stringify([confEntry]))
       // Clear old entries in API and store new one
-      const confData = { user: address, mktId: MARKET_ID, side: hookOrderSide, confidence: hookConfidence, salt: saltHex, chainId, commitHash }
+      const confData = { action: 'confidence_store', user: address, mktId: MARKET_ID, side: hookOrderSide, confidence: hookConfidence, salt: saltHex, chainId, commitHash }
       try {
-        await fetch(`/api/confidences?user=${address}&mktId=${MARKET_ID}&side=${hookOrderSide}&chainId=${chainId}`, { method: 'DELETE' })
-        await fetch('/api/confidences', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(confData) })
+        await fetch(`/api?action=confidence_delete&user=${address}&mktId=${MARKET_ID}&side=${hookOrderSide}&chainId=${chainId}`, { method: 'DELETE' })
+        await fetch('/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(confData) })
       } catch {}
 
       setTxHash(hash)
@@ -1838,7 +1899,7 @@ export default function QuidApp() {
       // price and pnlPct require current oracle price — fetched below via Hermes
       const rawPositions = (depositor.balances || [])
         .map((p: any) => {
-          const ticker = new TextDecoder().decode(Uint8Array.from(p.ticker)).replace(/ /g, '')
+          const ticker = new TextDecoder().decode(Uint8Array.from(p.ticker)).replace(/\x00/g, '')
           if (!ticker) return null
           const pledged = p.pledged.toNumber() / 1e6           // USD
           const exposure = p.exposure.toNumber()                // asset units (signed)
@@ -1995,16 +2056,33 @@ export default function QuidApp() {
           bankTokenAccount: vault,
           customerAccount: depositor,
           customerTokenAccount: userAta,
-          tickerRisk: tickerRiskPda as any, // Option<Account> — null at runtime is valid
+          tickerRisk: tickerRiskPda as any,
           tokenProgram: TOKEN_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SolSystemProgram.programId,
+          // enrollment + keeper: only needed on the growth path (amount > 0, exposure=true).
+          // For exits (amount < 0) and non-exposure withdrawals, pass null — contract skips the gate.
+          enrollment: ((exposure && parseFloat(amount) > 0)
+            ? PublicKey.findProgramAddressSync(
+                [Buffer.from('device_enrollment'), new PublicKey(pubkey).toBuffer()], programId
+              )[0]
+            : null) as any,
+          keeper: ((exposure && parseFloat(amount) > 0)
+            ? new PublicKey(process.env.NEXT_PUBLIC_KEEPER_PUBKEY || process.env.NEXT_PUBLIC_WEB_COSIGNER!)
+            : null) as any,
         })
         .remainingAccounts(pythRemaining)
         .instruction()
 
-      const sig = await sendSolTx(solConnection, phantom, [ix], new PublicKey(pubkey))
-      console.log('Withdraw tx:', sig)
+      const isGrowth = exposure && parseFloat(amount) > 0
+      if (isGrowth) {
+        await ensureWebEnrolled(solConnection, new PublicKey(pubkey), programId)
+        const sig = await sendCosignedSolTx(solConnection, phantom, [ix], new PublicKey(pubkey))
+        console.log('Withdraw (cosigned) tx:', sig)
+      } else {
+        const sig = await sendSolTx(solConnection, phantom, [ix], new PublicKey(pubkey))
+        console.log('Withdraw tx:', sig)
+      }
       setTimeout(() => refreshStockPositions(), 500)
     } catch (err: any) {
       setError(err.message || 'Withdraw failed')
@@ -2014,128 +2092,18 @@ export default function QuidApp() {
   }, [ensurePhantomSolana, deriveSolanaPDAs, getAnchorProgram, solConnection, solTokenMint, stockPositions, refreshStockPositions, txMutex])
 
 
-  // ── Evidence: Refresh evidence markets + my submissions ────────────────
+  // ── Evidence: no-op stubs ─────────────────────────────────────────────
+  // The MarketEvidence/EvidenceSubmission PDAs were removed when evidence
+  // resolution moved to the keeper Claude path. Confidence-bound evidence
+  // URLs ride inside the per-bid commit-reveal (see PredictionMarketTab.tsx);
+  // bytes are content-addressed at /api?action=evidence_upload.
   const refreshSolanaEvidence = useCallback(async () => {
-    if (!solanaProgId) return
-    try {
-      const program = getReadonlyProgram()
-
-      // ── Evidence markets ──────────────────────────────────────────────────
-      const allEvid = await (program.account as any).marketEvidence.all()
-      const markets: import('./EvidenceTab').EvidenceMarket[] = []
-
-      // Batch-fetch parent markets to get question + marketId
-      const mktCache = new Map<string, any>()
-      for (const { publicKey, account: me } of allEvid) {
-        const mktKey = me.market.toBase58()
-        let mkt = mktCache.get(mktKey)
-        if (!mkt) {
-          try { mkt = await (program.account as any).market.fetch(me.market); mktCache.set(mktKey, mkt) }
-          catch { mkt = null }
-        }
-        markets.push({
-          marketId: mkt?.marketId?.toNumber() ?? 0,
-          pda: mktKey,
-          evidencePda: publicKey.toBase58(),
-          question: mkt?.question ?? '',
-          submissionCount: me.submissionCount.toNumber(),
-          maxSubmissions: me.evidence.maxSubmissions,
-          timeWindowEnd: me.evidence.timeWindowEnd.toNumber(),
-          minTagConfidence: me.evidence.minTagConfidence,
-          resolutionMode: me.evidence.resolutionMode,
-        })
-      }
-      setSolanaEvidenceMarkets(markets)
-
-      // ── My submissions ────────────────────────────────────────────────────
-      if (solanaAddress) {
-        const userPk = new PublicKey(solanaAddress)
-        const mySubmissions = await (program.account as any).evidenceSubmission.all([
-          { memcmp: { offset: 40, bytes: userPk.toBase58() } }, // submitter at offset 40
-        ])
-        const submissions: import('./EvidenceTab').EvidenceSubmission[] = mySubmissions.map(
-          ({ publicKey, account: s }: any) => ({
-            pda: publicKey.toBase58(),
-            marketPda: s.market.toBase58(),
-            submitter: s.submitter.toBase58(),
-            attestationHash: Array.from(s.attestationHash as Uint8Array)
-              .map((b: number) => b.toString(16).padStart(2, '0')).join(''),
-            contentType: s.contentType,
-            // nonce is encoded in the PDA seeds but not stored as a field.
-            // Derive it by counting existing submissions for this (market, submitter) pair
-            // from the submission PDAs — bump approximates insertion order for display only.
-            nonce: s.bump,
-            submittedAt: s.submittedAt.toNumber(),
-          })
-        )
-        setMyEvidenceSubmissions(submissions)
-      }
-
-      // ── Bucket statuses ───────────────────────────────────────────────────
-      // Read BucketAssignment PDAs to show match_project state per category
-      try {
-        const bucketAccts = await (program.account as any).bucketAssignment.all()
-        const catMap = new Map<string, { deviceCount: number; projected: boolean; matchCount: number }>()
-        for (const { account: b } of bucketAccts) {
-          const k = Array.from(b.categoryHash as Uint8Array)
-            .map((x: number) => x.toString(16).padStart(2, '0')).join('')
-          const existing = catMap.get(k) ?? { deviceCount: 0, projected: false, matchCount: 0 }
-          existing.deviceCount++
-          existing.projected = b.projectedSlot > 0
-          catMap.set(k, existing)
-        }
-        // Merge match counts from current notification state
-        setMyMatchNotifications(prev => {
-          for (const n of prev) {
-            const existing = catMap.get(n.categoryHash)
-            if (existing) existing.matchCount++
-            else catMap.set(n.categoryHash, { deviceCount: 0, projected: true, matchCount: 1 })
-          }
-          return prev // no change to notifications
-        })
-        setBucketStatuses(Array.from(catMap.entries()).map(([k, v]) => ({
-          categoryHashHex: k, ...v,
-        })))
-      } catch {
-        // BucketAssignment account type may not exist on older deployments — non-fatal
-      }
-    } catch (e) {
-      console.warn('Failed to refresh evidence:', e)
-    }
-  }, [solanaProgId, solanaAddress, getReadonlyProgram])
+    /* removed: see comment above */
+  }, [])
 
   const refreshSolanaNotifications = useCallback(async () => {
-    if (!solanaProgId || !solanaAddress) return
-    try {
-      const program = getReadonlyProgram()
-      const userPk = new PublicKey(solanaAddress)
-      // MatchNotification layout: disc(8) + device(32) = device at offset 8
-      const notifs = await (program.account as any).matchNotification.all([
-        { memcmp: { offset: 8, bytes: userPk.toBase58() } },
-      ])
-      const notifications: import('./EvidenceTab').MatchNotification[] = notifs.map(
-        ({ publicKey, account: n }: any) => ({
-          pda: publicKey.toBase58(),
-          device: n.device.toBase58(),
-          counterpartyCommitment: Array.from(n.counterpartyCommitment as Uint8Array)
-            .map((b: number) => b.toString(16).padStart(2, '0')).join(''),
-          categoryHash: Array.from(n.categoryHash as Uint8Array)
-            .map((b: number) => b.toString(16).padStart(2, '0')).join(''),
-          similarityBps: n.similarityBps,
-          slot: n.slot.toNumber(),
-          read: n.read,
-        })
-      )
-      // Sort unread first, then by slot descending
-      notifications.sort((a, b) => {
-        if (a.read !== b.read) return a.read ? 1 : -1
-        return b.slot - a.slot
-      })
-      setMyMatchNotifications(notifications)
-    } catch (e) {
-      console.warn('Failed to refresh notifications:', e)
-    }
-  }, [solanaProgId, solanaAddress, getReadonlyProgram])
+    /* removed: see comment above */
+  }, [])
 
   const refreshSolanaMarkets = useCallback(async () => {
     if (!solanaProgId) return
@@ -2236,24 +2204,10 @@ export default function QuidApp() {
       const [accuracyBuckets] = PublicKey.findProgramAddressSync(
         [Buffer.from('accuracy_buckets'), mktIdSeed], programId)
 
-      // Fetch validation + resolution feed addresses from keeper API
-      const infraResp = await fetch('/api/safta/feeds', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: params.question, context: params.context,
-          exculpatory: params.exculpatory, outcomes: params.outcomes,
-        }),
-      }).catch(() => null)
-      let validationFeed = '', resolutionFeed = ''
-      if (infraResp?.ok) {
-        const feeds = await infraResp.json()
-        validationFeed = feeds.validationFeed
-        resolutionFeed = feeds.resolutionFeed
-      }
-      if (!validationFeed || !resolutionFeed) {
-        throw new Error('Could not obtain oracle feeds — ensure the keeper is running.')
-      }
-
+      // Switchboard feeds are no longer required — keeper-Claude resolution
+      // replaces the on-chain oracle read. The deployment can specify the
+      // resolution mode and (optionally) jury fallback config; tags + match
+      // notifications are no longer attached on-chain.
       const ix = await program.methods
         .createMarket({
           question: params.question,
@@ -2261,12 +2215,15 @@ export default function QuidApp() {
           exculpatory: params.exculpatory,
           resolutionSource: params.resolutionSource,
           outcomes: params.outcomes,
-          sbFeed: new PublicKey(resolutionFeed),
           deadline: new BN(params.deadline),
           liquidity: new BN(params.liquidity),
           creatorFeeBps: params.creatorFeeBps,
           creatorBond: new BN(params.creatorBond),
-          // Multi-winner defaults — standard single-winner market
+          // 0 = AI (keeper Claude only), 1 = AI_PLUS_JURY (LZ fallback),
+          // 2 = JURY_ONLY (skip keeper, go straight to Court.sol).
+          resolutionMode: 0,
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           numWinners: 1,
           winningSplits: [],
           beneficiaries: [],
@@ -2280,63 +2237,11 @@ export default function QuidApp() {
           config,
           systemProgram: SolSystemProgram.programId,
         })
-        .remainingAccounts([
-          { pubkey: new PublicKey(validationFeed), isWritable: false, isSigner: false },
-          { pubkey: new PublicKey(resolutionFeed), isWritable: false, isSigner: false },
-        ])
         .instruction()
 
       const sig = await sendSolTx(solConnection, phantom, [ix], userPk)
       console.log('CreateMarket tx:', sig)
       setTimeout(() => refreshSolanaMarkets(), 500)
-
-      // If tags were selected, chain init_market_evidence to attach evidence requirements.
-      if (params.selectedTagIds.length > 0) {
-        try {
-          const [marketEvidencePda] = PublicKey.findProgramAddressSync(
-            [Buffer.from('market_evidence'), market.toBuffer()], programId)
-
-          // Convert hex strings to [u8; 32] arrays for Anchor serialization
-          const hexTo32 = (hex: string) => Array.from({ length: 32 }, (_, i) =>
-            parseInt(hex.slice(i * 2, i * 2 + 2), 16))
-
-          const evidIx = await program.methods
-            .initMarketEvidence(new BN(marketCount), {
-              timeWindowStart: new BN(Math.floor(Date.now() / 1000)),
-              timeWindowEnd: new BN(params.deadline),
-              minSubmissions: 1,
-              requiredTags: params.selectedTagIds.map(hexTo32),
-              minTagConfidence: 7000,
-              pipelineRoutes: [],
-              notificationDomains: [],
-              resolutionMode: 1,       // MODE_COCO_LOCAL — min bond 25M
-              maxSubmissions: 16,
-              resolutionBond: new BN(25_000_000),
-              juryConfig: null,
-              oracleComputeCost: new BN(0),
-            })
-            .accountsStrict({
-              creator: userPk,
-              market,
-              marketEvidence: marketEvidencePda,
-              solVault,
-              systemProgram: SolSystemProgram.programId,
-            })
-            // If a MatchNotification PDA is provided, pass it as remaining_accounts[0].
-            // acta.rs verifies device == creator and read == true, then derives
-            // required_tags from category_hash — no extra on-chain state needed.
-            .remainingAccounts(
-              params.matchNotificationPda
-                ? [{ pubkey: new PublicKey(params.matchNotificationPda), isSigner: false, isWritable: false }]
-                : []
-            )
-            .instruction()
-
-          const evidSig = await sendSolTx(solConnection, phantom, [evidIx], userPk)
-          console.log('InitMarketEvidence tx:', evidSig)        } catch (evidErr: any) {
-          console.warn('Evidence requirements attachment failed (market still created):', evidErr.message)
-        }
-      }
     } catch (err: any) {
       setError(err.message || 'Market creation failed')
     } finally {
@@ -2445,75 +2350,18 @@ export default function QuidApp() {
   }, [ensurePhantomSolana, deriveSolanaPDAs, getAnchorProgram, solConnection, solTokenMint, refreshSolanaMarkets, refreshSolanaPositions, txMutex])
 
   // ── Prediction Markets: Refresh Markets ────────────────────────────────
-  // ── Evidence Pipeline: Submit Evidence ────────────────────────────────
-  const handleSolanaSubmitEvidence = useCallback(async (params: {
-    marketPda: string
-    evidencePda: string
-    marketEvidencePda: string
-    nonce: number
-    attestationHash: number[]
-    contentType: number
-  }) => {
-    if (txMutex) return
-    setTxMutex(true); setIsLoading(true); setError(null)
-    try {
-      const { phantom, pubkey } = await ensurePhantomSolana()
-      const { config } = deriveSolanaPDAs(pubkey)
-      const program = getAnchorProgram(phantom, pubkey)
-      const userPk = new PublicKey(pubkey)
+  // ── Evidence: handler removed ─────────────────────────────────────────
+  // The submit_evidence on-chain instruction was removed when MarketEvidence
+  // and EvidenceSubmission PDAs were retired. Evidence now rides per-bid:
+  // the bidder includes a URL hash in their commit and (optionally) uploads
+  // bytes to /api?action=evidence_upload. See PredictionMarketTab.tsx.
 
-      const ix = await program.methods
-        .submitEvidence({
-          attestationHash: params.attestationHash,
-          contentType: params.contentType,
-          nonce: params.nonce,
-        })
-        .accountsStrict({
-          submitter: userPk,
-          market: new PublicKey(params.marketPda),
-          marketEvidence: new PublicKey(params.marketEvidencePda),
-          config,
-          evidence: new PublicKey(params.evidencePda),
-          systemProgram: SolSystemProgram.programId,
-        })
-        .instruction()
-
-      const sig = await sendSolTx(solConnection, phantom, [ix], userPk)
-      console.log('SubmitEvidence tx:', sig)
-      setTimeout(() => refreshSolanaEvidence(), 3000)
-    } catch (err: any) {
-      setError(err.message || 'Submit evidence failed')
-    } finally {
-      setIsLoading(false); setTxMutex(false)
-    }
-  }, [ensurePhantomSolana, deriveSolanaPDAs, getAnchorProgram, solConnection, refreshSolanaEvidence, txMutex])
-
-  // ── RFQ: Acknowledge Match Notification ────────────────────────────────
-  const handleSolanaAckMatch = useCallback(async (notificationPda: string) => {
-    if (txMutex) return
-    setTxMutex(true); setIsLoading(true); setError(null)
-    try {
-      const { phantom, pubkey } = await ensurePhantomSolana()
-      const program = getAnchorProgram(phantom, pubkey)
-      const userPk = new PublicKey(pubkey)
-
-      const ix = await program.methods
-        .ackMatch()
-        .accountsStrict({
-          notification: new PublicKey(notificationPda),
-          device: userPk,
-        })
-        .instruction()
-
-      const sig = await sendSolTx(solConnection, phantom, [ix], userPk)
-      console.log('AckMatch tx:', sig)
-      setTimeout(() => refreshSolanaNotifications(), 3000)
-    } catch (err: any) {
-      setError(err.message || 'Ack match failed')
-    } finally {
-      setIsLoading(false); setTxMutex(false)
-    }
-  }, [ensurePhantomSolana, getAnchorProgram, solConnection, refreshSolanaNotifications, txMutex])
+  // ── handleSolanaAckMatch removed: ack_match instruction was deleted with acta.rs.
+  // The match-notification flow lived in the old evidence pipeline; current
+  // resolution path is keeper-Claude. Kept as a no-op stub to preserve imports.
+  const handleSolanaAckMatch = useCallback(async (_notificationPda: string) => {
+    /* no-op */
+  }, [])
 
 
   // ── RFQ: Refresh my MatchNotifications ────────────────────────────────
@@ -2524,7 +2372,7 @@ export default function QuidApp() {
 
   // ── Prediction Markets: Challenge Resolution ───────────────────────────
   const handleSolanaChallenge = useCallback(async (params: {
-    marketPda: string; marketId: number;
+    marketPda: string; marketId: number; forceJury?: boolean;
   }) => {
     if (txMutex) return
     setTxMutex(true); setIsLoading(true); setError(null)
@@ -2538,8 +2386,10 @@ export default function QuidApp() {
       const [solVault] = PublicKey.findProgramAddressSync(
         [Buffer.from('sol_vault'), mktIdSeed], programId)
 
+      // challenge(force_jury: bool) — true escalates straight to LZ jury;
+      // false lets the keeper re-run Claude via resolve_challenge.
       const ix = await program.methods
-        .challenge()
+        .challenge(params.forceJury ?? false)
         .accountsStrict({
           market: new PublicKey(params.marketPda),
           solVault,
@@ -2631,15 +2481,6 @@ export default function QuidApp() {
     if (networkMode === 'solana' && activeTab === 'markets' && solanaProgId) {
       refreshSolanaMarkets()
       const interval = setInterval(refreshSolanaMarkets, 30000)
-      return () => clearInterval(interval)
-    }
-    if (networkMode === 'solana' && activeTab === 'evidence' && solanaProgId) {
-      refreshSolanaEvidence()
-      refreshSolanaNotifications()
-      const interval = setInterval(() => {
-        refreshSolanaEvidence()
-        refreshSolanaNotifications()
-      }, 15000)
       return () => clearInterval(interval)
     }
   }, [networkMode, activeTab, solanaProgId, refreshSolanaMarkets])
@@ -2927,7 +2768,7 @@ export default function QuidApp() {
         <div className="flex gap-1 p-1 mb-6 rounded-lg bg-white/5 border border-white/10">
           {(networkMode === 'evm'
             ? ['mint', 'deposit', 'withdraw', 'swap', 'predictions'] as const
-            : ['exposure', 'markets', 'evidence'] as const
+            : ['exposure', 'markets'] as const
           ).map((tab) => (
             <button
               key={tab}
@@ -2940,7 +2781,6 @@ export default function QuidApp() {
                 : tab === 'predictions' ? '📊 De-pegs'
                 : tab === 'exposure' ? '📈 Stocks'
                 : tab === 'markets' ? '🔮 Markets'
-                : tab === 'evidence' ? '🔬 Evidence'
                 : tab}
             </button>
           ))}
@@ -4211,8 +4051,6 @@ export default function QuidApp() {
                       )}
                     </div>
                   )}
-
-
                 </>
               )}
             </div>
@@ -4240,25 +4078,7 @@ export default function QuidApp() {
             />
           )}
 
-          {activeTab === 'evidence' && networkMode === 'solana' && (
-            <EvidenceTab
-              connected={!!solanaAddress}
-              isLoading={isLoading}
-              txMutex={txMutex}
-              userPubkey={solanaAddress || null}
-              programId={solanaProgId}
-              solanaChainId={solanaChainId}
-              formatNumber={formatNumber}
-              onSubmitEvidence={handleSolanaSubmitEvidence}
-              onAckMatch={handleSolanaAckMatch}
-              evidenceMarkets={solanaEvidenceMarkets}
-              mySubmissions={myEvidenceSubmissions}
-              myNotifications={myMatchNotifications}
-              bucketStatuses={bucketStatuses}
-              refreshMarkets={refreshSolanaEvidence}
-              refreshNotifications={refreshSolanaNotifications}
-            />
-          )}
+          {/* Evidence tab removed — evidence rides per-bid via PredictionMarketTab */}
         </div>
 
         {/* Contract Info (EVM only) */}

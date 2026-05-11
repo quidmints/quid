@@ -307,8 +307,7 @@ contract Vogue is
                 LP.pooled_eth += unpaired; totalShares += unpaired;
                 LP.fees_eth = FullMath.mulDiv(LP.pooled_eth, eth_fees, WAD);
                 LP.fees_usd = FullMath.mulDiv(LP.pooled_eth, usd_fees, WAD);
-            } else {
-                // Partial pairing: only refund the unmatched excess.
+            } else { // Partial pairing: only refund the unmatched excess...
                 _sendETH(unpaired, msg.sender);
             }
             // Re-sync bookmark so _syncYield doesn't misattribute
@@ -317,6 +316,29 @@ contract Vogue is
         }
     }
 
+
+    /// @notice Called by Aux.deposit() when new dollars land so that
+    /// ETH already sitting in EtherFi (deposited before USD existed)
+    /// gets paired into the V4 pool retroactively (lest it sit unpaired).
+    /// @dev No LP share accounting here — shares were credited to each
+    /// ETH depositor at deposit time (in the deltaETH == 0 branch).
+    /// This only calls modLP to move ETH from "idle in EtherFi" to
+    /// "earning swap fees in the V4 pool". Safe to call repeatedly;
+    /// exits early when nothing to pair.
+    function tryPair() external onlyUs {
+        (uint160 sqrtPriceX96, int24 tickLower,
+         int24 tickUpper,) = _repack(); 
+        uint price = AUX.getTWAP(1800);
+        uint pooled = V4.POOLED_ETH();
+        uint available = AUX.vogueETH();
+        if (available <= pooled || price == 0) return;
+        (uint deltaUSD, uint deltaETH) = this.addLiquidityHelper(
+            				            available - pooled, price);
+        if (deltaETH > 0)
+            V4.modLP(sqrtPriceX96, deltaETH, deltaUSD,
+                     tickLower, tickUpper, address(0));
+    }
+    
     function addLiquidityHelper(
         uint deltaETH, uint price) public
         onlyUs returns (uint, uint) {

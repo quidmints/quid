@@ -166,7 +166,7 @@ contract Alles is Test, Fixtures {
             address(SDAI), address(SUSDS),
             address(SFRAX), address(SUSDE),
             address(SCRVUSD), stabilityPool,
-            address(hashnote)
+            address(hashnote) 
         ];
 
         uint mainnetFork = vm.createFork(vm.rpcUrl("mainnet"));
@@ -241,9 +241,9 @@ contract Alles is Test, Fixtures {
         DAI.approve(address(AUX), type(uint).max);
         QUID.mint(User01, 2000 * USDC_PRECISION, address(USDC), 0);
         QUID.mint(User01, 150000 * 1e18, address(DAI), 0);
-        vm.stopPrank();
+        vm.stopPrank(); // ^ github.com/quidmints/quid/tree/main/docs
 
-        for (uint i = 0; i < 100; i++) {
+        for (uint i = 0; i < 100; i++) { // 
             uint256 pk = uint256(keccak256(abi.encodePacked("juror", i))) % (type(uint256).max - 1) + 1;
             address juror = vm.addr(pk);
             jurorPKs.push(pk);

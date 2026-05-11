@@ -356,22 +356,19 @@ contract AuxArb is // Auxiliary
 
     function _supplyAAVE(address asset, uint amount,
         address to) internal returns (uint deposited) {
-        bool v4 = address(HUB) != address(0);
+        deposited = BasketLib.supplyAAVE(
+           SPOKE, asset, amount, to, HUB);
         if (asset == address(WETH)) _syncETH();
-        deposited = BasketLib.supplyAAVE(v4 ? address(SPOKE) : address(AAVE),
-                                            asset, amount, to, address(HUB));
-        if (asset == address(WETH))
-            _lastTotalETH = _availableETH();
     }
 
     function _withdrawAAVE(address asset, uint amount,
         address to) internal returns (uint drawn) {
         bool v4 = address(HUB) != address(0);
-        if (asset == address(WETH)) _syncETH();
+      
         drawn = BasketLib.withdrawAAVE(v4 ? address(SPOKE) : address(AAVE),
                                            asset, amount, to, address(HUB));
-        if (asset == address(WETH))
-            _lastTotalETH = _availableETH();
+        if (asset == address(WETH)) 
+            _syncETH();
     }
 
     function vogueETHOp(uint amount, uint8 op)
@@ -790,6 +787,7 @@ contract AuxArb is // Auxiliary
                 if (fee > 0)
                     _tip(fee, token, 1);
             }
+            V4.tryPair();
         }
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);

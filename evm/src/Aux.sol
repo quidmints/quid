@@ -76,6 +76,8 @@ contract Aux is // Auxiliary
     mapping(address => uint) internal toIndex;
 
     address internal JAM;
+    // "I keep my song in my soul...
+    // Blessed my heart and made it go
     uint public untouchable;
     // ^ in vault shares, 1e18
     address internal v3Router;
@@ -186,7 +188,7 @@ contract Aux is // Auxiliary
         USDC.approve(address(AMP), type(uint).max);
         WETH.approve(address(V3), type(uint).max);
         USDC.approve(address(V3), type(uint).max);
-        // weETH token for DEX fallback withdrawal path
+        // weETH token for fallback withdrawal path
         WEETH = IDepositAdapter(ADAPTER).weETH();
         IERC20(WEETH).approve(v3Router, type(uint).max);
     }
@@ -254,8 +256,7 @@ contract Aux is // Auxiliary
                                       index, amount);
                 } else require(stable);
 
-                amount = deposit(msg.sender,
-                              token, amount);
+                amount = deposit(msg.sender, token, amount);
             } token = address(0);
         } _syncETH(); uint poolSupplied;
         (max, poolSupplied) = BasketLib.routeSwap(ctx,
@@ -344,6 +345,7 @@ contract Aux is // Auxiliary
             } vogueETH -= Math.min(sent, vogueETH);
             (bool ok, ) = payable(msg.sender).call{
                                         value: sent}("");
+                                        
             require(ok, "transfer failed");
         } else { _syncETH(); sent = vogueETH; }
     }
@@ -459,8 +461,8 @@ contract Aux is // Auxiliary
         address stable = stables[9];
         address vault = vaults[stable];
         (uint spTotal, uint spYieldWeighted) = BasketLib.calcSPValue(vault, address(this),
-                                                                tranche[stable], sp);
-        if (spTotal > 0) { amounts[12] += spTotal;
+                                                                     tranche[stable], sp);
+        if (spTotal > 0) { amounts[12] += spTotal; 
                            amounts[10] = spTotal;
                            amounts[0] += spYieldWeighted;
         }
@@ -544,7 +546,8 @@ contract Aux is // Auxiliary
             sp.spTotalYield = r.newSpTotalYield;
             sp.spPrincipalTime = r.newSpPrincipalTime;
             sp.spValue = r.newSpValue; sent = r.sent;
-            if (r.wethGain > 0) {
+            if (r.wethGain > 0) { 
+                // _supplyAAVE(address(WETH), r.wethGain, address(this));
                 IDepositAdapter(ADAPTER).depositWETHForWeETH(
                                    r.wethGain, address(this));
                                        vogueETH += r.wethGain;
@@ -581,11 +584,12 @@ contract Aux is // Auxiliary
     function deposit(address from,
         address token, uint amount) public
         returns (uint usd) { address vault;
+        if (ILink(LINK).isDepegged(token))
+            revert TokenDepegged();
         if (tokens[token] != address(0)
          && token != SPOKE) { amount = Math.min(
-                IERC4626(token).convertToShares(amount),
-                IERC4626(token).allowance(from, address(this)));
-
+            IERC4626(token).convertToShares(amount),
+            IERC4626(token).allowance(from, address(this)));
             usd = IERC4626(token).convertToAssets(amount);
             require(usd > 0 && IERC4626(token).transferFrom(from,
                                           address(this), amount));
@@ -597,13 +601,11 @@ contract Aux is // Auxiliary
             IERC20(token).transferFrom(from, address(this), usd);
 
             require(usd > 0);
-            (usd, amount) = _supply(
-                  token, index, usd);
-        }
-        if (ILink(LINK).isDepegged(token))
-            revert TokenDepegged();
-
-        uint _target = QUID.target();
+            (usd, amount) = _supply(token, index, usd);
+        } V4.tryPair(); uint _target = QUID.target();
+        // Pair any ETH already in EtherFi that had no USD
+        // counterpart at deposit time. Safe no-op when nothing
+        // to pair (addLiquidityHelper returns (0,0) if surplus==0).
         if (untouchable < _target // fee
         && msg.sender == address(QUID)) {
             uint fee = BasketLib.seedFee(usd, untouchable,
@@ -618,10 +620,10 @@ contract Aux is // Auxiliary
         }
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);
-        if (sign > 0) { untouchable += cut;
-            tranche[token] += cut;
+        if (sign > 0) { tranche[token] += cut;
+            untouchable += cut;
         } else { cut = Math.min(cut,
-                tranche[token]);
+                 tranche[token]);
 
             tranche[token] -= cut;
             untouchable -= Math.min(
@@ -636,20 +638,16 @@ contract Aux is // Auxiliary
 
     function _supplyAAVE(address asset, uint amount,
         address to) internal returns (uint deposited) {
-        if (asset == address(WETH)) _syncETH();
         deposited = BasketLib.supplyAAVE(
            SPOKE, asset, amount, to, HUB);
-        if (asset == address(WETH))
-            _lastTotalETH = _availableETH();
+        if (asset == address(WETH)) _syncETH();
     }
 
     function _withdrawAAVE(address asset, uint amount,
         address to) internal returns (uint drawn) {
-        if (asset == address(WETH)) _syncETH();
         drawn = BasketLib.withdrawAAVE(
          SPOKE, asset, amount, to, HUB);
-        if (asset == address(WETH))
-            _lastTotalETH = _availableETH();
+        if (asset == address(WETH)) _syncETH();
     }
 
     function _depositETH(address sender,
@@ -693,6 +691,7 @@ contract Aux is // Auxiliary
         if (token == address(WETH)) { IDepositAdapter(ADAPTER).depositWETHForWeETH(
                                                              repaid, address(this));
                                                                  vogueETH += repaid;
+            //  _supplyAAVE(address(WETH), repaid, address(this));
         } else _supply(token, toIndex[token], repaid);
         return true; // builders don't introspect...
     } // they see priority fees, explicit bribes, not
@@ -703,12 +702,11 @@ contract Aux is // Auxiliary
         uint usd) internal returns (uint, uint) {
         address vault = vaults[token]; uint amount;
         if (index == 10) // BOLD -> Stability Pool
-            (sp.spValue,
-             sp.spPrincipalTime,
+            (sp.spValue, sp.spPrincipalTime,
              sp.spLastUpdate) = BasketLib.depositToSP(
                                        vault, usd, sp);
-        // AAVE: USDC(1), USDT(2),
-        else if (index < 5) { // PYUSD(3), GHO(4)
+        // AAVE: USDC(1), USDT(2), PYUSD(3), GHO(4)
+        else if (index < 5) { 
             if (index == 1)
                 (amount, usd) = BasketLib.depositUSYC(vaults[stables[10]],
                                           SPOKE, address(USDC), usd, HUB);
@@ -719,8 +717,7 @@ contract Aux is // Auxiliary
                 else usd = IERC4626(vault).convertToAssets(
                 IERC4626(vault).deposit(usd, address(this)));
             }
-        }
-        // DAI(5), USDS(6), FRAX(7), USDE(8), CRVUSD(9)
+        } // DAI(5), USDS(6), FRAX(7), USDE(8), CRVUSD(9)
         else if (index != 11) // 4626 returns shares...
             usd = IERC4626(vault).convertToAssets(
                     IERC4626(vault).deposit(usd,

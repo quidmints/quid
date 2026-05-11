@@ -1,6 +1,8 @@
 
-##  
+# SOL, ETH, $ flash loan JAM
 
+Predictions, stocks, commodities,
+bonds Ethereum where exclusively
 Bebop's JAM settlement contract  
 gets free flash loans from `Aux`.   
 Liquidity boostrapping (the cold  

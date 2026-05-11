@@ -4,14 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "prebuild": "npx ts-node svm/extract-tickers.ts",
+    "prebuild": "npx tsx svm/extract-tickers.ts",
     "build": "npm run prebuild && next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "keeper": "npx ts-node keeper/keeper.ts",
-    "keeper:dev": "npx ts-node --watch keeper/keeper.ts",
-    "keeper:solana": "npx ts-node keeper/keeper_solana.ts",
-    "keeper:prediction": "npx ts-node keeper/keeper_prediction.ts",
+    "keeper": "npx tsx keeper/keeper.ts",
+    "keeper:dev": "npx tsx watch keeper/keeper.ts",
+    "keeper:solana": "npx tsx keeper/keeper_solana.ts",
+    "keeper:prediction": "npx tsx keeper/keeper_prediction.ts",
     "cre:simulate": "cd keeper && cre workflow simulate my-workflow --target staging-settings"
   },
   "dependencies": {
@@ -24,7 +24,8 @@
     "next": "14.2.29",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "rlp": "^3.0.0"
+    "rlp": "^3.0.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/node": "^20",
@@ -33,7 +34,7 @@
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.3",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
     "typescript": "^5"
   },
   "overrides": {

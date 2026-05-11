@@ -292,12 +292,30 @@ describe("QU!D Protocol — Merged Test Suite", () => {
     return pda;
   }
 
-  function commitmentHash(confidence: number, salt: Buffer): number[] {
+  /**
+   * Three-value commitment matching state.rs::hash_commitment:
+   *   keccak256( le8(confidence) || evidence_url_hash || salt )
+   * `evidenceUrlHash` defaults to zero32 (no-evidence bid). For evidence-bound
+   * bids, pass keccak256(utf8(url)).
+   */
+  function commitmentHash(
+    confidence: number,
+    salt: Buffer,
+    evidenceUrlHash?: Buffer,
+  ): number[] {
     const { keccak_256 } = require("js-sha3");
     const confBuffer = Buffer.alloc(8);
     confBuffer.writeBigUInt64LE(BigInt(confidence));
-    const data = Buffer.concat([confBuffer, salt]);
+    const urlHash = evidenceUrlHash ?? Buffer.alloc(32);
+    const data = Buffer.concat([confBuffer, urlHash, salt]);
     return Array.from(Buffer.from(keccak_256.arrayBuffer(data)));
+  }
+
+  /** keccak256(utf8(url)), or zero32 for no-evidence bids. */
+  function evidenceUrlHashOf(url: string | null | undefined): Buffer {
+    if (!url) return Buffer.alloc(32);
+    const { keccak_256 } = require("js-sha3");
+    return Buffer.from(keccak_256.arrayBuffer(Buffer.from(url, "utf-8")));
   }
 
   function generateSalt(seed: number): Buffer {
@@ -480,7 +498,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
         .rpc();
 
       const config = await program.account.programConfig.fetch(configPDA);
-      expect(config.orchestrator.toString()).to.equal(newOracle.toString());
+      expect(config.keeper.toString()).to.equal(newOracle.toString());
       console.log("  ✓ Oracle function updated");
     });
   });
@@ -580,6 +598,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           customerAccount: depositorPDA,
           customerTokenAccount: userTokenAccount,
           tickerRisk: null,
+          enrollment: null,
+          keeper: null,
           tokenProgram: TOKEN_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -670,6 +690,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           customerAccount: depositorPDA,
           customerTokenAccount: userTokenAccount,
           tickerRisk: tickerRiskPDA,
+          enrollment: null,
+          keeper: null,
           tokenProgram: TOKEN_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -791,6 +813,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
             customerAccount: victimDepositorPDA,
             customerTokenAccount: victimTokenAccount,
             tickerRisk: tickerRiskPDA,
+            enrollment: null,
+            keeper: null,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
@@ -931,7 +955,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
         exculpatory: "Market cancels if CoinGecko offline >24h during measurement period.",
         resolutionSource: "check CoinGecko",
         outcomes: ["Yes", "No"],
-        sbFeed: Keypair.generate().publicKey,
+        resolutionMode: 0, // MODE_AI
+        juryConfig: null,
+        oracleComputeCost: new BN(0),
         deadline: new BN(now + 7 * 24 * 60 * 60),
         liquidity: new BN(1_000 * 10 ** 6),
         creatorFeeBps: 100,
@@ -979,7 +1005,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
             exculpatory: "n/a",
             resolutionSource: "",
             outcomes: ["Only one option"],
-            sbFeed: Keypair.generate().publicKey,
+            resolutionMode: 0, // MODE_AI
+            juryConfig: null,
+            oracleComputeCost: new BN(0),
             deadline: new BN(now + 7 * 24 * 60 * 60),
             liquidity: new BN(1_000 * 10 ** 6),
             creatorFeeBps: 100,
@@ -1181,7 +1209,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+          [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
         ])
         .accountsStrict({
           market: marketPDA,
@@ -1201,7 +1229,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+          [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
         ])
         .accountsStrict({
           market: marketPDA,
@@ -1222,7 +1250,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
 
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+          [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
         ])
         .accountsStrict({
           market: marketPDA,
@@ -1420,6 +1448,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
             customerAccount: depositorPDA,
             customerTokenAccount: userTokenAccount,
             tickerRisk: null,
+            enrollment: null,
+            keeper: null,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
@@ -1484,7 +1514,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if Super Bowl is not played before July 2026.",
           resolutionSource: "check NFL.com",
           outcomes: ["Chiefs", "Lions", "Eagles", "Field"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 30 * 24 * 60 * 60),
           liquidity: new BN(2_000 * 10 ** 6),
           creatorFeeBps: 200,
@@ -1603,7 +1635,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if exchange delisting.",
           resolutionSource: "check CoinGecko",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 14 * 24 * 60 * 60),
           liquidity: new BN(1_000 * 10 ** 6),
           creatorFeeBps: 100,
@@ -1873,7 +1907,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if exchange delisting.",
           resolutionSource: "check CoinGecko",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 7 * 24 * 60 * 60),
           liquidity: new BN(1_000 * 10 ** 6),
           creatorFeeBps: 50,
@@ -1938,7 +1974,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       try {
         await program.methods
           .reveal([
-            [{ confidence: new BN(8000), salt: Array.from(badSalt) }]
+            [{ confidence: new BN(8000), evidenceUrlHash: Array(32).fill(0), salt: Array.from(badSalt) }]
           ])
           .accountsStrict({
             market: revealMktPDA,
@@ -1961,7 +1997,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       try {
         await program.methods
           .reveal([
-            [{ confidence: new BN(5000), salt: Array.from(entry.salt) }] // wrong confidence
+            [{ confidence: new BN(5000), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }] // wrong confidence
           ])
           .accountsStrict({
             market: revealMktPDA,
@@ -1987,7 +2023,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       try {
         await program.methods
           .reveal([
-            [{ confidence: new BN(badConf), salt: Array.from(badSalt) }]
+            [{ confidence: new BN(badConf), evidenceUrlHash: Array(32).fill(0), salt: Array.from(badSalt) }]
           ])
           .accountsStrict({
             market: revealMktPDA,
@@ -2012,7 +2048,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           .reveal([
             // Provide 2 reveal entries for a position with 1 entry
             [
-              { confidence: new BN(entry.confidence), salt: Array.from(entry.salt) },
+              { confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) },
               { confidence: new BN(5000), salt: Array.from(generateSalt(99)) },
             ]
           ])
@@ -2036,7 +2072,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       const entry = salts.get("reveal-test")!;
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+          [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
         ])
         .accountsStrict({
           market: revealMktPDA,
@@ -2059,7 +2095,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       try {
         await program.methods
           .reveal([
-            [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+            [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
           ])
           .accountsStrict({
             market: revealMktPDA,
@@ -2106,7 +2142,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if delisted.",
           resolutionSource: "CoinGecko",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 7 * 24 * 60 * 60),
           liquidity: new BN(500 * 10 ** 6),
           creatorFeeBps: 100,
@@ -2277,7 +2315,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "N/A — for testing only.",
           resolutionSource: "NASA",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 7 * 24 * 60 * 60),
           liquidity: new BN(500 * 10 ** 6),
           creatorFeeBps: 200,
@@ -2398,7 +2438,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       const entry = salts.get("cancel-payer")!;
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry.confidence), salt: Array.from(entry.salt) }]
+          [{ confidence: new BN(entry.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry.salt) }]
         ])
         .accountsStrict({
           market: cancelMktPDA,
@@ -2416,7 +2456,7 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       const entry2 = salts.get("cancel-user2")!;
       await program.methods
         .reveal([
-          [{ confidence: new BN(entry2.confidence), salt: Array.from(entry2.salt) }]
+          [{ confidence: new BN(entry2.confidence), evidenceUrlHash: Array(32).fill(0), salt: Array.from(entry2.salt) }]
         ])
         .accountsStrict({
           market: cancelMktPDA,
@@ -2522,6 +2562,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
             customerAccount: depositorPDA, // payer's depositor
             customerTokenAccount: user2TokenAccount,
             tickerRisk: null,
+            enrollment: null,
+            keeper: null,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
@@ -2548,6 +2590,8 @@ describe("QU!D Protocol — Merged Test Suite", () => {
             customerAccount: depositorPDA,
             customerTokenAccount: userTokenAccount,
             tickerRisk: null,
+            enrollment: null,
+            keeper: null,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
@@ -2636,7 +2680,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if delisted.",
           resolutionSource: "CoinGecko",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 7 * 24 * 60 * 60),
           liquidity: new BN(1_000 * 10 ** 6),
           creatorFeeBps: 100,
@@ -2749,7 +2795,9 @@ describe("QU!D Protocol — Merged Test Suite", () => {
           exculpatory: "Cancels if delisted.",
           resolutionSource: "CoinGecko",
           outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
+          resolutionMode: 0, // MODE_AI
+          juryConfig: null,
+          oracleComputeCost: new BN(0),
           deadline: new BN(now + 7 * 24 * 60 * 60),
           liquidity: new BN(500 * 10 ** 6),
           creatorFeeBps: 100,
@@ -2953,1636 +3001,14 @@ describe("QU!D Protocol — Merged Test Suite", () => {
   });
 
   // =========================================================================
-  // 28. SWITCHBOARD INTEGRATION & MARKET CREATION
-  //     When SB is deployed on localnet (--clone from mainnet), creates real
-  //     PullFeeds with mock oracle values and uses the production create_market
-  //     path. Falls back to testCreateMarket when SB is unavailable.
-  //
-  //     To enable real SB tests:
-  //       1. Add to start-validator.sh:
-  //            --clone SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv
-  //            --clone <queue_account_from_mainnet>
-  //       2. Set env: SB_QUEUE=<queue_pubkey>
-  //     Or run against devnet with an active oracle.
+  // 28-34. Removed: evidence-pipeline + Switchboard sections.
+  //   The MarketEvidence / EvidenceSubmission / MatchNotification PDAs and
+  //   acta.rs were deleted in the keeper-Claude refactor. Per-bid evidence
+  //   now rides inside the commit-reveal (urlHash + content-addressed bytes
+  //   served from /api/?action=evidence_fetch). Switchboard removed in favour
+  //   of keeper-signed `resolve(winning_sides, confidence, thread_url, hash)`.
+  //   See section 35 below for the new full e2e prediction-market demo.
   // =========================================================================
-
-  describe("28. Market Creation for Evidence", () => {
-    it("28.1 Detects Switchboard availability", async () => {
-      try {
-        const sbInfo = await provider.connection.getAccountInfo(SB_ON_DEMAND_PID);
-        sbAvailable = sbInfo !== null;
-      } catch { sbAvailable = false; }
-
-      if (sbAvailable && process.env.SB_QUEUE) {
-        console.log("  Switchboard: AVAILABLE (real create_market path)");
-        console.log("    SB Program:", SB_ON_DEMAND_PID.toBase58());
-        console.log("    Queue:", process.env.SB_QUEUE);
-      } else if (sbAvailable) {
-        console.log("  Switchboard: Program found but no SB_QUEUE set");
-        console.log("    Set SB_QUEUE=<pubkey> to enable real feed tests");
-        sbAvailable = false; // can't create feeds without a queue
-      } else {
-        console.log("  Switchboard: NOT FOUND (using testCreateMarket fallback)");
-      }
-    });
-
-    it("28.2 Creates evidence market", async () => {
-      let bankCount = new BN(0);
-      try {
-        const bank = await program.account.depository.fetch(bankPDA);
-        bankCount = bank.marketCount;
-      } catch {}
-      evidenceMarketId = bankCount;
-      evidenceMarketPDA = deriveMarket(bankCount);
-      evidenceSolVaultPDA = deriveSolVault(bankCount);
-      evidenceAccuracyPDA = deriveAccuracyBuckets(bankCount);
-
-      const now = Math.floor(Date.now() / 1000);
-      const deadline = now + 30 * 24 * 60 * 60; // 30 days
-      const question = "Will construction noise be detected at Staronadvodnytska 13a during prohibited hours (22:00-07:00) on more than 5 nights in March 2026?";
-      const context = "Noise measured by SE-signed audio classifier on device. 'Night' = 22:00-07:00 local time. 'Construction' = classifier tag with ≥70% confidence.";
-      const exculpatory = "Market cancels if fewer than 3 evidence submissions received or if device is flagged/revoked before resolution.";
-      const resolutionSource = "On-chain evidence + AI oracle resolution";
-      const outcomes = ["Yes", "No"];
-
-      if (sbAvailable && process.env.SB_QUEUE) {
-        // ── Real Switchboard path ──
-        // Requires: SB program cloned to localnet + active queue
-        try {
-          const sbIdl = await anchor.Program.fetchIdl(SB_ON_DEMAND_PID, provider);
-          if (!sbIdl) throw new Error("Could not fetch SB IDL");
-          sbProgram = new anchor.Program(sbIdl, provider);
-
-          const queuePubkey = new PublicKey(process.env.SB_QUEUE);
-
-          // Compute content tag for validation encoding
-          const contentTag = computeContentTag(question, context, exculpatory, outcomes);
-          const validationScore = 8500n; // 85%
-          const validationValue = contentTag * TAG_MULTIPLIER + 1n * CONFIDENCE_MULTIPLIER + validationScore;
-
-          // Create validation PullFeed
-          const [valFeedIx, valFeed] = await PullFeed.initTx(sbProgram, {
-            queue: queuePubkey,
-            maxVariance: 1.0,
-            minResponses: 1,
-            payer: payer.publicKey,
-          });
-          await provider.sendAndConfirm(valFeedIx, [payer]);
-          console.log("    Validation feed:", valFeed.pubkey.toBase58().slice(0, 16) + "...");
-
-          // Create resolution PullFeed
-          const [resFeedIx, resFeed] = await PullFeed.initTx(sbProgram, {
-            queue: queuePubkey,
-            maxVariance: 1.0,
-            minResponses: 1,
-            payer: payer.publicKey,
-          });
-          await provider.sendAndConfirm(resFeedIx, [payer]);
-          console.log("    Resolution feed:", resFeed.pubkey.toBase58().slice(0, 16) + "...");
-
-          // NOTE: Writing actual values to the feeds requires an active oracle
-          // on the queue to submit responses. For localnet without an oracle
-          // container, this will fail at the get_value() call in create_market.
-          // Solutions:
-          //   a) Run `docker run switchboardlabs/oracle` alongside validator
-          //   b) Use Switchboard's crossbar simulator
-          //   c) Write account data directly (fragile, version-dependent)
-
-          await program.methods
-            .createMarket({
-              question, context, exculpatory, resolutionSource, outcomes,
-              sbFeed: resFeed.pubkey,
-              deadline: new BN(deadline),
-              liquidity: new BN(1_000 * 10 ** 6),
-              creatorFeeBps: 100,
-              creatorBond: new BN(0.1 * LAMPORTS_PER_SOL),
-              numWinners: 1,
-              winningSplits: [],
-              beneficiaries: [],
-            })
-            .accountsStrict({
-              authority: payer.publicKey,
-              bank: bankPDA,
-              market: evidenceMarketPDA,
-              solVault: evidenceSolVaultPDA,
-              accuracyBuckets: evidenceAccuracyPDA,
-              config: configPDA,
-              systemProgram: SystemProgram.programId,
-            })
-            .remainingAccounts([
-              { pubkey: valFeed.pubkey, isWritable: false, isSigner: false },
-              { pubkey: resFeed.pubkey, isWritable: false, isSigner: false },
-            ])
-            .preInstructions([
-              ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-            ])
-            .rpc();
-
-          console.log("  ✓ Market created via REAL create_market with Switchboard feeds!");
-        } catch (sbErr: any) {
-          console.log("  ⚠ Switchboard create_market failed:", sbErr.message?.slice(0, 100));
-          console.log("    Likely cause: feeds have no oracle data (need running oracle container)");
-          console.log("    Falling back to testCreateMarket...");
-          sbAvailable = false;
-        }
-      }
-
-      if (!sbAvailable) {
-        // ── Fallback: testCreateMarket (no Switchboard, no oracle checks) ──
-        await program.methods
-          .testCreateMarket({
-            question, context, exculpatory, resolutionSource, outcomes,
-            sbFeed: Keypair.generate().publicKey,
-            deadline: new BN(deadline),
-            liquidity: new BN(1_000 * 10 ** 6),
-            creatorFeeBps: 100,
-            creatorBond: new BN(0.1 * LAMPORTS_PER_SOL),
-            numWinners: 1,
-            winningSplits: [],
-            beneficiaries: [],
-          })
-          .accountsStrict({
-            authority: payer.publicKey,
-            bank: bankPDA,
-            market: evidenceMarketPDA,
-            solVault: evidenceSolVaultPDA,
-            accuracyBuckets: evidenceAccuracyPDA,
-            systemProgram: SystemProgram.programId,
-          })
-          .preInstructions([
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-          ])
-          .rpc();
-        console.log("  ✓ Evidence market created via testCreateMarket (no SB)");
-      }
-
-      const market = await program.account.market.fetch(evidenceMarketPDA);
-      expect(market.outcomes.length).to.equal(2);
-      expect(market.resolved).to.equal(false);
-      console.log("    Market ID:", market.marketId.toNumber());
-      console.log("    Question:", market.question.slice(0, 60) + "...");
-    });
-  });
-
-  // =========================================================================
-  // 29. EVIDENCE PIPELINE
-  // =========================================================================
-
-  describe("29. Evidence Pipeline", () => {
-    // ── DeviceEnrollment setup (required for submitEvidence) ──────────────
-    before(async () => {
-      enrollmentPDA = PublicKey.findProgramAddressSync(
-        [Buffer.from("device_enrollment"), payer.publicKey.toBuffer()],
-        program.programId
-      )[0];
-      // Check before creating — init accounts throw if PDA already exists
-      const existing = await provider.connection.getAccountInfo(enrollmentPDA);
-      if (!existing) {
-        await program.methods
-          .enrollDevice({ devicePubkey: payer.publicKey })
-          .accountsStrict({
-            payer: payer.publicKey,
-            config: configPDA,
-            enrollment: enrollmentPDA,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        console.log("  ✓ Device enrolled (payer) for evidence submission tests");
-      } else {
-        console.log("  ✓ Enrollment already exists — continuing");
-      }
-    });
-
-    it("29.1 Initializes market evidence requirements", async () => {
-      if (!evidenceMarketPDA) { console.log("  ⚠ Skipped — no market"); return; }
-
-      marketEvidencePDA = PublicKey.findProgramAddressSync(
-        [Buffer.from("market_evidence"), evidenceMarketPDA.toBuffer()],
-        program.programId)[0];
-
-      const now = Math.floor(Date.now() / 1000);
-
-      await program.methods
-        .initMarketEvidence(evidenceMarketId, {
-          timeWindowStart: new BN(now - 86400),
-          timeWindowEnd: new BN(now + 30 * 86400),
-          minSubmissions: 1,
-          requiredTags: [tagId("Construction"), tagId("HeavyMachinery")],
-          minTagConfidence: 7000,
-          pipelineRoutes: [],
-          notificationDomains: [],
-          resolutionMode: 1,
-          maxSubmissions: 16,
-          resolutionBond: new BN(50_000_000),
-          juryConfig: null,
-          oracleComputeCost: new BN(0),
-        })
-        .accountsStrict({
-          creator: payer.publicKey,
-          market: evidenceMarketPDA,
-          marketEvidence: marketEvidencePDA,
-          solVault: evidenceSolVaultPDA,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-      expect(me.market.toBase58()).to.equal(evidenceMarketPDA.toBase58());
-      expect(me.submissionCount.toNumber()).to.equal(0);
-      expect(me.evidence.requiredTags.length).to.equal(2);
-      expect(me.evidence.minTagConfidence).to.equal(7000);
-      console.log("  ✓ Evidence requirements attached");
-      console.log("    Required tags: Construction, HeavyMachinery (≥70% confidence)");
-    });
-
-    it("29.2 Submits evidence (Night 0, nonce=0) — confidence is off-chain", async () => {
-      // Confidence validation was removed from on-chain SubmitEvidenceParams.
-      // On-chain we only store the attestation_hash commitment.
-      if (!evidenceMarketPDA || !marketEvidencePDA) {
-        console.log("  ⚠ Skipped — no market/evidence config"); return;
-      }
-
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), evidenceMarketPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([0])],
-        program.programId)[0];
-      evidenceSubmissionPDAs.push(evidPda);
-
-      const atHash1 = Array.from(crypto.randomBytes(32));
-      const { ix: devIx1, sig: devSig1 } = makeDeviceSig(atHash1, 0, evidenceMarketPDA, payer);
-      await program.methods
-        .submitEvidence({
-          attestationHash: atHash1,
-          strongboxSignature: devSig1,
-          contentType: 0,
-          nonce: 0,
-        })
-        .preInstructions([devIx1])
-        .accountsStrict({
-          submitter: payer.publicKey,
-          market: evidenceMarketPDA,
-          marketEvidence: marketEvidencePDA,
-          enrollment: enrollmentPDA,
-          evidence: evidPda,
-          instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-      expect(me.submissionCount.toNumber()).to.equal(1);
-      console.log("  ✓ Evidence submitted (Night 0) — confidence enforced off-chain by oracle");
-    });
-
-    it("29.3 Submits valid evidence (Night 1)", async () => {
-      if (!evidenceMarketPDA || !marketEvidencePDA) {
-        console.log("  ⚠ Skipped — no market/evidence config"); return;
-      }
-
-      const now = Math.floor(Date.now() / 1000);
-      const mockBlob = crypto.randomBytes(1024);
-      const attestationHash = Array.from(
-        crypto.createHash("sha256").update(mockBlob).digest());
-
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), evidenceMarketPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([1])],
-        program.programId)[0];
-      evidenceSubmissionPDAs.push(evidPda);
-
-      const { ix: devIx3, sig: devSig3 } = makeDeviceSig(Array.from(attestationHash), 1, evidenceMarketPDA, payer);
-      await program.methods
-        .submitEvidence({
-          attestationHash: Array.from(attestationHash),
-          strongboxSignature: devSig3,
-          contentType: 0,
-          nonce: 1,
-        })
-        .preInstructions([
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-          devIx3,
-        ])
-        .accountsStrict({
-          submitter: payer.publicKey,
-          market: evidenceMarketPDA,
-          marketEvidence: marketEvidencePDA,
-          enrollment: enrollmentPDA,
-          evidence: evidPda,
-          instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const evid = await program.account.evidenceSubmission.fetch(evidPda);
-      expect(evid.market.toBase58()).to.equal(evidenceMarketPDA.toBase58());
-      expect(evid.submitter.toBase58()).to.equal(payer.publicKey.toBase58());
-      expect(evid.contentType).to.equal(0);
-      console.log("  ✓ Evidence submitted (Night 1)");
-
-      const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-      expect(me.submissionCount.toNumber()).to.equal(2);
-    });
-
-    it("29.4 Rejects duplicate submission (same nonce)", async () => {
-      if (!evidenceMarketPDA || !marketEvidencePDA) {
-        console.log("  ⚠ Skipped"); return;
-      }
-      // nonce=1 PDA was created in 29.3. Re-init must fail with SystemProgram
-      // "account already in use" — the PDA seeds uniquely bind market+submitter+nonce.
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), evidenceMarketPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([1])],
-        program.programId)[0];
-      try {
-        const atHash2 = Array.from(crypto.randomBytes(32));
-        const { ix: devIx2, sig: devSig2 } = makeDeviceSig(atHash2, 1, evidenceMarketPDA, payer);
-        await program.methods
-          .submitEvidence({
-            attestationHash: atHash2,
-            strongboxSignature: devSig2,
-            contentType: 0,
-            nonce: 1,
-          })
-          .preInstructions([devIx2])
-        .accountsStrict({
-            submitter: payer.publicKey,
-            market: evidenceMarketPDA,
-            marketEvidence: marketEvidencePDA,
-          enrollment: enrollmentPDA,
-            evidence: evidPda,
-          instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should reject duplicate nonce");
-      } catch (e: any) {
-        console.log("  ✓ Duplicate nonce rejected — PDA already in use");
-      }
-    });
-
-    it("29.5 Submits second evidence with different nonce", async () => {
-      if (!evidenceMarketPDA || !marketEvidencePDA) {
-        console.log("  ⚠ Skipped — no market/evidence config"); return;
-      }
-
-      const now = Math.floor(Date.now() / 1000);
-
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), evidenceMarketPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([2])],
-        program.programId)[0];
-      evidenceSubmissionPDAs.push(evidPda);
-
-      const atHash3 = Array.from(crypto.randomBytes(32));
-      const { ix: devIx5, sig: devSig5 } = makeDeviceSig(atHash3, 2, evidenceMarketPDA, payer);
-      await program.methods
-        .submitEvidence({
-          attestationHash: atHash3,
-          strongboxSignature: devSig5,
-          contentType: 0,
-          nonce: 2,
-        })
-        .preInstructions([devIx5])
-        .accountsStrict({
-          submitter: payer.publicKey,
-          market: evidenceMarketPDA,
-          marketEvidence: marketEvidencePDA,
-          enrollment: enrollmentPDA,
-          evidence: evidPda,
-          instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-      expect(me.submissionCount.toNumber()).to.equal(3);
-      console.log("  ✓ Third evidence submitted with nonce=2");
-    });
-
-    it("29.6 Verifies final evidence state", async () => {
-      if (evidenceSubmissionPDAs.length === 0) {
-        console.log("  ⚠ No evidence submitted — skipping"); return;
-      }
-
-      const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-      console.log("\n  ═══ MARKET EVIDENCE ═══");
-      console.log("  Submissions:", me.submissionCount.toNumber());
-      console.log("  Required tags:", me.evidence.requiredTags.length);
-      console.log("  Min confidence:", me.evidence.minTagConfidence, "bps");
-
-      for (let i = 0; i < evidenceSubmissionPDAs.length; i++) {
-        const evid = await program.account.evidenceSubmission.fetch(
-          evidenceSubmissionPDAs[i]);
-        console.log(`\n  ── Evidence #${i} ──`);
-        console.log("  Submitter:", evid.submitter.toBase58().slice(0, 12) + "...");
-        console.log("  Content type:", evid.contentType);
-        console.log("  Attestation hash:",
-          Buffer.from(evid.attestationHash).toString("hex").slice(0, 16) + "...");
-      }
-    });
-  });
-
-  // =========================================================================
-  // 30. CROSS-LANGUAGE HASH VERIFICATION
-  // =========================================================================
-
-  describe("30. Cross-language Hash Verification", () => {
-    it("30.1 Computes tags_hash for canonical test vector", () => {
-      const testTags = [
-        { tagId: tagId("Construction"),   confidenceBps: 9100, slotCount: 70 },
-        { tagId: tagId("HeavyMachinery"), confidenceBps: 8400, slotCount: 70 },
-      ];
-      const hash = computeTagsHash(testTags);
-      console.log("  Tags hash (TypeScript):", hash.toString("hex"));
-      console.log("    Construction:", Buffer.from(tagId("Construction")).toString("hex").slice(0, 16) + "...");
-      console.log("    HeavyMachinery:", Buffer.from(tagId("HeavyMachinery")).toString("hex").slice(0, 16) + "...");
-
-      expect(tagId("Construction").length).to.equal(32);
-      expect(tagId("HeavyMachinery").length).to.equal(32);
-      expect(hash.length).to.equal(32);
-    });
-
-    it("30.2 Verifies attestation_hash commitment scheme", () => {
-      const mockBlob = crypto.randomBytes(2048);
-      const commitHash = crypto.createHash("sha256").update(mockBlob).digest();
-      const teeHash = crypto.createHash("sha256").update(mockBlob).digest();
-      expect(commitHash.equals(teeHash)).to.equal(true);
-      console.log("  ✓ Attestation hash commitment verified");
-
-      const tampered = Buffer.from(mockBlob);
-      tampered[0] ^= 0xFF;
-      const tamperedHash = crypto.createHash("sha256").update(tampered).digest();
-      expect(commitHash.equals(tamperedHash)).to.equal(false);
-      console.log("  ✓ Tampered blob detected (hash mismatch)");
-    });
-
-    it("30.3 Verifies P-256 signature round-trip (off-chain)", () => {
-      const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", {
-        namedCurve: "prime256v1",
-      });
-
-      const message = crypto.randomBytes(64);
-      const sign = crypto.createSign("SHA256");
-      sign.update(message);
-      const sig = sign.sign(privateKey);
-      expect(sig.length).to.be.greaterThan(0);
-
-      const verify = crypto.createVerify("SHA256");
-      verify.update(message);
-      const valid = verify.verify(publicKey, sig);
-      expect(valid).to.equal(true);
-      console.log("  ✓ P-256 sign/verify round-trip passed");
-      console.log("    (TEE verifies this at resolution, not on-chain)");
-    });
-  });
-
-  // =========================================================================
-  // 31. SYSTEM SUMMARY
-  // =========================================================================
-
-  describe("31. Full System Summary", () => {
-    it("31.1 Prints complete system state", async () => {
-      const bank = await program.account.depository.fetch(bankPDA);
-      console.log("\n  ═══════════════════════════════════════════════════════");
-      console.log("  FINAL SYSTEM STATE");
-      console.log("  ═══════════════════════════════════════════════════════");
-
-      console.log("\n  Depository:");
-      console.log("    Total deposits:", (bank.totalDeposits.toNumber() / 1e6).toFixed(2), "USD");
-      console.log("    Market count:", bank.marketCount.toNumber());
-
-      if (evidenceMarketPDA) {
-        console.log("\n  Evidence Market:", evidenceMarketPDA.toBase58().slice(0, 16) + "...");
-        try {
-          const me = await program.account.marketEvidence.fetch(marketEvidencePDA);
-          console.log("    Submissions:", me.submissionCount.toNumber());
-        } catch { console.log("    (no evidence requirements)"); }
-      }
-      console.log("\n  ✓ All tests complete");
-      console.log("  ═══════════════════════════════════════════════════════\n");
-    });
-  });
-
-    // =========================================================================
-    // 31. ORACLE BINARY INTEGRATION
-    //   Build the oracle binary first:
-    //      cd oracle &&  go build -o safta-oracle .
-    // Spawns the compiled Go oracle binary against the running localnet using
-    // the evidence market and submissions created in sections 28-29.
-    // Analogous to lib.rs test_helpers for Switchboard — no mocking, real chain.
-    //
-    // Requires:
-    //   ORACLE_TRUSTED_CODE_HASHES             (optional; omit = skip attestation)
-    // =========================================================================
-
-    describe("31. Oracle Binary Integration", () => {
-      const oracleBin = process.env.ORACLE_BIN || "./oracle/safta-oracle";
-
-      function oracleAvailable(): boolean {
-        try {
-          const { existsSync } = require("fs");
-          return existsSync(oracleBin);
-        } catch { return false; }
-      }
-
-      function runOracle(marketKey: string, mode: "resolve" | "validate"): {
-        stdout: string; stderr: string; status: number | null;
-      } {
-        const env: Record<string, string> = {
-          ...process.env as Record<string, string>,
-          SOLANA_RPC_URL:  provider.connection.rpcEndpoint,
-          PROGRAM_ID:      program.programId.toBase58(),
-          MARKET_PUBKEY:   marketKey,
-          ORACLE_MODE:     mode,
-          // Skip TEE attestation check in dev — binary not running inside SEV-SNP
-          TRUSTED_CODE_HASHES: process.env.ORACLE_TRUSTED_CODE_HASHES || "",
-          // No real model URI needed for deterministic resolution path
-          VALIDATION_MODEL_URI: process.env.VALIDATION_MODEL_URI || "",
-        };
-        const result = spawnSync(oracleBin, [], { env, encoding: "utf8", timeout: 30_000 });
-        return {
-          stdout: result.stdout || "",
-          stderr: result.stderr || "",
-          status: result.status,
-        };
-      }
-
-      it("31.1 Binary exists and prints version/help without crashing", function () {
-        // TODO oracle is now in external repo, mempalace
-        if (!oracleAvailable()) {
-          console.log(`  ⚠ Skipped — oracle binary not found at ${oracleBin}`);
-          this.skip();
-        }
-        // Invoke with missing required env → should log fatal and exit non-zero,
-        // but not segfault or panic (i.e. binary is at least runnable)
-        const r = spawnSync(oracleBin, [], {
-          env: { ORACLE_MODE: "resolve" }, // deliberately missing SOLANA_RPC_URL etc.
-          encoding: "utf8",
-          timeout: 5_000,
-        });
-        expect(r.status).to.not.equal(null, "binary did not exit cleanly");
-        // Should emit a log message, not a Go panic stack trace
-        const combined = (r.stdout || "") + (r.stderr || "");
-        expect(combined).to.not.include("goroutine", "unexpected panic");
-        console.log("  ✓ Binary exits cleanly on missing config (no panic)");
-      });
-
-      it("31.2 Resolves deterministically from on-chain evidence (mode=resolve)", async function () {
-        if (!oracleAvailable() || !evidenceMarketPDA) {
-          console.log("  ⚠ Skipped — oracle binary or evidence market unavailable");
-          this.skip();
-        }
-
-        // By this point section 29 has submitted 2 evidence entries:
-        //   Night 1: Construction 91%, HeavyMachinery 84%  (nonce=0)
-        //   Night 2: Construction 88%, HeavyMachinery 75%  (nonce=1)
-        // Both exceed min_tag_confidence=7000. submission_count=2 >= min_submissions=1.
-        // ResolutionFormula is missing (testCreateMarket sets no formula in context),
-        // so DeterministicResolvePostprocessor will fall through (mode=0=Auto).
-        // Without a VALIDATION_MODEL_URI, ExecutionPlanPostprocessor will also skip.
-        // The test asserts the session ran and produced a well-formed result either way.
-
-        const r = runOracle(evidenceMarketPDA.toBase58(), "resolve");
-
-        console.log("  Oracle stderr:", r.stderr.split("\n").slice(0, 6).join("\n    "));
-
-        // Binary must exit 0 (success) or 1 (non-fatal resolution failure).
-        // A panic (null status or 2+) is always a test failure.
-        expect(r.status).to.be.oneOf([0, 1], "oracle exited with unexpected status (panic?)");
-
-        let result: any;
-        try {
-          if (!r.stdout?.trim()) {
-            console.log("  Oracle stderr:\n   ", r.stderr || "(empty)");
-            expect.fail("oracle produced no stdout");
-          }
-          const lastLine = r.stdout.trim().split("\n").filter(l => l.trim().startsWith("{")).pop();
-          if (!lastLine) {
-            console.log("  stdout:", r.stdout.slice(0, 400));
-            console.log("  stderr:", r.stderr || "(empty)");
-            expect.fail("no JSON line in oracle stdout");
-          }
-          result = JSON.parse(lastLine);
-        } catch {
-          expect.fail(`Oracle stdout is not valid JSON:\n${r.stdout.slice(0, 400)}`);
-        }
-
-        // Shape check — SessionResult fields must always be present
-        expect(result).to.have.property("Success");
-        expect(result).to.have.property("Status");
-        expect(result).to.have.property("EncodedValue");
-
-        if (result.Success) {
-          expect(result.Status).to.equal("Resolved");
-          // EncodedValue is non-zero for a real resolution
-          expect(result.EncodedValue).to.not.equal(0);
-          console.log("  ✓ Oracle resolved:", result.Status, "| encoded:", result.EncodedValue);
-          console.log("    Reason:", result.Reason);
-        } else {
-          // Acceptable non-success: no model URI configured, market not yet resolvable, etc.
-          console.log("  ⚠ Oracle did not resolve (expected in dev without model URI):");
-          console.log("    Status:", result.Status);
-          console.log("    Reason:", result.Reason);
-          // PostprocessErrors are soft — pipeline still ran
-          if (result.PostprocessErrors?.length) {
-            console.log("    PostprocessErrors:", result.PostprocessErrors.join("; "));
-          }
-          // Critical: session must not have aborted with a null/missing status
-          expect(result.Status).to.be.a("string").and.not.be.empty;
-        }
-      });
-
-      it("31.3 Validate path returns well-formed ValidationResult (mode=validate)", async function () {
-        if (!oracleAvailable() || !evidenceMarketPDA) {
-          console.log("⚠ Skipped — oracle binary or evidence market unavailable");
-          this.skip();
-        }
-        // validate mode reads market.question/outcomes/context from chain,
-        // calls analyzeResolvability. Without VALIDATION_MODEL_URI it should
-        // return a specific error rather than panic.
-
-        const r = runOracle(evidenceMarketPDA.toBase58(), "validate");
-
-        expect(r.status).to.be.oneOf([0, 1]);
-
-        let result: any;
-        try {
-          if (!r.stdout?.trim()) {
-            console.log("  Oracle stderr:\n   ", r.stderr || "(empty)");
-            expect.fail("oracle produced no stdout");
-          }
-          const lastLine = r.stdout.trim().split("\n").filter(l => l.trim().startsWith("{")).pop();
-          if (!lastLine) {
-            console.log("  stdout:", r.stdout.slice(0, 400));
-            console.log("  stderr:", r.stderr || "(empty)");
-            expect.fail("no JSON line in oracle stdout");
-          }
-          result = JSON.parse(lastLine);
-        } catch {
-          // If no JSON at all, check stderr for the expected error message
-          expect(r.stderr).to.include("VALIDATION_MODEL_URI",
-            "expected validation to fail with missing model URI error");
-          console.log("  ✓ Validate correctly errors on missing VALIDATION_MODEL_URI");
-          return;
-        }
-
-        expect(result).to.have.property("Success");
-        console.log("  ✓ Validate session returned JSON:", result.Status);
-      });
-
-      it("31.4 Encoding constants match TypeScript (cross-language sanity)", function () {
-        // The oracle encodes:  contentTag * TAG_MULTIPLIER + outcome * CONFIDENCE_MULTIPLIER + confidence
-        // Verify our TS constants match state.rs and pipeline.go
-        const TAG_MULT       = 1_000_000_000_000n;
-        const CONF_MULT      = 100_000n;
-
-        // Outcome=0 ("Yes"), confidence=9100 bps, no content tag → pure resolve path
-        const encoded = 0n * CONF_MULT + 9100n;
-        expect(encoded.toString()).to.equal("9100");
-
-        // With a content tag of 0xABCDEF (24-bit)
-        const tag     = BigInt(0xABCDEF);
-        const full    = tag * TAG_MULT + 1n * CONF_MULT + 8500n;
-        const decoded = {
-          tag:        Number(full / TAG_MULT),
-          outcome:    Number((full % TAG_MULT) / CONF_MULT),
-          confidence: Number(full % CONF_MULT),
-        };
-        expect(decoded.tag).to.equal(0xABCDEF);
-        expect(decoded.outcome).to.equal(1);
-        expect(decoded.confidence).to.equal(8500);
-        console.log("  ✓ Encoding round-trip: tag=0xABCDEF outcome=1 confidence=8500");
-        console.log("    Packed:", full.toString(), "→ decoded:", decoded);
-      });
-    });
-
-    // =========================================================================
-    //
-    // Demo flow (Expo app running against localnet)
-    //   1. App signing audio evidence in real time (via BLE).
-    //   2. App calls submitEvidence — audience sees the tx land on localnet.
-    //   3. Oracle triggers automatically.
-    //   4. Market resolves "Yes" on-chain. Winners' positions become claimable.
-    //   5. Presenter claims winnings from the Expo app — SPL token balance updates.
-    //
-    // This test simulates steps 2-5 end-to-end in the test environment.
-    // =========================================================================
-
-    describe("32. Demo: Staronadvodnytska 13a Construction Noise — End-to-End", () => {
-      let demoMarketPDA:    PublicKey;
-      let demoMarketId:     BN;
-      let demoSolVault:     PublicKey;
-      let demoBuckets:      PublicKey;
-      let demoMarketEvPDA:  PublicKey;
-      let demoEvidPDA:      PublicKey;
-      let demoPositionYes:  PublicKey;  // payer bets YES (construction happening)
-      let demoPositionNo:   PublicKey;  // user2 bets NO
-
-      const oracleBin = process.env.ORACLE_BIN || "./oracle/safta-oracle";
-      function oracleAvailable(): boolean {
-        try {
-          const { existsSync } = require("fs");
-          return existsSync(oracleBin);
-        } catch { return false; }
-      }
-      function runOracle(marketKey: string, mode: "resolve" | "validate"): {
-        stdout: string; stderr: string; status: number | null;
-      } {
-        const env: Record<string, string> = {
-          ...process.env as Record<string, string>,
-          SOLANA_RPC_URL:  provider.connection.rpcEndpoint,
-          PROGRAM_ID:      program.programId.toBase58(),
-          MARKET_PUBKEY:   marketKey,
-          ORACLE_MODE:     mode,
-          // Skip TEE attestation check in dev — binary not running inside SEV-SNP
-          TRUSTED_CODE_HASHES: process.env.ORACLE_TRUSTED_CODE_HASHES || "",
-          // No real model URI needed for deterministic resolution path
-          VALIDATION_MODEL_URI: process.env.VALIDATION_MODEL_URI || "",
-        };
-        const result = spawnSync(oracleBin, [], { env, encoding: "utf8", timeout: 30_000 });
-        return {
-          stdout: result.stdout || "",
-          stderr: result.stderr || "",
-          status: result.status,
-        };
-      }
-
-
-      // The Kyiv construction noise scenario — same question as section 28
-      // but run as a standalone closed loop so the demo is self-contained.
-      const DEMO_QUESTION =
-        "Will construction noise be detected at Staronadvodnytska 13a " +
-        "during prohibited hours (22:00-07:00) on more than 5 nights in March 2026?";
-      const DEMO_CONTEXT =
-        "Noise measured by SE-signed audio classifier " +
-        "'Night' = 22:00-07:00 local time. 'Construction' = classifier tag ≥70% confidence.";
-      const DEMO_EXCULPATORY =
-        "Market cancels if fewer than 3 evidence submissions received " +
-        "or if device is flagged/revoked before resolution.";
-      const DEMO_RESOLUTION_SOURCE = "On-chain evidence + AI oracle resolution";
-      const DEMO_OUTCOMES = ["Yes", "No"];
-
-      // Evidence parameters that satisfy the market requirements
-      const BELGRADE_LAT = Math.round(44.8064 * 1e7);
-      const BELGRADE_LNG = Math.round(20.4650 * 1e7);
-
-      // Simulated nightly construction evidence — 6 nights (> 5 threshold)
-      const DEMO_NIGHTS = [
-        { nonce: 0, construction: 9100, machinery: 8400, label: "Night 1 — jackhammer" },
-        { nonce: 1, construction: 8800, machinery: 7900, label: "Night 2 — concrete mixer" },
-        { nonce: 2, construction: 9300, machinery: 8700, label: "Night 3 — drilling" },
-        { nonce: 3, construction: 7800, machinery: 7200, label: "Night 4 — pile driver" },
-        { nonce: 4, construction: 8500, machinery: 7600, label: "Night 5 — excavator" },
-        { nonce: 5, construction: 9000, machinery: 8100, label: "Night 6 — pneumatic drill" },
-      ];
-
-      it("32.1 Creates isolated demo market", async () => {
-        let bankCount = new BN(0);
-        try {
-          const bank = await program.account.depository.fetch(bankPDA);
-          bankCount = bank.marketCount;
-        } catch {}
-        demoMarketId   = bankCount;
-        demoMarketPDA  = deriveMarket(bankCount);
-        demoSolVault   = deriveSolVault(bankCount);
-        demoBuckets    = deriveAccuracyBuckets(bankCount);
-
-        const now      = Math.floor(Date.now() / 1000);
-        const deadline = now + 30 * 24 * 60 * 60;
-
-        await program.methods
-          .testCreateMarket({
-            question:         DEMO_QUESTION,
-            context:          DEMO_CONTEXT,
-            exculpatory:      DEMO_EXCULPATORY,
-            resolutionSource: DEMO_RESOLUTION_SOURCE,
-            outcomes:         DEMO_OUTCOMES,
-            sbFeed:           Keypair.generate().publicKey,
-            deadline:         new BN(deadline),
-            liquidity:        new BN(2_000 * 10 ** 6),
-            creatorFeeBps:    100,
-            creatorBond:      new BN(0.1 * LAMPORTS_PER_SOL),
-            numWinners:       1,
-            winningSplits:    [],
-            beneficiaries:    [],
-          })
-          .accountsStrict({
-            authority:      payer.publicKey,
-            bank:           bankPDA,
-            market:         demoMarketPDA,
-            solVault:       demoSolVault,
-            accuracyBuckets: demoBuckets,
-            systemProgram:  SystemProgram.programId,
-          })
-          .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
-          .rpc();
-
-        const market = await program.account.market.fetch(demoMarketPDA);
-        expect(market.resolved).to.equal(false);
-        expect(market.outcomes).to.deep.equal(DEMO_OUTCOMES);
-        console.log("  ✓ Demo market created:", demoMarketPDA.toBase58().slice(0, 16) + "...");
-        console.log("   ", DEMO_QUESTION.slice(0, 72) + "...");
-      });
-
-      it("32.2 Both sides place bets (creates two-sided market)", async () => {
-        const salt1 = generateSalt(200);
-        const salt2 = generateSalt(201);
-        salts.set("demo_yes", { salt: salt1, confidence: 9000 });
-        salts.set("demo_no",  { salt: salt2, confidence: 4000 });
-
-        demoPositionYes = derivePosition(demoMarketPDA, payer.publicKey,  0);
-        demoPositionNo  = derivePosition(demoMarketPDA, user2.publicKey,  1);
-
-        // Payer bets YES: construction IS happening
-        await program.methods
-          .bid({
-            outcome:          0,
-            capital:          new BN(500 * 10 ** 6),
-            commitmentHash:   commitmentHash(9000, salt1),
-            revealDelegate:   null,
-            maxDeviationBps:  new BN(10000),
-          })
-          .accountsStrict({
-            market:       demoMarketPDA,
-            position:     demoPositionYes,
-            mint:         mintUSD,
-            config:       configPDA,
-            programVault: vaultPDA,
-            user:         payer.publicKey,
-            bank:         bankPDA,
-            depositor:    depositorPDA,
-            quid:         userTokenAccount,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-
-        // User2 bets NO: no illegal construction
-        await program.methods
-          .bid({
-            outcome:          1,
-            capital:          new BN(300 * 10 ** 6),
-            commitmentHash:   commitmentHash(4000, salt2),
-            revealDelegate:   null,
-            maxDeviationBps:  new BN(10000),
-          })
-          .accountsStrict({
-            market:       demoMarketPDA,
-            position:     demoPositionNo,
-            mint:         mintUSD,
-            config:       configPDA,
-            programVault: vaultPDA,
-            user:         user2.publicKey,
-            bank:         bankPDA,
-            depositor:    PublicKey.findProgramAddressSync([user2.publicKey.toBuffer()], program.programId)[0],
-            quid:         user2TokenAccount,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user2])
-          .rpc();
-
-        const market = await program.account.market.fetch(demoMarketPDA);
-        expect(market.positionsTotal.toNumber()).to.equal(2);
-        console.log("  ✓ YES (payer $500) + NO (user2 $300) — market is live");
-      });
-
-      it("32.3 Sets evidence requirements (min 3 nights)", async () => {
-        demoMarketEvPDA = PublicKey.findProgramAddressSync(
-          [Buffer.from("market_evidence"), demoMarketPDA.toBuffer()],
-          program.programId)[0];
-
-        const now = Math.floor(Date.now() / 1000);
-
-        await program.methods
-          .initMarketEvidence(demoMarketId, {
-            timeWindowStart: new BN(now - 86400 * 30),
-            timeWindowEnd:   new BN(now + 86400 * 30),
-            minSubmissions:  3,
-            requiredTags:    [tagId("Construction"), tagId("HeavyMachinery")],
-            minTagConfidence: 7000,
-            pipelineRoutes:   [],
-            notificationDomains: [],
-            resolutionMode:  1,
-            maxSubmissions:  16,
-            resolutionBond:  new BN(50_000_000),
-            juryConfig:      null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator:       payer.publicKey,
-            market:        demoMarketPDA,
-            marketEvidence: demoMarketEvPDA,
-            solVault:      demoSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-
-        const me = await program.account.marketEvidence.fetch(demoMarketEvPDA);
-        expect(me.evidence.minSubmissions).to.equal(3);
-        console.log("  ✓ Evidence gate: 3+ nights of Construction+HeavyMachinery at ≥70%");
-      });
-
-      it("32.4 Submits 6 nights of device-signed evidence", async () => {
-        // Each submission simulates one night of recordings from the Seeker.
-        // In the real demo, these would arrive as BLE-synced batches,
-        // with device_sig_r/device_sig_s from the ATECC608B over the merkle root.
-        // Here we use the mock P-256 device key generated in section 27.
-        const submittedPDAs: PublicKey[] = [];
-
-        for (const night of DEMO_NIGHTS) {
-          const now        = Math.floor(Date.now() / 1000);
-          const nightStart = now - 8 * 3600; // simulate 22:00-06:00 window
-          const nightEnd   = now;
-
-          // Simulate hash: merkle root of audio segments
-          const audioBlob      = crypto.randomBytes(4096);
-          const merkleRoot     = crypto.createHash("sha256").update(audioBlob).digest();
-          const attestationHash = Array.from(
-            crypto.createHash("sha256").update(audioBlob).digest()
-          );
-
-          const evidPda = PublicKey.findProgramAddressSync(
-            [Buffer.from("evidence"), demoMarketPDA.toBuffer(),
-             payer.publicKey.toBuffer(), Buffer.from([night.nonce])],
-            program.programId)[0];
-          submittedPDAs.push(evidPda);
-
-          const { ix: demoIx, sig: demoSig } = makeDeviceSig(attestationHash, night.nonce, demoMarketPDA, payer);
-          await program.methods
-            .submitEvidence({
-              attestationHash,
-              strongboxSignature: demoSig,
-              contentType: 0,
-              nonce:       night.nonce,
-            })
-            .preInstructions([
-              ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-              demoIx,
-            ])
-            .accountsStrict({
-              submitter:      payer.publicKey,
-              market:         demoMarketPDA,
-              marketEvidence: demoMarketEvPDA,
-              enrollment:     enrollmentPDA,
-              evidence:       evidPda,
-              instructions:   anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-              systemProgram:  SystemProgram.programId,
-            })
-            .rpc();
-
-          console.log(`  ✓ ${night.label} | Construction ${night.construction / 100}% | Machinery ${night.machinery / 100}%`);
-        }
-
-        const me = await program.account.marketEvidence.fetch(demoMarketEvPDA);
-        expect(me.submissionCount.toNumber()).to.equal(DEMO_NIGHTS.length);
-        console.log(`\n  ✓ ${DEMO_NIGHTS.length} nights on-chain — threshold (5) exceeded`);
-        console.log("    Each submission is committed to chain with device attestation hash.");
-        console.log("    Audience can verify every TX on the localnet explorer.");
-      });
-
-      it("32.5 Oracle reads chain and resolves market (binary if available)", async function () {
-        const oracleBin = process.env.ORACLE_BIN || "./oracle/safta-oracle";
-        // TODO oracle is now in external repo, mempalace
-
-        // Whether or not the binary is present, we first verify the chain state
-        // matches what the oracle would see — this is the heart of the demo.
-        const me = await program.account.marketEvidence.fetch(demoMarketEvPDA);
-        expect(me.submissionCount.toNumber()).to.be.greaterThanOrEqual(3,
-          "oracle requires min_submissions=3 to proceed");
-
-        // On-chain we can only verify submission count and attestation hash existence.
-        let verifiedNights = 0;
-        for (let i = 0; i < DEMO_NIGHTS.length; i++) {
-          const evPda = PublicKey.findProgramAddressSync(
-            [Buffer.from("evidence"), demoMarketPDA.toBuffer(),
-             payer.publicKey.toBuffer(), Buffer.from([i])],
-            program.programId)[0];
-          const evid = await program.account.evidenceSubmission.fetch(evPda);
-          // Verify the submission exists and has a non-zero attestation hash
-          const hasHash = evid.attestationHash.some((b: number) => b !== 0);
-          if (hasHash) verifiedNights++;
-        }
-        expect(verifiedNights).to.be.greaterThan(5,
-          "expected >5 nights with on-chain attestation hash");
-        console.log(`  ✓ Chain state verified: ${verifiedNights} nights with committed attestation hashes`);
-        console.log("  ✓ Tag confidence enforced off-chain by oracle inside CoCo/TEE");
-
-        // Invoke the oracle binary if available
-        const { existsSync } = require("fs");
-        if (!existsSync(oracleBin)) {
-          console.log(`\n  ── Oracle binary not built (${oracleBin}) ──`);
-          console.log("  Demo resolution would proceed as follows:");
-          console.log("    1. Oracle reads MarketEvidence account → 6 submissions");
-          console.log("    2. DeterministicResolvePostprocessor: no formula → falls through (mode=Auto)");
-          console.log("    3. ExecutionPlanPostprocessor: no execution plan in context → skips");
-          console.log("    4. On-chain: program.methods.resolveMarket({outcome: 0}) → YES wins");
-          console.log("  Build: cd oracle && go build -o ../oracle/safta-oracle .");
-          this.skip();
-        }
-
-        // Binary is present — run it for real
-        const { spawnSync: spawn } = require("child_process");
-        const r = spawn(oracleBin, [], {
-          env: {
-            ...process.env,
-            SOLANA_RPC_URL:       provider.connection.rpcEndpoint,
-            PROGRAM_ID:           program.programId.toBase58(),
-            MARKET_PUBKEY:        demoMarketPDA.toBase58(),
-            ORACLE_MODE:          "resolve",
-            TRUSTED_CODE_HASHES:  "",
-            VALIDATION_MODEL_URI: "",
-          },
-          encoding: "utf8",
-          timeout: 30_000,
-        });
-
-        expect(r.status).to.be.oneOf([0, 1], "oracle panicked");
-
-        if (!r.stdout || !r.stdout.trim()) {
-          console.log("\n  ── Oracle stderr (binary produced no stdout) ──────────");
-          console.log(r.stderr || "(empty)");
-          console.log("  ────────────────────────────────────────────────────────");
-          expect.fail("oracle produced no stdout — see stderr above");
-        }
-
-        const lastLine = (r.stdout as string).trim()
-          .split("\n").filter((l: string) => l.trim().startsWith("{")).pop();
-
-        if (!lastLine) {
-          console.log("\n  ── Oracle stdout (no JSON line found) ──────────────────");
-          console.log(r.stdout);
-          console.log("  ── Oracle stderr ───────────────────────────────────────");
-          console.log(r.stderr || "(empty)");
-          console.log("  ────────────────────────────────────────────────────────");
-          expect.fail("oracle stdout contained no JSON line");
-        }
-
-        const result = JSON.parse(lastLine);
-
-        expect(result).to.have.property("Success");
-        expect(result).to.have.property("Status");
-
-        console.log("\n  ── Oracle Result ──────────────────────────────────────");
-        console.log("  Status:       ", result.Status);
-        console.log("  Success:      ", result.Success);
-        console.log("  EncodedValue: ", result.EncodedValue);
-        console.log("  Reason:       ", result.Reason);
-        console.log("  ────────────────────────────────────────────────────────");
-
-        if (result.Success && result.Status === "Resolved") {
-          console.log("\n  🏗  MARKET RESOLVED: illegal construction confirmed");
-          console.log("      YES bettors (payer, $500) WIN");
-          console.log("      NO bettors (user2, $300) lose their stake");
-        }
-      });
-
-      it("32.6 Winners claim payout after resolution", async function () {
-        // In the full demo: oracle triggers program.methods.resolveMarket on-chain,
-        // then the Expo app's wallet signs a claimWinnings tx and SPL balance updates.
-        // Here we verify the position state is correct for claiming.
-        const posYes = await program.account.position.fetch(demoPositionYes);
-        const posNo  = await program.account.position.fetch(demoPositionNo);
-
-        console.log("\n  Position state (pre-settlement):");
-        console.log("  YES (payer):  tokens =", posYes.totalTokens.toNumber(),
-                    "capital =", (posYes.totalCapital.toNumber() / 1e6).toFixed(2), "USD");
-        console.log("  NO  (user2):  tokens =", posNo.totalTokens.toNumber(),
-                    "capital =", (posNo.totalCapital.toNumber() / 1e6).toFixed(2), "USD");
-
-        // Market is not resolved yet (oracle binary may not be present),
-        // but both positions should have non-zero capital locked
-        expect(posYes.totalCapital.toNumber()).to.be.greaterThan(0,
-          "payer YES position should have capital locked");
-        expect(posNo.totalCapital.toNumber()).to.be.greaterThan(0,
-          "user2 NO position should have capital locked");
-
-        console.log("\n  ── What the Expo demo shows at this point ────────────");
-        console.log("  • Live feed: 6 on-chain evidence submissions, all verified");
-        console.log("  • YES position claimable: payer sees $500 + winnings");
-        console.log("  • NO position zeroed: user2 lost stake (illegal construction proven)");
-        console.log("  • Explorer link: every tx signed by device hardware key");
-        console.log("  ──────────────────────────────────────────────────────");
-
-        console.log("\n  ✓ Demo scenario complete.");
-        console.log("    Nobody could fake this: device key is in ATECC608B secure element.");
-        console.log("    Oracle result is reproducible by anyone with the RPC endpoint.");
-      });
-    });
-
-  // ===========================================================================
-  // 33. ACTA — EVIDENCE PIPELINE ATTACK VECTORS
-  // ===========================================================================
-  // Guards: creator-only init, resolved/cancelled gate, max submissions cap,
-  //         time window enforcement, bond minimum, confidence floor,
-  //         resolution mode ↔ jury config consistency.
-  // ===========================================================================
-
-  describe("33. Acta — Evidence Pipeline Attack Vectors", () => {
-    let atkMktPDA: PublicKey;
-    let atkMktId: BN;
-    let atkSolVault: PublicKey;
-    let atkBuckets: PublicKey;
-    let atkEvidPDA: PublicKey;
-
-    before(async () => {
-      const bank = await program.account.depository.fetch(bankPDA);
-      atkMktId   = bank.marketCount;
-      atkMktPDA  = deriveMarket(atkMktId);
-      atkSolVault = deriveSolVault(atkMktId);
-      atkBuckets  = deriveAccuracyBuckets(atkMktId);
-
-      await program.methods
-        .testCreateMarket({
-          question: "Attack vector test market",
-          context: "Security test", exculpatory: "n/a",
-          resolutionSource: "test", outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
-          deadline: new BN(Math.floor(Date.now() / 1000) + 86400 * 30),
-          liquidity: new BN(500 * 10 ** 6),
-          creatorFeeBps: 100, creatorBond: new BN(0.1 * LAMPORTS_PER_SOL),
-          numWinners: 1, winningSplits: [], beneficiaries: [],
-        })
-        .accountsStrict({
-          authority: payer.publicKey, bank: bankPDA, market: atkMktPDA,
-          solVault: atkSolVault, accuracyBuckets: atkBuckets,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      atkEvidPDA = PublicKey.findProgramAddressSync(
-        [Buffer.from("market_evidence"), atkMktPDA.toBuffer()],
-        program.programId)[0];
-    });
-
-    it("33.1 Non-creator cannot call initMarketEvidence", async () => {
-      // user2 tries to attach evidence requirements to payer's market
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [tagId("Tag1")],
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(25_000_000),
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: user2.publicKey,
-            market: atkMktPDA,
-            marketEvidence: atkEvidPDA,
-            solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user2])
-          .rpc();
-        expect.fail("Should have rejected non-creator");
-      } catch (e: any) {
-        expect(e.toString()).to.include("Unauthorized");
-        console.log("  ✓ Non-creator blocked from initMarketEvidence");
-      }
-    });
-
-    it("33.2 Bond below mode minimum is rejected", async () => {
-      // Mode 1 (coco_local) requires 25_000_000 lamports min. 1 lamport is rejected.
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [tagId("Tag1")],
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(1),   // way below minimum
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected low bond");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ Bond below mode minimum rejected");
-      }
-    });
-
-    it("33.3 Confidence floor below MIN_TAG_CONFIDENCE_FLOOR (5000) rejected", async () => {
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [tagId("Tag1")],
-            minTagConfidence: 4999, // below floor of 5000
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(25_000_000),
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected sub-floor confidence");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ Confidence below floor (5000 bps) rejected");
-      }
-    });
-
-    it("33.4 Time window end before start rejected", async () => {
-      const now = Math.floor(Date.now() / 1000);
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(now + 1000),
-            timeWindowEnd:   new BN(now),       // end < start
-            minSubmissions: 1,
-            requiredTags: [tagId("Tag1")],
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(25_000_000),
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected inverted window");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ time_window_end < time_window_start rejected");
-      }
-    });
-
-    it("33.5 Jury mode without jury config rejected", async () => {
-      // MODE_JURY_ONLY (2) requires jury_config to be Some
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [tagId("Tag1")],
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 2,  // jury_only
-            maxSubmissions: 8,
-            resolutionBond: new BN(5_000_000),
-            juryConfig: null,   // missing — must be rejected
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected jury mode without jury config");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ Jury mode without jury_config rejected");
-      }
-    });
-
-    it("33.6 Zero required tags rejected", async () => {
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [],  // empty — minimum is 1
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(25_000_000),
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected empty required_tags");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ Empty required_tags rejected (minimum 1)");
-      }
-    });
-
-    it("33.7 Valid initMarketEvidence (sets up for submit tests)", async () => {
-      await program.methods
-        .initMarketEvidence(atkMktId, {
-          timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-          timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-          minSubmissions: 1,
-          requiredTags: [tagId("Construction")],
-          minTagConfidence: 7000,
-          pipelineRoutes: [],
-          notificationDomains: [],
-          resolutionMode: 1,
-          maxSubmissions: 2,   // intentionally low — tests cap enforcement in 33.10
-          resolutionBond: new BN(25_000_000),
-          juryConfig: null,
-          oracleComputeCost: new BN(0),
-        })
-        .accountsStrict({
-          creator: payer.publicKey, market: atkMktPDA,
-          marketEvidence: atkEvidPDA, solVault: atkSolVault,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const me = await program.account.marketEvidence.fetch(atkEvidPDA);
-      expect(me.submissionCount.toNumber()).to.equal(0);
-      expect(me.evidence.maxSubmissions).to.equal(2);
-      console.log("  ✓ Valid market evidence initialized (maxSubmissions=2)");
-    });
-
-    it("33.8 initMarketEvidence cannot be called twice on the same market", async () => {
-      // PDA (market_evidence, market.key()) already exists — init must fail
-      const dupPDA = PublicKey.findProgramAddressSync(
-        [Buffer.from("market_evidence"), atkMktPDA.toBuffer()],
-        program.programId)[0];
-      try {
-        await program.methods
-          .initMarketEvidence(atkMktId, {
-            timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-            timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-            minSubmissions: 1,
-            requiredTags: [tagId("Construction")],
-            minTagConfidence: 7000,
-            pipelineRoutes: [],
-            notificationDomains: [],
-            resolutionMode: 1,
-            maxSubmissions: 8,
-            resolutionBond: new BN(25_000_000),
-            juryConfig: null,
-            oracleComputeCost: new BN(0),
-          })
-          .accountsStrict({
-            creator: payer.publicKey, market: atkMktPDA,
-            marketEvidence: dupPDA, solVault: atkSolVault,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected duplicate init");
-      } catch (e: any) {
-        console.log("  ✓ Duplicate initMarketEvidence rejected (PDA already exists)");
-      }
-    });
-
-    it("33.9 submitEvidence on resolved market rejected", async () => {
-      // Resolve first, then try to submit
-      const resolvedMktBN = await (async () => {
-        const bank = await program.account.depository.fetch(bankPDA);
-        return bank.marketCount;
-      })();
-      const resolvedPDA = deriveMarket(resolvedMktBN);
-      const resolvedSolVault = deriveSolVault(resolvedMktBN);
-      const resolvedBuckets = deriveAccuracyBuckets(resolvedMktBN);
-
-      await program.methods
-        .testCreateMarket({
-          question: "Resolve-then-submit test",
-          context: "sec", exculpatory: "n/a",
-          resolutionSource: "test", outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
-          deadline: new BN(Math.floor(Date.now() / 1000) + 86400),
-          liquidity: new BN(100 * 10 ** 6),
-          creatorFeeBps: 0, creatorBond: new BN(0.1 * LAMPORTS_PER_SOL),
-          numWinners: 1, winningSplits: [], beneficiaries: [],
-        })
-        .accountsStrict({
-          authority: payer.publicKey, bank: bankPDA, market: resolvedPDA,
-          solVault: resolvedSolVault, accuracyBuckets: resolvedBuckets,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const resolvedEvid = PublicKey.findProgramAddressSync(
-        [Buffer.from("market_evidence"), resolvedPDA.toBuffer()],
-        program.programId)[0];
-
-      const resolvedMktId = resolvedMktBN;
-      await program.methods
-        .initMarketEvidence(resolvedMktId, {
-          timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 7200),
-          timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-          minSubmissions: 1,
-          requiredTags: [tagId("Construction")],
-          minTagConfidence: 7000,
-          pipelineRoutes: [], notificationDomains: [],
-          resolutionMode: 1, maxSubmissions: 4,
-          resolutionBond: new BN(25_000_000),
-          juryConfig: null, oracleComputeCost: new BN(0),
-        })
-        .accountsStrict({
-          creator: payer.publicKey, market: resolvedPDA,
-          marketEvidence: resolvedEvid, solVault: resolvedSolVault,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Resolve the market
-      await program.methods
-        .testResolve(0, new BN(9000))
-        .accountsStrict({ market: resolvedPDA, authority: payer.publicKey })
-        .rpc();
-
-      // Now try to submit evidence — must be rejected
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), resolvedPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([0])],
-        program.programId)[0];
-      const atHashResolved = Array.from(crypto.randomBytes(32));
-      const { ix: devIxR, sig: devSigR } = makeDeviceSig(atHashResolved, 0, resolvedPDA, payer);
-      try {
-        await program.methods
-          .submitEvidence({
-            attestationHash: atHashResolved,
-            strongboxSignature: devSigR,
-            contentType: 0, nonce: 0,
-          })
-          .preInstructions([devIxR])
-          .accountsStrict({
-            submitter:      payer.publicKey,
-            market:         resolvedPDA,
-            marketEvidence: PublicKey.findProgramAddressSync([Buffer.from("market_evidence"), resolvedPDA.toBuffer()], program.programId)[0],
-            enrollment:     enrollmentPDA,
-            evidence:       evidPda,
-            instructions:   anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-            systemProgram:  SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have rejected submit on resolved market");
-      } catch (e: any) {
-        expect(e.toString()).to.include("TradingFrozen");
-        console.log("  ✓ submitEvidence on resolved market rejected (TradingFrozen)");
-      }
-    });
-
-    it("33.10 submitEvidence beyond maxSubmissions cap rejected", async () => {
-      // maxSubmissions=2 set in 33.7. Submit 0 and 1 to fill the cap, then 2 must fail.
-      const evid0 = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), atkMktPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([0])], program.programId)[0];
-      const atHash4 = Array.from(crypto.randomBytes(32));
-      const { ix: devIx4, sig: devSig4 } = makeDeviceSig(atHash4, 0, atkMktPDA, payer);
-      await program.methods
-        .submitEvidence({ attestationHash: atHash4, strongboxSignature: devSig4, contentType: 0, nonce: 0 })
-        .preInstructions([devIx4])
-        .accountsStrict({
-          submitter: payer.publicKey, market: atkMktPDA,
-          marketEvidence: atkEvidPDA, enrollment: enrollmentPDA,
-          evidence: evid0, instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        }).rpc();
-
-      const evid1 = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), atkMktPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([1])], program.programId)[0];
-      const atHash5 = Array.from(crypto.randomBytes(32));
-      const { ix: devIx5b, sig: devSig5b } = makeDeviceSig(atHash5, 1, atkMktPDA, payer);
-      await program.methods
-        .submitEvidence({ attestationHash: atHash5, strongboxSignature: devSig5b, contentType: 0, nonce: 1 })
-        .preInstructions([devIx5b])
-        .accountsStrict({
-          submitter: payer.publicKey, market: atkMktPDA,
-          marketEvidence: atkEvidPDA, enrollment: enrollmentPDA,
-          evidence: evid1, instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        }).rpc();
-
-      // Third submission must be rejected
-      const evid2 = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), atkMktPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([2])], program.programId)[0];
-      try {
-        const atHash6 = Array.from(crypto.randomBytes(32));
-        const { ix: devIx6, sig: devSig6 } = makeDeviceSig(atHash6, 2, atkMktPDA, payer);
-        await program.methods
-          .submitEvidence({ attestationHash: atHash6, strongboxSignature: devSig6, contentType: 0, nonce: 2 })
-          .preInstructions([devIx6])
-          .accountsStrict({
-            submitter: payer.publicKey, market: atkMktPDA,
-            marketEvidence: atkEvidPDA, enrollment: enrollmentPDA,
-            evidence: evid2, instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-            systemProgram: SystemProgram.programId,
-          }).rpc();
-        expect.fail("Should have rejected submission beyond maxSubmissions");
-      } catch (e: any) {
-        expect(e.toString()).to.include("InvalidParameters");
-        console.log("  ✓ maxSubmissions cap enforced — third submission rejected");
-      }
-    });
-
-    it("33.11 submitEvidence with zero attestation hash is valid (hash is not checked on-chain)", async () => {
-      // The attestation_hash is a commitment — zero is a degenerate but valid value.
-      // The oracle rejects it off-chain; on-chain we only store it.
-      // This test documents the behaviour and ensures the program doesn't revert.
-      const bank = await program.account.depository.fetch(bankPDA);
-      const zeroMktId = bank.marketCount;
-      const zeroMktPDA = deriveMarket(zeroMktId);
-      const zeroSolVault = deriveSolVault(zeroMktId);
-      const zeroBuckets = deriveAccuracyBuckets(zeroMktId);
-
-      await program.methods
-        .testCreateMarket({
-          question: "Zero hash test market", context: "sec", exculpatory: "n/a",
-          resolutionSource: "test", outcomes: ["Yes", "No"],
-          sbFeed: Keypair.generate().publicKey,
-          deadline: new BN(Math.floor(Date.now() / 1000) + 86400),
-          liquidity: new BN(100 * 10 ** 6), creatorFeeBps: 0,
-          creatorBond: new BN(0.1 * LAMPORTS_PER_SOL),
-          numWinners: 1, winningSplits: [], beneficiaries: [],
-        })
-        .accountsStrict({
-          authority: payer.publicKey, bank: bankPDA, market: zeroMktPDA,
-          solVault: zeroSolVault, accuracyBuckets: zeroBuckets,
-          systemProgram: SystemProgram.programId,
-        }).rpc();
-
-      const zeroEvidPDA = PublicKey.findProgramAddressSync(
-        [Buffer.from("market_evidence"), zeroMktPDA.toBuffer()],
-        program.programId)[0];
-
-      await program.methods
-        .initMarketEvidence(zeroMktId, {
-          timeWindowStart: new BN(Math.floor(Date.now() / 1000) - 3600),
-          timeWindowEnd:   new BN(Math.floor(Date.now() / 1000) + 86400),
-          minSubmissions: 1, requiredTags: [tagId("Construction")],
-          minTagConfidence: 7000, pipelineRoutes: [], notificationDomains: [],
-          resolutionMode: 1, maxSubmissions: 4, resolutionBond: new BN(25_000_000),
-          juryConfig: null, oracleComputeCost: new BN(0),
-        })
-        .accountsStrict({
-          creator: payer.publicKey, market: zeroMktPDA,
-          marketEvidence: zeroEvidPDA, solVault: zeroSolVault,
-          systemProgram: SystemProgram.programId,
-        }).rpc();
-
-      const evidPda = PublicKey.findProgramAddressSync(
-        [Buffer.from("evidence"), zeroMktPDA.toBuffer(),
-         payer.publicKey.toBuffer(), Buffer.from([0])], program.programId)[0];
-
-      const zeroHash = Array.from(Buffer.alloc(32, 0));
-      const { ix: devIxZ, sig: devSigZ } = makeDeviceSig(zeroHash, 0, zeroMktPDA, payer);
-      await program.methods
-        .submitEvidence({ attestationHash: zeroHash, strongboxSignature: devSigZ, contentType: 0, nonce: 0 })
-        .preInstructions([devIxZ])
-        .accountsStrict({
-          submitter: payer.publicKey, market: zeroMktPDA,
-          marketEvidence: zeroEvidPDA, enrollment: enrollmentPDA,
-          evidence: evidPda, instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-          systemProgram: SystemProgram.programId,
-        }).rpc();
-
-      const evid = await program.account.evidenceSubmission.fetch(evidPda);
-      expect(evid.attestationHash.every((b: number) => b === 0)).to.equal(true);
-      console.log("  ✓ Zero attestation hash stored (oracle enforces non-zero off-chain)");
-    });
-  });
-
-  // ===========================================================================
-  // 34. RFQ — MATCH NOTIFICATION ATTACK VECTORS
-  // ===========================================================================
-  // Guards: oracle-only write, non-zero attestation, similarity bounds,
-  //         device-only ack, read-before-close, no cross-device close.
-  // ===========================================================================
-
 
 
   // =========================================================================
@@ -4879,6 +3305,335 @@ describe("QU!D Protocol — Merged Test Suite", () => {
       console.log("  ✓ FlashLoan PDA is fully zeroed — no loan in flight");
     });
 
+  });
+
+  // =========================================================================
+  // 35. EVIDENCE-BOUND PREDICTION MARKET (full keeper-Claude e2e demo)
+  // =========================================================================
+  //   Demonstrates the post-refactor resolution path end-to-end on localnet:
+  //
+  //     1. New market (testCreateMarket, AI mode, no jury fallback)
+  //     2. user2 bids outcome 0 WITH an evidence URL → commit binds urlHash
+  //     3. user3 bids outcome 1 with no evidence → commit binds zero32
+  //     4. testResolve(0, 9500) — outcome 0 wins
+  //     5. user2 reveals with the URL hash; user3 reveals with zero32
+  //        — proves on-chain commit verification accepts BOTH paths
+  //     6. weigh + payout, asserting balance changes
+  //
+  //   This is the path the new keeper executes in production — except instead
+  //   of testResolve, the keeper:
+  //     a) probes Claude with the QU!D system prompt → expects {"ack":true}
+  //     b) GETs /api/?action=evidence_fetch&contentHash=<sha256> for each
+  //        evidenceContentHash recorded at bid time, verifies sig + size + hash
+  //     c) sends the verdict prompt → parses JSON {winning_outcomes, confidence, reasoning}
+  //     d) POSTs /api/?action=thread_publish to publish the canonical transcript
+  //     e) calls resolve(winning_sides, confidence, thread_url, content_hash)
+  //   See keeper/keeper_prediction.ts — the rest of the lifecycle (reveal,
+  //   weigh, payout) matches what this section exercises directly.
+  // =========================================================================
+
+  describe("35. Evidence-Bound Prediction Market (keeper-Claude e2e demo)", () => {
+    let demoMarketPDA: PublicKey;
+    let demoSolVaultPDA: PublicKey;
+    let demoAccuracyPDA: PublicKey;
+    let demoUser2PositionPDA: PublicKey;
+    let demoUser3PositionPDA: PublicKey;
+    let demoMarketId: BN;
+
+    const evidenceUrl = "https://example.com/proof-of-outcome-0.txt";
+    const user2Confidence = 8000;
+    const user3Confidence = 9000; // high confidence on the wrong outcome
+    const user2Salt = generateSalt(0xa5);
+    const user3Salt = generateSalt(0xc4);
+    const user2BidUsd = 1_000;
+    const user3BidUsd = 1_000;
+
+    it("35.1 Creates a fresh AI-mode market for the demo", async () => {
+      const bank = await program.account.depository.fetch(bankPDA);
+      demoMarketId = bank.marketCount;
+      demoMarketPDA       = deriveMarket(demoMarketId);
+      demoSolVaultPDA     = deriveSolVault(demoMarketId);
+      demoAccuracyPDA     = deriveAccuracyBuckets(demoMarketId);
+
+      const now = Math.floor(Date.now() / 1000);
+      await program.methods
+        .testCreateMarket({
+          question:        "Will event X happen by deadline?",
+          context:         "Demo prediction market for QU!D e2e — keeper-Claude resolution.",
+          exculpatory:     "Cancelled if event X is fundamentally undeterminable.",
+          resolutionSource:"https://example.com/spec",
+          outcomes:        ["Yes", "No"],
+          resolutionMode:  0, // MODE_AI
+          juryConfig:      null,
+          oracleComputeCost: new BN(0),
+          deadline:        new BN(now + 7 * 24 * 60 * 60),
+          liquidity:       new BN(1_000 * 10 ** 6),
+          creatorFeeBps:   100,
+          creatorBond:     new BN(0.15 * LAMPORTS_PER_SOL),
+          numWinners:      1,
+          winningSplits:   [],
+          beneficiaries:   [],
+        })
+        .accountsStrict({
+          authority:       payer.publicKey,
+          bank:            bankPDA,
+          market:          demoMarketPDA,
+          solVault:        demoSolVaultPDA,
+          accuracyBuckets: demoAccuracyPDA,
+          systemProgram:   SystemProgram.programId,
+        })
+        .preInstructions([
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })
+        ])
+        .rpc();
+
+      const m = await program.account.market.fetch(demoMarketPDA);
+      expect(m.resolutionMode).to.equal(0);
+      expect(m.juryConfig).to.equal(null);
+      expect(m.outcomes).to.deep.equal(["Yes", "No"]);
+      console.log("  ✓ market #" + demoMarketId.toNumber() + " created (AI mode, no jury fallback)");
+    });
+
+    it("35.2 user2 bids outcome 0 with evidence URL bound into commit", async () => {
+      demoUser2PositionPDA = derivePosition(demoMarketPDA, user2.publicKey, 0);
+
+      // urlHash = keccak256(utf8(url)) — bound into the commit so reveal must
+      // produce the same hash, otherwise the commit verification fails.
+      const urlHash = evidenceUrlHashOf(evidenceUrl);
+      const commit = commitmentHash(user2Confidence, user2Salt, urlHash);
+      salts.set("demo-user2-0", { salt: user2Salt, confidence: user2Confidence });
+
+      await program.methods
+        .bid({
+          outcome: 0,
+          capital: new BN(user2BidUsd * 10 ** 6),
+          commitmentHash: commit,
+          // keeper as reveal_delegate: matches the web-wallet pattern (the seeker
+          // RN app will eventually set the device's pubkey here instead).
+          revealDelegate: keeper.publicKey,
+          maxDeviationBps: new BN(10000),
+        })
+        .accountsStrict({
+          market:        demoMarketPDA,
+          position:      demoUser2PositionPDA,
+          mint:          mintUSD,
+          config:        configPDA,
+          programVault:  vaultPDA,
+          user:          user2.publicKey,
+          bank:          bankPDA,
+          depositor:     deriveDepositor(user2.publicKey),
+          quid:          user2TokenAccount,
+          tokenProgram:  TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([user2])
+        .rpc();
+
+      const pos = await program.account.position.fetch(demoUser2PositionPDA);
+      expect(pos.entries.length).to.equal(1);
+      expect(Buffer.from(pos.entries[0].commitmentHash).equals(Buffer.from(commit))).to.equal(true);
+      expect(pos.revealDelegate?.toString()).to.equal(keeper.publicKey.toString());
+      console.log("  ✓ user2 bid placed — URL bound into commit, keeper set as reveal_delegate");
+    });
+
+    it("35.3 user3 bids outcome 1 with no evidence (zero32 urlHash)", async () => {
+      demoUser3PositionPDA = derivePosition(demoMarketPDA, user3.publicKey, 1);
+
+      // No evidence → urlHash defaults to zero32 inside commitmentHash().
+      const commit = commitmentHash(user3Confidence, user3Salt);
+      salts.set("demo-user3-1", { salt: user3Salt, confidence: user3Confidence });
+
+      await program.methods
+        .bid({
+          outcome: 1,
+          capital: new BN(user3BidUsd * 10 ** 6),
+          commitmentHash: commit,
+          revealDelegate: keeper.publicKey,
+          maxDeviationBps: new BN(10000),
+        })
+        .accountsStrict({
+          market:        demoMarketPDA,
+          position:      demoUser3PositionPDA,
+          mint:          mintUSD,
+          config:        configPDA,
+          programVault:  vaultPDA,
+          user:          user3.publicKey,
+          bank:          bankPDA,
+          depositor:     deriveDepositor(user3.publicKey),
+          quid:          user3TokenAccount,
+          tokenProgram:  TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([user3])
+        .rpc();
+
+      console.log("  ✓ user3 bid placed — no evidence, commit binds zero32 urlHash");
+    });
+
+    it("35.4 testResolve fixes outcome 0 (Yes) as winner", async () => {
+      await program.methods
+        .testResolve(0, new BN(9500))
+        .accountsStrict({
+          market:    demoMarketPDA,
+          authority: payer.publicKey,
+        })
+        .rpc();
+
+      const m = await program.account.market.fetch(demoMarketPDA);
+      expect(m.resolved).to.equal(true);
+      expect(m.winningOutcome).to.equal(0);
+      console.log("  ✓ market resolved — outcome 0 wins, confidence 9500");
+    });
+
+    it("35.5 user2 reveals with evidenceUrlHash (commit verification path)", async () => {
+      // The urlHash must match what was committed at bid time — otherwise
+      // peso.rs::_do_reveal recomputes hash_commitment(conf, urlHash, salt)
+      // and rejects with CommitmentVerificationFailed.
+      const urlHash = evidenceUrlHashOf(evidenceUrl);
+
+      await program.methods
+        .reveal([
+          [{
+            confidence:        new BN(user2Confidence),
+            evidenceUrlHash:   Array.from(urlHash),
+            salt:              Array.from(user2Salt),
+          }]
+        ])
+        .accountsStrict({
+          market:           demoMarketPDA,
+          accuracyBuckets:  demoAccuracyPDA,
+          signer:           user2.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: demoUser2PositionPDA, isSigner: false, isWritable: true },
+        ])
+        .signers([user2])
+        .rpc();
+
+      const pos = await program.account.position.fetch(demoUser2PositionPDA);
+      expect(pos.revealedConfidence.toNumber()).to.equal(user2Confidence);
+      console.log("  ✓ user2 revealed — URL-bound commit verified on-chain");
+    });
+
+    it("35.6 user3 reveals with zero32 urlHash (no-evidence path)", async () => {
+      await program.methods
+        .reveal([
+          [{
+            confidence:        new BN(user3Confidence),
+            evidenceUrlHash:   Array(32).fill(0),
+            salt:              Array.from(user3Salt),
+          }]
+        ])
+        .accountsStrict({
+          market:           demoMarketPDA,
+          accuracyBuckets:  demoAccuracyPDA,
+          signer:           user3.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: demoUser3PositionPDA, isSigner: false, isWritable: true },
+        ])
+        .signers([user3])
+        .rpc();
+
+      const pos = await program.account.position.fetch(demoUser3PositionPDA);
+      expect(pos.revealedConfidence.toNumber()).to.equal(user3Confidence);
+      console.log("  ✓ user3 revealed — no-evidence commit verified on-chain");
+    });
+
+    it("35.7 keeper calculates weights for both demo positions", async () => {
+      const m = await program.account.market.fetch(demoMarketPDA);
+      // All revealed → weigh allowed immediately
+      expect(m.positionsRevealed.toNumber()).to.equal(2);
+
+      await program.methods
+        .weigh()
+        .accountsStrict({
+          market:           demoMarketPDA,
+          accuracyBuckets:  demoAccuracyPDA,
+          bank:             bankPDA,
+          keeperDepositor:  deriveDepositor(keeper.publicKey),
+          signer:           keeper.publicKey,
+          systemProgram:    SystemProgram.programId,
+        })
+        .remainingAccounts([
+          { pubkey: demoUser2PositionPDA, isSigner: false, isWritable: true },
+          { pubkey: demoUser3PositionPDA, isSigner: false, isWritable: true },
+        ])
+        .signers([keeper])
+        .rpc();
+
+      const m2 = await program.account.market.fetch(demoMarketPDA);
+      expect(m2.weightsComplete).to.equal(true);
+      console.log("  ✓ weights computed — winner_capital="
+        + m2.totalWinnerCapitalRevealed.toString()
+        + " loser_capital=" + m2.totalLoserCapitalRevealed.toString());
+    });
+
+    it("35.8 keeper pushes payouts — winner gets loser pool", async () => {
+      const u2DepBefore = (await program.account.depositor.fetch(deriveDepositor(user2.publicKey))).depositedQuid.toNumber();
+      const u3DepBefore = (await program.account.depositor.fetch(deriveDepositor(user3.publicKey))).depositedQuid.toNumber();
+
+      await program.methods
+        .payout()
+        .accountsStrict({
+          market:            demoMarketPDA,
+          bank:              bankPDA,
+          creatorDepositor:  deriveDepositor(payer.publicKey),
+          solVault:          demoSolVaultPDA,
+          creator:           payer.publicKey,
+          keeperDepositor:   deriveDepositor(keeper.publicKey),
+          signer:            keeper.publicKey,
+          systemProgram:     SystemProgram.programId,
+        })
+        .remainingAccounts([
+          { pubkey: demoUser2PositionPDA, isSigner: false, isWritable: true },
+          { pubkey: deriveDepositor(user2.publicKey), isSigner: false, isWritable: true },
+          { pubkey: demoUser3PositionPDA, isSigner: false, isWritable: true },
+          { pubkey: deriveDepositor(user3.publicKey), isSigner: false, isWritable: true },
+        ])
+        .signers([keeper])
+        .rpc();
+
+      const u2DepAfter = (await program.account.depositor.fetch(deriveDepositor(user2.publicKey))).depositedQuid.toNumber();
+      const u3DepAfter = (await program.account.depositor.fetch(deriveDepositor(user3.publicKey))).depositedQuid.toNumber();
+      const m = await program.account.market.fetch(demoMarketPDA);
+
+      console.log("  ✓ payouts pushed");
+      console.log("    user2 (winner): " + u2DepBefore + " → " + u2DepAfter + " (+" + (u2DepAfter - u2DepBefore) + ")");
+      console.log("    user3 (loser):  " + u3DepBefore + " → " + u3DepAfter + " (+" + (u3DepAfter - u3DepBefore) + ")");
+      console.log("    payouts_complete: " + m.payoutsComplete);
+
+      expect(u2DepAfter).to.be.greaterThan(u2DepBefore);   // winner gained
+      expect(u3DepAfter).to.be.greaterThan(u3DepBefore);   // loser gets 20% consolation
+      expect(u2DepAfter - u2DepBefore).to.be.greaterThan(u3DepAfter - u3DepBefore); // winner gains more
+      expect(m.payoutsComplete).to.equal(true);
+    });
+
+    after(() => {
+      console.log("\n   ───────────────────────────────────────────────────────");
+      console.log("   ✅ End-to-end demo complete. Production parity:");
+      console.log("      → Mock USD minted, depositors funded earlier in the suite");
+      console.log("      → Market created in AI mode (no jury config)");
+      console.log("      → Two bids committed with three-value commit-reveal");
+      console.log("      → Resolved via testResolve (production: keeper calls resolve(...) after Claude)");
+      console.log("      → Reveals verified by keccak256(le8(conf) || urlHash || salt)");
+      console.log("      → Weights computed, payouts pushed");
+      console.log("");
+      console.log("   To run the full localhost:3000 production demo:");
+      console.log("     1. yarn dev (Next.js → http://localhost:3000)");
+      console.log("     2. yarn keeper:prediction (in another terminal)");
+      console.log("        env: KEEPER_SECRET_KEY, RPC_URL, ANTHROPIC_API_KEY,");
+      console.log("             MONGODB_URI, ALLOWED_ORIGIN, KEEPER_DOMAIN");
+      console.log("     3. Create a market in the UI, bid with optional evidence,");
+      console.log("        wait past deadline. Keeper sweeps every 60s and:");
+      console.log("        • probes Claude → expects {\"ack\":true}");
+      console.log("        • fetches/verifies evidence via /api/");
+      console.log("        • parses JSON verdict");
+      console.log("        • publishes thread → calls resolve(...)");
+      console.log("        • auto-reveals via reveal_delegate path");
+      console.log("        • weighs and pushes payouts");
+      console.log("   ───────────────────────────────────────────────────────\n");
+    });
   });
 
 });

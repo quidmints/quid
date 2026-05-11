@@ -1,29 +1,45 @@
 
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{ self, Mint, TokenAccount, TokenInterface, TransferChecked };
-use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
-use switchboard_on_demand::prelude::rust_decimal::prelude::ToPrimitive;
+use anchor_spl::token_interface::{ self, Mint, TokenAccount,
+    TokenInterface, TransferChecked };
 use crate::state::*;
-use crate::stay::*;
 use crate::etc::*;
 
-// Permissionless. Anyone can call after deadline passes.
-// remaining_accounts[0] = sb_feed (Switchboard Pull Feed)
+// =============================================================================
+// RESOLVE — keeper-signed verdict (post-Claude resolution)
+// =============================================================================
+//
+// Replaces the old Switchboard-feed read. The keeper:
+//   1. Probes Claude with the system prompt; aborts if Claude won't follow rubric.
+//   2. Uploads each bid's evidence (verifying ed25519 sig + content hash).
+//   3. Parses Claude's JSON verdict.
+//   4. Publishes the canonical transcript at a stable URL.
+//   5. Calls resolve(winning_sides, confidence, thread_url, thread_content_hash).
+//
+// thread_url + thread_content_hash are stored on-chain so a `force_jury`
+// challenge can route to LZ → Court.sol with a verifiable artifact.
+// Tamper-evident: keeper can take URL down but cannot serve different bytes.
+//
+// MODE_JURY_ONLY markets must use send_resolution_request (LZ jury) instead.
+
 #[derive(Accounts)]
 pub struct ResolveMarket<'info> {
     #[account(mut, seeds = [b"market",
-    &market.market_id.to_le_bytes()[..6]],
-    bump = market.bump)]
+        &market.market_id.to_le_bytes()[..6]],
+        bump = market.bump)]
     pub market: Box<Account<'info, Market>>,
 
-    #[account(seeds = [b"program_config"], bump = config.bump)]
+    #[account(seeds = [b"program_config"], bump = config.bump,
+        constraint = keeper.key() == config.keeper @ PithyQuip::Unauthorized)]
     pub config: Box<Account<'info, ProgramConfig>>,
 
-    pub signer: Signer<'info>,
+    pub keeper: Signer<'info>,
 }
 
-pub fn resolve_market<'info>(ctx: Context<'_, '_, '_,
-    'info, ResolveMarket<'info>>) -> Result<()> {
+pub fn resolve_market(ctx: Context<ResolveMarket>,
+    winning_sides: Vec<u8>, confidence: u64,
+    thread_url: String, thread_content_hash: [u8; 32]) -> Result<()> {
+
     let market_key = ctx.accounts.market.key();
     let market = &mut ctx.accounts.market;
     let clock = Clock::get()?;
@@ -32,12 +48,18 @@ pub fn resolve_market<'info>(ctx: Context<'_, '_, '_,
     require!(right_now >= market.deadline, PithyQuip::TradingFrozen);
     require!(!market.resolved && !market.cancelled, PithyQuip::AlreadyComplete);
     require!(!market.challenged, PithyQuip::TradingFrozen);
-    // MODE_JURY_ONLY: feed resolution is never valid. Caller must use
-    // send_resolution_request → LZ → process_final_ruling.
+    // MODE_JURY_ONLY: keeper resolution is never valid here.
     require!(market.resolution_mode != MODE_JURY_ONLY, PithyQuip::NotResolved);
     // Block if a LZ resolution request is already in flight.
-    // Prevents oracle feed and jury both resolving simultaneously.
     require!(!market.resolution_requested, PithyQuip::AlreadyRequested);
+
+    require!(thread_url.len() <= MAX_THREAD_URL_LEN, PithyQuip::InvalidParameters);
+    // winning_sides.len() ≤ 20 in all cases. Empty array = force majeure (cancel),
+    // matching Court.sol's `res.verdict = new uint8[](0)` convention AND LZ.rs's
+    // FinalRuling::is_force_majeure() check. The previous u8=255 sentinel was a
+    // Solana-only artifact of decoding a single-u8 outcome from a u64 oracle
+    // response — no longer needed with Vec<u8> keeper-signed verdicts.
+    require!(winning_sides.len() <= 20, PithyQuip::InvalidResolution);
 
     let num_outcomes = market.outcomes.len();
     if num_outcomes < 2 {
@@ -47,68 +69,54 @@ pub fn resolve_market<'info>(ctx: Context<'_, '_, '_,
         market.weights_complete = true;
         return Ok(());
     }
-    require!(ctx.remaining_accounts.len() >= 1,
-             PithyQuip::InsufficientAccounts);
 
-    let feed_info = &ctx.remaining_accounts[0];
-    require!(feed_info.key() == market.sb_feed,
-             PithyQuip::InvalidParameters);
-
-    let feed = PullFeedAccountData::parse(feed_info.try_borrow_data()?)
-        .map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
-
-    require!(verify_trusted_feed(&feed, &ctx.accounts.config),
-                              PithyQuip::InvalidAccountOwner);
-
-    let value = feed.get_value(SB_MAX_STALE_SLOTS,
-        u64::MAX, SB_MIN_SAMPLES, true).map_err(|_|
-            error!(PithyQuip::InvalidParameters))?;
-
-    let raw = value.to_u64().unwrap_or(0);
-
-    // MODE_AI_PLUS_JURY: oracle may resolve only if confidence >= threshold.
-    // Below threshold, return NotResolved so caller knows to escalate to jury
-    // via send_resolution_request. The raw confidence is in the lower bits.
-    if market.resolution_mode == MODE_AI_PLUS_JURY {
-        let raw_conf = raw % 100_000_u64;
-        require!(raw_conf >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::NotResolved);
+    // Force majeure → cancel with pro-rata refund (matches Court.sol).
+    if winning_sides.is_empty() {
+        require!(confidence >= MIN_RESOLUTION_CONFIDENCE,
+                 PithyQuip::InsufficientConfidence);
+        market.cancelled = true;
+        market.resolved = true;
+        market.resolution_time = right_now;
+        market.weights_complete = true;
+        market.resolution_thread_url = thread_url;
+        market.thread_content_hash = thread_content_hash;
+        return Ok(());
     }
-    // Single-winner or multi-winner: branch on market.num_winners
-    let (winning_sides, confidence) = if market.num_winners > 1 {
-        let (winners, conf) = decode_oracle_value_multi(raw, &market_key, num_outcomes)?;
-        require!(winners.len() <= market.num_winners as usize,
-                 PithyQuip::InvalidResolution);
-        for &w in &winners {
-            require!((w as usize) < num_outcomes, PithyQuip::InvalidResolution);
+
+    // Confidence floor. If the keeper can't reach MIN_RESOLUTION_CONFIDENCE and
+    // jury_config is configured, the keeper should call send_resolution_request
+    // instead. We refuse the resolve here so the caller is forced into that path.
+    require!(confidence >= MIN_RESOLUTION_CONFIDENCE,
+             PithyQuip::InsufficientConfidence);
+
+    // Validate winning_sides
+    require!(winning_sides.len() <= market.num_winners as usize,
+             PithyQuip::InvalidResolution);
+    for &w in &winning_sides {
+        require!((w as usize) < num_outcomes, PithyQuip::InvalidResolution);
+    }
+    // Duplicates not allowed
+    for i in 0..winning_sides.len() {
+        for j in (i + 1)..winning_sides.len() {
+            require!(winning_sides[i] != winning_sides[j],
+                     PithyQuip::DuplicateOutcome);
         }
-        if !market.winning_splits.is_empty() {
-            let total: u64 = winners.iter()
-                .filter_map(|&ws| market.winning_splits.get(ws as usize))
-                .sum();
-            require!(total == 10_000, PithyQuip::InvalidResolution);
-        }
-        require!(conf >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::InsufficientConfidence);
-        (winners, conf)
-    } else {
-        let (outcome_index, conf) = decode_oracle_value(raw, &market_key)?;
-        // Outcome 255 = force majeure → cancel with refund
-        if outcome_index == 255 {
-            require!(conf >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::InsufficientConfidence);
-            market.cancelled = true;
-            market.resolved = true;
-            market.resolution_time = right_now;
-            market.weights_complete = true;
-            return Ok(());
-        }
-        require!((outcome_index as usize) < num_outcomes, PithyQuip::InvalidResolution);
-        require!(conf >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::InsufficientConfidence);
-        (vec![outcome_index], conf)
-    };
+    }
+    // If splits configured, the winners' splits must sum to 10_000 BPS
+    if !market.winning_splits.is_empty() {
+        let total: u64 = winning_sides.iter()
+            .filter_map(|&ws| market.winning_splits.get(ws as usize))
+            .sum();
+        require!(total == 10_000, PithyQuip::InvalidResolution);
+    }
+
     market.winning_outcome = winning_sides[0];
     market.winning_sides = winning_sides.clone();
     market.resolution_confidence = confidence;
     market.resolved = true;
     market.resolution_time = right_now;
+    market.resolution_thread_url = thread_url;
+    market.thread_content_hash = thread_content_hash;
 
     emit!(MarketResolved {
         market_key,
@@ -116,6 +124,8 @@ pub fn resolve_market<'info>(ctx: Context<'_, '_, '_,
         winning_sides: winning_sides.clone(),
         confidence,
     });
+
+    // Skip reveal/weigh phases if no capital on any winning side.
     let any_capital = winning_sides.iter()
         .any(|&ws| market.total_capital_per_outcome[ws as usize] > 0);
     if !any_capital {
@@ -123,6 +133,15 @@ pub fn resolve_market<'info>(ctx: Context<'_, '_, '_,
     }
     Ok(())
 }
+
+// =============================================================================
+// CHALLENGE — pay bond to dispute keeper's verdict, optionally force jury
+// =============================================================================
+//
+// Adversarial: challenger pays max(2× creator_bond, resolution_bond) — high
+// enough to deter spam DoS. If challenger sets force_jury=true and the market
+// has a jury_config, the next step must be send_resolution_request (LZ jury).
+// Otherwise the keeper re-runs Claude via resolve_challenge.
 
 #[derive(Accounts)]
 pub struct ChallengeResolution<'info> {
@@ -143,7 +162,9 @@ pub struct ChallengeResolution<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn challenge_resolution(ctx: Context<ChallengeResolution>) -> Result<()> {
+pub fn challenge_resolution(ctx: Context<ChallengeResolution>,
+    force_jury: bool) -> Result<()> {
+
     let market = &mut ctx.accounts.market;
     let clock = Clock::get()?;
     let right_now = clock.unix_timestamp;
@@ -157,25 +178,16 @@ pub fn challenge_resolution(ctx: Context<ChallengeResolution>) -> Result<()> {
     let challenge_deadline = market.resolution_time + REVEAL_WINDOW;
     require!(right_now < challenge_deadline, PithyQuip::TooLate);
 
-    // Bond = max(creator_bond * multiplier, resolution_bond from evidence config).
-    // Must at least cover re-running resolution, so challenger pays oracle cost.
+    // If force_jury requested, jury_config MUST be present.
+    if force_jury {
+        require!(market.jury_config.is_some(), PithyQuip::InvalidParameters);
+    }
+
+    // Bond = max(2× creator_bond, resolution_bond).
     let base_bond = market.creator_bond_lamports
         .saturating_mul(CHALLENGE_BOND_MULTIPLIER);
+    let bond = base_bond.max(market.resolution_bond);
 
-    // Read resolution_bond from MarketEvidence if present in remaining_accounts.
-    // We read raw bytes to avoid lifetime issues with Account::try_from on locals.
-    let resolution_bond = if !ctx.remaining_accounts.is_empty() {
-        let data = ctx.remaining_accounts[0].try_borrow_data()?;
-        if data.len() >= 8 {
-            // Deserialize into owned value — no borrow lifetime issues
-            let mut slice: &[u8] = &data[..];
-            if let Ok(me) = MarketEvidence::try_deserialize(&mut slice) {
-                me.evidence.resolution_bond
-            } else { 0 }
-        } else { 0 }
-    } else { 0 };
-
-    let bond = base_bond.max(resolution_bond);
     anchor_lang::system_program::transfer(
         CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
@@ -191,6 +203,7 @@ pub fn challenge_resolution(ctx: Context<ChallengeResolution>) -> Result<()> {
     market.challenged = true;
     market.resolved = false;
     market.challenge_count += 1;
+    market.force_jury_pending = force_jury;
     market.total_winner_weight_revealed = 0;
     market.total_loser_weight_revealed = 0;
 
@@ -203,7 +216,7 @@ pub fn challenge_resolution(ctx: Context<ChallengeResolution>) -> Result<()> {
 }
 
 // =============================================================================
-// RESOLVE CHALLENGE — re-read oracle feed after challenge
+// RESOLVE CHALLENGE — keeper re-runs Claude after challenge (no force_jury)
 // =============================================================================
 
 #[derive(Accounts)]
@@ -219,89 +232,100 @@ pub struct ResolveChallenge<'info> {
       bump = market.sol_vault_bump)]
     pub sol_vault: SystemAccount<'info>,
 
-    #[account(seeds = [b"program_config"], bump = config.bump)]
+    #[account(seeds = [b"program_config"], bump = config.bump,
+        constraint = keeper.key() == config.keeper @ PithyQuip::Unauthorized)]
     pub config: Box<Account<'info, ProgramConfig>>,
 
     #[account(mut)]
-    pub signer: Signer<'info>,
+    pub keeper: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }
 
-pub fn resolve_challenge<'info>(ctx: Context<'_, '_, '_,
-    'info, ResolveChallenge<'info>>) -> Result<()> {
+pub fn resolve_challenge(ctx: Context<ResolveChallenge>,
+    winning_sides: Vec<u8>, confidence: u64,
+    thread_url: String, thread_content_hash: [u8; 32]) -> Result<()> {
+
     let market_key = ctx.accounts.market.key();
     let market = &mut ctx.accounts.market;
     let clock = Clock::get()?;
 
     require!(market.challenged, PithyQuip::InvalidParameters);
+    // If challenger requested jury, keeper cannot resolve — must use resolve_jury.
+    require!(!market.force_jury_pending, PithyQuip::Unauthorized);
 
-    require!(ctx.remaining_accounts.len() >= 1,
-             PithyQuip::InsufficientAccounts);
+    require!(thread_url.len() <= MAX_THREAD_URL_LEN, PithyQuip::InvalidParameters);
+    require!(winning_sides.len() <= 20, PithyQuip::InvalidResolution);
 
-    let feed_info = &ctx.remaining_accounts[0];
-    require!(feed_info.key() == market.sb_feed,
-             PithyQuip::InvalidParameters);
-
-    let feed = PullFeedAccountData::parse(feed_info.try_borrow_data()?)
-        .map_err(|_| error!(PithyQuip::InvalidAccountOwner))?;
-
-    require!(verify_trusted_feed(&feed, &ctx.accounts.config),
-             PithyQuip::InvalidAccountOwner);
-
-    let value = feed.get_value(
-        SB_MAX_STALE_SLOTS, u64::MAX, SB_MIN_SAMPLES, true,
-    ).map_err(|_| error!(PithyQuip::InvalidParameters))?;
-
-    let raw = value.to_u64().unwrap_or(0);
-    let (new_outcome, new_confidence) = decode_oracle_value(raw, &market_key)?;
-
-    // Force majeure on re-check → cancel
-    if new_outcome == 255 && new_confidence >= MIN_RESOLUTION_CONFIDENCE {
+    // Force majeure on re-check → cancel (empty array convention, matches Court.sol)
+    if winning_sides.is_empty() {
+        require!(confidence >= MIN_RESOLUTION_CONFIDENCE,
+                 PithyQuip::InsufficientConfidence);
         market.cancelled = true;
         market.resolved = true;
         market.challenged = false;
         market.weights_complete = true;
         market.resolution_time = clock.unix_timestamp;
+        market.resolution_thread_url = thread_url;
+        market.thread_content_hash = thread_content_hash;
         return Ok(());
     }
+
     let old_outcome = market.winning_outcome;
+
     // Low confidence + max challenges exceeded → cancel
-    if new_confidence < MIN_RESOLUTION_CONFIDENCE
+    if confidence < MIN_RESOLUTION_CONFIDENCE
         && market.challenge_count >= MAX_CHALLENGES {
-        market.cancelled = true; market.resolved = true;
+        market.cancelled = true;
+        market.resolved = true;
         market.resolution_time = clock.unix_timestamp;
         market.weights_complete = true;
         market.challenged = false;
+        market.resolution_thread_url = thread_url;
+        market.thread_content_hash = thread_content_hash;
         return Ok(());
     }
-    // Low confidence → stay challenged, oracle needs to retry
-    if new_confidence < MIN_RESOLUTION_CONFIDENCE {
+    // Low confidence → stay challenged, keeper retries (or escalates to jury)
+    if confidence < MIN_RESOLUTION_CONFIDENCE {
         return Err(PithyQuip::InsufficientConfidence.into());
     }
-    // Validate the new outcome is in range
-    require!((new_outcome as usize) < market.outcomes.len(), PithyQuip::InvalidResolution);
-    if new_outcome == old_outcome {
+
+    // Validate the new outcomes
+    let num_outcomes = market.outcomes.len();
+    require!(winning_sides.len() <= market.num_winners as usize,
+             PithyQuip::InvalidResolution);
+    for &w in &winning_sides {
+        require!((w as usize) < num_outcomes, PithyQuip::InvalidResolution);
+    }
+    for i in 0..winning_sides.len() {
+        for j in (i + 1)..winning_sides.len() {
+            require!(winning_sides[i] != winning_sides[j],
+                     PithyQuip::DuplicateOutcome);
+        }
+    }
+
+    let new_outcome = winning_sides[0];
+    if new_outcome == old_outcome && winning_sides == market.winning_sides {
         // Challenge failed — original confirmed. Reveals still valid.
         market.resolved = true;
         market.challenged = false;
-        market.resolution_confidence = new_confidence;
-        // Restart reveal window
-        market.resolution_time = clock.unix_timestamp;
+        market.resolution_confidence = confidence;
+        market.resolution_time = clock.unix_timestamp; // restart reveal window
+        market.resolution_thread_url = thread_url;
+        market.thread_content_hash = thread_content_hash;
         // Challenger loses bond (stays in sol_vault → goes to creator/protocol)
     } else {
         // Challenge succeeded — re-resolve with corrected outcome.
-        // The old winner/loser reveals are invalid because they were
-        // computed against the wrong winning_outcome, so the full
-        // reveal → weigh → payout pipeline must restart.
         market.winning_outcome = new_outcome;
-        market.winning_sides = vec![new_outcome];
-        market.resolution_confidence = new_confidence;
+        market.winning_sides = winning_sides.clone();
+        market.resolution_confidence = confidence;
         market.resolved = true;
         market.challenged = false;
         market.resolution_time = clock.unix_timestamp;
+        market.resolution_thread_url = thread_url;
+        market.thread_content_hash = thread_content_hash;
 
-        // Reset payout pipeline — old reveals invalid
+        // Reset payout pipeline — old reveals invalid against new winner
         market.total_winner_weight_revealed = 0;
         market.total_loser_weight_revealed = 0;
         market.total_winner_capital_revealed = 0;
@@ -310,17 +334,18 @@ pub fn resolve_challenge<'info>(ctx: Context<'_, '_, '_,
         market.positions_revealed = 0;
         market.positions_processed = 0;
         market.weights_complete = false;
-        // Challenger gets bond back via sol_vault → resolved at payout time.
-        // Creator bond portion may be slashed as reward.
+
         // Nobody bet on the corrected outcome → skip to payouts (refund all)
-        if market.total_capital_per_outcome[new_outcome as usize] == 0 {
+        let any_capital = winning_sides.iter()
+            .any(|&ws| market.total_capital_per_outcome[ws as usize] > 0);
+        if !any_capital {
             market.weights_complete = true;
         }
         emit!(MarketResolved {
             market_key,
             winning_outcome: new_outcome,
-            winning_sides: vec![new_outcome],
-            confidence: new_confidence,
+            winning_sides,
+            confidence,
         });
     }
     Ok(())
@@ -360,22 +385,22 @@ pub fn test_resolve_market(ctx: Context<TestResolve>,
 }
 
 // =============================================================================
-// CLAIM RESOLUTION BOND — oracle operator claims after successful resolution
+// CLAIM RESOLUTION BOND — keeper claims after successful resolution
 // =============================================================================
+//
+// Permissionless timing: anyone can trigger.
+//   - If fees_collected covers oracle_compute_cost → keeper paid in QD,
+//     SOL bond refunded to creator.
+//   - Otherwise → keeper claims SOL bond (covers Claude API cost).
+//
+// All accounting now lives on Market itself (no separate MarketEvidence PDA).
 
-/// Oracle operator claims the resolution bond after market is resolved.
-/// Permissionless timing: anyone can trigger (bond goes to config.admin),
-/// but only after market.resolved == true.
 #[derive(Accounts)]
 pub struct ClaimResolutionBond<'info> {
-    #[account(seeds = [b"market",
+    #[account(mut, seeds = [b"market",
     &market.market_id.to_le_bytes()[..6]],
     bump = market.bump)]
     pub market: Box<Account<'info, Market>>,
-
-    #[account(mut, seeds = [b"market_evidence", market.key().as_ref()],
-        bump = market_evidence.bump)]
-    pub market_evidence: Account<'info, MarketEvidence>,
 
     /// CHECK: PDA vault holding the bond
     #[account(mut,
@@ -383,9 +408,9 @@ pub struct ClaimResolutionBond<'info> {
       bump = market.sol_vault_bump)]
     pub sol_vault: SystemAccount<'info>,
 
-    /// Oracle operator (config.admin) receives the bond when fees don't cover compute.
-    #[account(mut, address = config.admin)]
-    pub oracle_operator: SystemAccount<'info>,
+    /// Keeper receives the bond when fees don't cover compute cost.
+    #[account(mut, address = config.keeper)]
+    pub keeper: SystemAccount<'info>,
 
     /// Market creator receives bond refund when fees_collected >= oracle_compute_cost.
     /// CHECK: Must match market.creator.
@@ -398,34 +423,32 @@ pub struct ClaimResolutionBond<'info> {
     #[account(seeds = [b"program_config"], bump = config.bump)]
     pub config: Box<Account<'info, ProgramConfig>>,
 
-    /// QD token vault — pays oracle when fees cover compute cost.
+    /// QD token vault — pays keeper when fees cover compute cost.
     #[account(mut, seeds = [b"vault", config.token_mint.as_ref()], bump)]
     pub program_vault: InterfaceAccount<'info, TokenAccount>,
 
-    /// Oracle operator's QD token account for fee payment.
+    /// Keeper's QD token account for fee payment.
     #[account(mut, token::mint = config.token_mint,
-              token::authority = oracle_operator)]
-    pub oracle_fee_account: InterfaceAccount<'info, TokenAccount>,
+              token::authority = keeper)]
+    pub keeper_fee_account: InterfaceAccount<'info, TokenAccount>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
 pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
-    // Extract immutable fields before splitting the borrow
-    let market_resolved   = ctx.accounts.market.resolved;
-    let market_id         = ctx.accounts.market.market_id;
-    let sol_vault_bump    = ctx.accounts.market.sol_vault_bump;
-    let fees              = ctx.accounts.market.fees_collected;
-    let me = &mut ctx.accounts.market_evidence;
+    let market_resolved = ctx.accounts.market.resolved;
+    let market_id       = ctx.accounts.market.market_id;
+    let sol_vault_bump  = ctx.accounts.market.sol_vault_bump;
+    let fees            = ctx.accounts.market.fees_collected;
+    let bond            = ctx.accounts.market.resolution_bond;
+    let compute_cost    = ctx.accounts.market.oracle_compute_cost;
+    let already_claimed = ctx.accounts.market.oracle_claimed;
 
     require!(market_resolved, PithyQuip::InvalidParameters);
-    require!(!me.oracle_claimed, PithyQuip::AlreadyComplete);
+    require!(!already_claimed, PithyQuip::AlreadyComplete);
 
-    let bond = me.evidence.resolution_bond;
-    let compute_cost = me.evidence.oracle_compute_cost;
-
-    me.oracle_claimed = true;
+    ctx.accounts.market.oracle_claimed = true;
 
     if bond == 0 && compute_cost == 0 {
         return Ok(());
@@ -433,9 +456,10 @@ pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
 
     let market_id_bytes = market_id.to_le_bytes();
     let seeds: &[&[u8]] = &[b"sol_vault", &market_id_bytes[..6],
-                             &[sol_vault_bump]];
+                            &[sol_vault_bump]];
 
-    let oracle_gets_bond = if compute_cost > 0 && fees >= compute_cost {
+    let keeper_gets_bond = if compute_cost > 0 && fees >= compute_cost {
+        // Pay keeper from accumulated fees in QD.
         ctx.accounts.market.fees_collected =
             ctx.accounts.market.fees_collected.saturating_sub(compute_cost);
 
@@ -447,10 +471,10 @@ pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
         token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                token_interface::TransferChecked {
+                TransferChecked {
                     from:      ctx.accounts.program_vault.to_account_info(),
                     mint:      ctx.accounts.mint.to_account_info(),
-                    to:        ctx.accounts.oracle_fee_account.to_account_info(),
+                    to:        ctx.accounts.keeper_fee_account.to_account_info(),
                     authority: ctx.accounts.program_vault.to_account_info(),
                 },
                 &[vault_seeds],
@@ -475,15 +499,15 @@ pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
         }
         false
     } else {
-        true // fees insufficient — oracle claims SOL bond instead
+        true // fees insufficient — keeper claims SOL bond instead
     };
-    if oracle_gets_bond && bond > 0 {
+    if keeper_gets_bond && bond > 0 {
         anchor_lang::system_program::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.system_program.to_account_info(),
                 anchor_lang::system_program::Transfer {
                     from: ctx.accounts.sol_vault.to_account_info(),
-                    to: ctx.accounts.oracle_operator.to_account_info(),
+                    to:   ctx.accounts.keeper.to_account_info(),
                 },
                 &[seeds],
             ),

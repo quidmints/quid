@@ -19,12 +19,17 @@
  * Confidence storage:
  *   Same dual-write pattern as EVM:
  *   1. localStorage: `safta-conf-{chainId}-{marketId}-{outcome}-{pubkey}`
- *   2. POST /api/confidences: { user, mktId, side: outcome, confidence, salt, chainId, commitHash }
- *   The keeper reads from MongoDB to auto-reveal after resolution.
+ *   2. POST /api: { user, mktId, side, confidence, salt, commitHash,
+ *                        evidenceUrl?, evidenceUrlHash?, evidenceContentHash?,
+ *                        evidenceUserSig?, chainId }
+ *   The keeper reads confidences to auto-reveal after resolution, AND uses
+ *   the evidenceUrl/Hash/ContentHash fields to fetch + verify uploaded
+ *   evidence files at resolution time (Claude resolution path).
  *
- * commitment_hash = keccak256(confidence_le_bytes || salt_bytes)
- *   On-chain: state.rs::hash_commitment_u64(confidence, salt)
- *   Frontend: solana_keccak below (matches Solana's keccak::hashv)
+ * commitment_hash = keccak256( le8(confidence) || evidence_url_hash || salt )
+ *   evidence_url_hash = keccak256(utf8(evidenceUrl)), or zero32 for no-evidence bids.
+ *   On-chain: state.rs::hash_commitment(confidence, &url_hash, &salt)
+ *   Frontend: solanaKeccak below (matches Solana's keccak::hashv)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -137,15 +142,13 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMMITMENT HASH — matches state.rs hash_commitment_u64
-// keccak256(confidence_le_bytes(8) || salt(32))
+// COMMITMENT HASH — matches state.rs::hash_commitment
+// keccak256( le8(confidence) || evidence_url_hash(32) || salt(32) )
+// evidence_url_hash = keccak256(utf8(url)), or zero32 for no-evidence bids
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function solanaKeccak(data: Uint8Array): Promise<Uint8Array> {
-  // Use SubtleCrypto SHA-3-256 isn't available in all browsers,
-  // but Solana keccak = ethereum keccak256. Use js-sha3 or inline.
-  // For production: import { keccak_256 } from 'js-sha3'
-  // Fallback: use ethers.keccak256 which is already in the page
+  // Solana's hashv keccak256 == ethereum keccak256.
   const { keccak256 } = await import('ethers')
   const hash = keccak256(data)
   return new Uint8Array(hash.match(/.{2}/g)!.map(b => parseInt(b, 16)))
@@ -155,12 +158,19 @@ export function generateSalt(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32))
 }
 
+/** keccak256(utf8(url)), or zero32 for no-evidence bids. */
+export async function evidenceUrlHash(url: string | null | undefined): Promise<Uint8Array> {
+  if (!url) return new Uint8Array(32)
+  const utf8 = new TextEncoder().encode(url)
+  return solanaKeccak(utf8)
+}
+
 export async function generateCommitHash(
-  confidence: number, salt: Uint8Array
+  confidence: number, urlHash: Uint8Array, salt: Uint8Array
 ): Promise<Uint8Array> {
   const confBytes = new Uint8Array(8)
   new DataView(confBytes.buffer).setBigUint64(0, BigInt(confidence), true)
-  const input = concatBytes(confBytes, salt)
+  const input = concatBytes(confBytes, urlHash, salt)
   return solanaKeccak(input)
 }
 
@@ -308,8 +318,16 @@ interface PredictionMarketProps {
     maxDeviationBps: number | null;
   }) => Promise<void>
   onChallengeMarket: (params: {
-    marketPda: string; marketId: number;
+    marketPda: string; marketId: number; forceJury?: boolean;
   }) => Promise<void>
+  /**
+   * Optional. Signs an arbitrary message with the user's Solana wallet —
+   * required if the user wants to attach an evidence file (the bytes are
+   * uploaded to /api?action=evidence_upload with a signature over
+   * mktPda||commitHash||contentHash). If absent, evidence is URL-only and
+   * the bytes won't be available to the keeper at resolution time.
+   */
+  onSignMessage?: (msg: Uint8Array) => Promise<Uint8Array>
   // Registry tags (fetched by parent from on-chain ModelEntry PDAs)
   registryTags: RegistryTag[]
   // Data
@@ -327,7 +345,7 @@ interface PredictionMarketProps {
 export default function PredictionMarketTab({
   connected, isLoading, txMutex, userPubkey, solanaChainId,
   formatNumber, onCreateMarket, onPlaceOrder, onSellPosition,
-  onChallengeMarket, registryTags,
+  onChallengeMarket, onSignMessage, registryTags,
   markets, positions, depositedQuid, refreshMarkets, refreshPositions,
 }: PredictionMarketProps) {
 
@@ -346,6 +364,13 @@ export default function PredictionMarketTab({
   const [orderAmount, setOrderAmount] = useState('')
   const [orderConfidence, setOrderConfidence] = useState(5000)
   const [orderDelegate, setOrderDelegate] = useState(true) // auto-set keeper as delegate
+
+  // ── Evidence state — bound into the commitment via urlHash. The keeper
+  //    fetches the bytes at resolution time (from /api?action=evidence_fetch)
+  //    and uploads them to Claude. URL is what jurors verify in a force_jury
+  //    challenge; the bytes are content-addressed by sha256.
+  const [orderEvidenceFile, setOrderEvidenceFile] = useState<File | null>(null)
+  const [orderEvidenceUrlOverride, setOrderEvidenceUrlOverride] = useState('')
 
   // ── Sell state ──
   const [sellTokens, setSellTokens] = useState('')
@@ -390,10 +415,81 @@ export default function PredictionMarketTab({
     const capital = parseFloat(orderAmount)
     if (isNaN(capital) || capital < 0.001) return
 
+    // Evidence URL — either user-supplied override or auto-generated from
+    // the file's content hash (so the URL the keeper hits is /api?...).
+    // urlHash binds the URL into the commit; bytes are content-addressed.
+    let evidenceUrl = orderEvidenceUrlOverride.trim()
+    let evidenceContentHash = ''
+    let evidenceUserSig = ''
+    let evidenceBytesB64 = ''
+
+    if (orderEvidenceFile) {
+      // Read file → bytes → sha256 → contentHash → default URL.
+      const arrayBuf = await orderEvidenceFile.arrayBuffer()
+      const u8 = new Uint8Array(arrayBuf)
+      const digest = await crypto.subtle.digest('SHA-256', u8)
+      evidenceContentHash = Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, '0')).join('')
+      evidenceBytesB64 = btoa(String.fromCharCode(...u8))
+      if (!evidenceUrl) {
+        evidenceUrl = `/api?action=evidence_fetch&contentHash=${evidenceContentHash}`
+      }
+    }
+
+    const urlHash = await evidenceUrlHash(evidenceUrl || null)
     const salt = generateSalt()
-    const commitHash = await generateCommitHash(orderConfidence, salt)
-    const commitHashHex = Array.from(commitHash).map(b => b.toString(16).padStart(2, '0')).join('')
+    const commitHash = await generateCommitHash(orderConfidence, urlHash, salt)
+    const commitHashHex = Array.from(commitHash)
+      .map(b => b.toString(16).padStart(2, '0')).join('')
+    const urlHashHex = Array.from(urlHash)
+      .map(b => b.toString(16).padStart(2, '0')).join('')
     const saltHex = saltToHex(salt)
+
+    // If a file is attached, get user's signature over (mktPda||commitHash||contentHash)
+    // and upload bytes BEFORE submitting the on-chain bid (so by the time
+    // the bid lands, the evidence is fetchable by the keeper).
+    if (orderEvidenceFile && evidenceContentHash && onSignMessage) {
+      try {
+        const mktPdaB58 = selectedMarket.pda
+        const { PublicKey } = await import('@solana/web3.js')
+        const mktPdaBytes = new PublicKey(mktPdaB58).toBytes()
+        const commitBytes = new Uint8Array(commitHash)
+        const contentBytes = new Uint8Array(
+          evidenceContentHash.match(/.{2}/g)!.map(b => parseInt(b, 16)))
+        const msg = new Uint8Array(mktPdaBytes.length + commitBytes.length + contentBytes.length)
+        msg.set(mktPdaBytes, 0)
+        msg.set(commitBytes, mktPdaBytes.length)
+        msg.set(contentBytes, mktPdaBytes.length + commitBytes.length)
+
+        const sig = await onSignMessage(msg)
+        evidenceUserSig = Array.from(sig)
+          .map(b => b.toString(16).padStart(2, '0')).join('')
+
+        const uploadResp = await fetch('/api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'evidence_upload',
+            mktPda: mktPdaB58,
+            mktId: selectedMarket.marketId,
+            chainId: solanaChainId,
+            user: userPubkey,
+            filename: orderEvidenceFile.name,
+            mimeType: orderEvidenceFile.type || 'application/octet-stream',
+            bytesBase64: evidenceBytesB64,
+            signature: evidenceUserSig,
+            commitHash: commitHashHex,
+          }),
+        })
+        if (!uploadResp.ok) {
+          const err = await uploadResp.text()
+          console.warn('evidence upload rejected:', err)
+        }
+      } catch (e) {
+        console.warn('evidence upload skipped:', e)
+        // Non-fatal — we still place the bid with the URL-only commit.
+      }
+    }
 
     // Keeper pubkey as reveal_delegate (auto-reveals after resolution)
     const delegate = orderDelegate && KEEPER_PUBKEY ? KEEPER_PUBKEY : null
@@ -401,28 +497,29 @@ export default function PredictionMarketTab({
     await onPlaceOrder({
       marketPda: selectedMarket.pda,
       outcome: orderOutcome,
-      capital: Math.floor(capital * 1e6), // assuming 6 decimal mint, adjust as needed
+      capital: Math.floor(capital * 1e6), // assuming 6 decimal mint
       commitmentHash: commitHash,
       revealDelegate: delegate,
       maxDeviationBps: 300,
     })
 
-    // Dual-write confidence
+    // Dual-write confidence + evidence metadata so the keeper can:
+    //   1. fetch confidences for all bidders at resolution time
+    //   2. for any with evidenceContentHash, fetch bytes via /api
+    //   3. verify sig + content hash + size before forwarding to Claude
     const confEntry: ConfEntry = {
       confidence: orderConfidence,
       salt: saltHex,
       commitHash: commitHashHex,
     }
+    appendStoredConfidence(solanaChainId,
+      selectedMarket.marketId, orderOutcome,
+      userPubkey, confEntry)
 
-    // localStorage
-    appendStoredConfidence(solanaChainId, selectedMarket.marketId, orderOutcome, userPubkey, confEntry)
-
-    // MongoDB
     try {
-      await fetch('/api/confidences', {
-        method: 'POST',
+      await fetch('/api', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify({ action: 'confidence_store',
           user: userPubkey,
           mktId: selectedMarket.marketId,
           side: orderOutcome,
@@ -430,20 +527,30 @@ export default function PredictionMarketTab({
           salt: saltHex,
           commitHash: commitHashHex,
           chainId: solanaChainId,
+          ...(evidenceUrl ? { evidenceUrl, evidenceUrlHash: urlHashHex } : {}),
+          ...(evidenceContentHash ? {
+            evidenceContentHash,
+            ...(evidenceUserSig ? { evidenceUserSig } : {}),
+          } : {}),
         }),
       })
     } catch (e) { console.warn('Could not store confidence to API:', e) }
 
     setOrderAmount('')
+    setOrderEvidenceFile(null)
+    setOrderEvidenceUrlOverride('')
     setTimeout(() => {
       refreshPositions(selectedMarket.pda)
       refreshMarkets()
     }, 3000)
   }, [selectedMarket, orderAmount, orderOutcome, orderConfidence, orderDelegate,
-      txMutex, solanaChainId, userPubkey, onPlaceOrder, refreshPositions, refreshMarkets])
+      orderEvidenceFile, orderEvidenceUrlOverride,
+      txMutex, solanaChainId, userPubkey, onPlaceOrder, onSignMessage,
+      refreshPositions, refreshMarkets])
 
   const handleSellPosition = useCallback(async () => {
     if (!selectedMarket || !sellTokens || txMutex) return
+    
     const tokens = parseFloat(sellTokens)
     if (isNaN(tokens) || tokens <= 0) return
 
@@ -1315,10 +1422,23 @@ export function encodeSell(
   )
 }
 
+/**
+ * CreateMarketParams encoder. Replaces the old Switchboard-feed model with
+ * resolution_mode + optional jury_config + oracle_compute_cost.
+ *   resolutionMode: 0=AI, 1=AI_PLUS_JURY, 2=JURY_ONLY
+ *   juryConfig: required for modes 1 & 2; { binding, requiresUnanimous, appealCost, dstEid }
+ *   oracleComputeCost: keeper compute cost in QD tokens; 0 = always pay from SOL bond
+ */
 export function encodeCreateMarket(
   question: string, context: string, exculpatory: string,
-  resolutionSource: string, outcomes: string[], sbFeed: string,
+  resolutionSource: string, outcomes: string[],
   deadline: bigint, liquidity: bigint, creatorFeeBps: number, creatorBond: bigint,
+  resolutionMode: number,
+  juryConfig: {
+    binding: boolean; requiresUnanimous: boolean;
+    appealCost: bigint; dstEid: number;
+  } | null,
+  oracleComputeCost: bigint,
   numWinners: number = 1, winningSplits: bigint[] = [], beneficiaries: (string | null)[] = [],
 ): Uint8Array {
   // Vec<u64> for winning_splits
@@ -1329,6 +1449,21 @@ export function encodeCreateMarket(
   const beneLen = new Uint8Array(4)
   new DataView(beneLen.buffer).setUint32(0, beneficiaries.length, true)
   const beneData = concatBytes(beneLen, ...beneficiaries.map(b => borshOptionPubkey(b)))
+
+  // Option<JuryConfig>: binding(bool) + requires_unanimous(bool) + appeal_cost(u64) + dst_eid(u32)
+  let juryBytes: Uint8Array
+  if (juryConfig) {
+    const jc = new Uint8Array(1 + 1 + 1 + 8 + 4)
+    jc[0] = 1                                        // Option = Some
+    jc[1] = juryConfig.binding ? 1 : 0
+    jc[2] = juryConfig.requiresUnanimous ? 1 : 0
+    new DataView(jc.buffer).setBigUint64(3, juryConfig.appealCost, true)
+    new DataView(jc.buffer).setUint32(11, juryConfig.dstEid, true)
+    juryBytes = jc
+  } else {
+    juryBytes = new Uint8Array([0])                  // Option = None
+  }
+
   return concatBytes(
     ixDisc('create_market'),
     borshString(question),
@@ -1336,20 +1471,26 @@ export function encodeCreateMarket(
     borshString(exculpatory),
     borshString(resolutionSource),
     borshVecString(outcomes),
-    borshPubkey(sbFeed),
     borshU64(BigInt(deadline)),
     borshU64(liquidity),
     borshU16(creatorFeeBps),
     borshU64(creatorBond),
+    new Uint8Array([resolutionMode & 0xff]),
+    juryBytes,
+    borshU64(oracleComputeCost),
     borshU8(numWinners),
     splitsData,
     beneData,
   )
 }
 
-// challenge_resolution has no params — just the discriminator
-export function encodeChallenge(): Uint8Array {
-  return ixDisc('challenge')
+/**
+ * challenge_resolution(force_jury: bool).
+ *   force_jury=false → keeper re-runs Claude (resolve_challenge)
+ *   force_jury=true  → market locks into resolve_jury via LayerZero
+ */
+export function encodeChallenge(forceJury: boolean): Uint8Array {
+  return concatBytes(ixDisc('challenge'), new Uint8Array([forceJury ? 1 : 0]))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

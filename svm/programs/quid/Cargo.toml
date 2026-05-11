@@ -22,6 +22,6 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 [dependencies]
 phf = { version = "0.13.1", features = ["macros"] }
 anchor-lang = { version = "0.32.1", features=["init-if-needed"] }
+rust_decimal = { version = "1.32", default-features = false }
 anchor-spl = "0.32.1"
 solana-program = "3.0"
-switchboard-on-demand = "0.11.3"

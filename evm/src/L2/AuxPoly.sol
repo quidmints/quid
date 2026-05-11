@@ -627,6 +627,7 @@ contract AuxPoly is // Auxiliary
                     _tip(fee, token, 1);
                 }
             }
+            V4.tryPair();
         }
     } function _tip(uint cut, address token, int sign) internal {
         cut = BasketLib.scaleTokenAmount(cut, token, true);

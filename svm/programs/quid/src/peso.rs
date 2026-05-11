@@ -5,8 +5,13 @@ use crate::stay::*;
 use crate::etc::*;
 
 // =============================================================================
-// BATCH REVEAL — keeper reveals confidence commitments on users' behalf
+// BATCH REVEAL — keeper or user reveals confidence commitments
 // =============================================================================
+// Authorized signers per position:
+//   1. position.user             → user reveals own bid
+//   2. position.reveal_delegate  → device-side auto-reveal (e.g. seeker app)
+//   3. config.keeper             → server-side fallback if user/device offline
+//
 // remaining_accounts = [position_0, position_1, ...]
 // reveals[i] = RevealEntry vec for position_i's committed entries
 
@@ -35,10 +40,9 @@ pub fn batch_reveal<'info>(ctx: Context<'_, '_, '_, 'info,
     require!(!market.weights_complete, PithyQuip::TooLate);
     require!(!market.challenged, PithyQuip::TradingFrozen);
 
-    // If market-level reveal counters were reset (successful challenge
-    // flipped outcome), existing per-position reveals are stale.
-    // Capture this BEFORE the loop since counters change as positions
-    // are re-revealed.
+    // If market-level reveal counters were reset (successful challenge flipped
+    // outcome), existing per-position reveals are stale. Capture BEFORE the loop
+    // since counters change as positions are re-revealed.
     let is_rereveal = market.positions_revealed == 0
         && market.total_winner_capital_revealed == 0
         && market.total_loser_capital_revealed == 0;
@@ -50,14 +54,15 @@ pub fn batch_reveal<'info>(ctx: Context<'_, '_, '_, 'info,
         let mut position = Position::try_deserialize(&mut data.as_ref())?;
         require!(position.market == market.key(), PithyQuip::WrongMarket);
 
+        // Authorization: user, optional reveal_delegate, or keeper fallback.
+        // The keeper path supports the central operator AND, when the user has
+        // designated their own auto-reveal device (seeker app, etc.), that
+        // device's pubkey can be set as reveal_delegate to bypass the keeper.
         let is_authorized = position.user == signer_key
             || position.reveal_delegate.map(|d| d == signer_key).unwrap_or(false);
         require!(is_authorized, PithyQuip::Unauthorized);
 
         if position.revealed_confidence > 0 {
-            // If market-level counters were reset (successful challenge
-            // flipped outcome), stale reveals are invalid — clear and
-            // allow the user to re-reveal with fresh commitments.
             if is_rereveal {
                 position.revealed_confidence = 0;
                 position.accuracy_percentile = 0;
@@ -74,7 +79,7 @@ pub fn batch_reveal<'info>(ctx: Context<'_, '_, '_, 'info,
     Ok(())
 }
 
-fn _do_reveal(position: &mut Position, market: &mut Market, 
+fn _do_reveal(position: &mut Position, market: &mut Market,
     accuracy_buckets: &mut AccuracyBuckets, reveals: &[RevealEntry]) -> Result<()> {
     require!(position.revealed_confidence == 0, PithyQuip::AlreadyRevealed);
     require!(position.total_capital > 0, PithyQuip::InvalidPosition);
@@ -94,7 +99,10 @@ fn _do_reveal(position: &mut Position, market: &mut Market,
     let mut weighted_confidence_sum: u128 = 0;
     for (i, entry) in position.entries.iter().enumerate() {
         let reveal = &reveals[i];
-        let calculated_hash = hash_commitment_u64(reveal.confidence, reveal.salt);
+        // Three-value commitment: confidence + evidence_url_hash + salt.
+        // evidence_url_hash = [0u8;32] for no-evidence bids.
+        let calculated_hash = hash_commitment(
+            reveal.confidence, &reveal.evidence_url_hash, &reveal.salt);
         require!(
             calculated_hash == entry.commitment_hash,
             PithyQuip::CommitmentVerificationFailed
@@ -110,21 +118,21 @@ fn _do_reveal(position: &mut Position, market: &mut Market,
     }
     let weighted_avg_confidence =
         (weighted_confidence_sum / position.total_capital as u128).min(10_000) as u64;
-    
+
     position.revealed_confidence = weighted_avg_confidence;
-    // ── Loop 3: accumulate PAE (position-level avg, not per-entry joint) ─
+
+    // PAE accumulation
     let mut weighted_pae_sum: u128 = 0;
     for entry in position.entries.iter() {
         weighted_pae_sum = weighted_pae_sum
             .saturating_add(entry.capital as u128 * entry.price_at_entry as u128);
     }
     let avg_pae = (weighted_pae_sum / position.total_capital as u128).min(9_999) as u64;
-    // ── Accuracy: winners = confidence, losers = inverted confidence × contrarian 
     let is_winner = market.winning_sides.contains(&position.outcome);
     position.accuracy_percentile = if is_winner {
         weighted_avg_confidence
     } else {
-        let base = 10_000u64.saturating_sub(weighted_avg_confidence); // inverted
+        let base = 10_000u64.saturating_sub(weighted_avg_confidence);
         let contrarian_factor = 10_000u64.saturating_sub(avg_pae);
         (base as u128 * contrarian_factor as u128 / 10_000).min(10_000) as u64
     };
@@ -145,8 +153,6 @@ fn _do_reveal(position: &mut Position, market: &mut Market,
 // =============================================================================
 // CALCULATE WEIGHTS — keeper computes weights for revealed positions
 // =============================================================================
-// remaining_accounts = [position_0, position_1, ...]
-// Unrevealed positions naturally get weight 0 — skipped, counted.
 
 #[derive(Accounts)]
 pub struct CalculateWeights<'info> {
@@ -187,7 +193,6 @@ pub fn calculate_weights<'info>(
     let clock = Clock::get()?;
     let right_now = clock.unix_timestamp;
 
-    // Only after reveal window closes OR everyone already revealed
     let reveal_deadline = market.resolution_time + REVEAL_WINDOW;
     let all_revealed = market.positions_revealed >= market.positions_total;
     require!(right_now >= reveal_deadline || all_revealed,
@@ -217,10 +222,6 @@ pub fn calculate_weights<'info>(
     let effective_end = market.resolution_time;
     let market_duration = effective_end.saturating_sub(market.start_time).max(1);
 
-    // If market-level weight aggregates were reset (successful challenge
-    // flipped outcome), all existing per-position weights are stale and
-    // must be recalculated. Capture this BEFORE the loop since the
-    // aggregates will be non-zero after processing the first position.
     let is_reweight = market.total_winner_weight_revealed == 0
         && market.total_loser_weight_revealed == 0
         && market.positions_processed == 0;
@@ -232,15 +233,11 @@ pub fn calculate_weights<'info>(
         let mut position = Position::try_deserialize(&mut data.as_ref())?;
         require!(position.market == market.key(), PithyQuip::WrongMarket);
 
-        // Ghost position from full sell — skip without counting
         if position.total_capital == 0 {
             position.try_serialize(&mut data.as_mut())?;
             continue;
         }
 
-        // Already weighed — but if market counters were reset by a
-        // successful challenge that flipped the outcome, the old weight
-        // is stale and must be recalculated.
         if position.weight > 0 {
             if is_reweight {
                 position.weight = 0;
@@ -250,7 +247,6 @@ pub fn calculate_weights<'info>(
             }
         }
 
-        // Unrevealed — weight stays 0, just count it
         if position.revealed_confidence == 0 {
             market.positions_processed += 1;
             position.try_serialize(&mut data.as_mut())?;
@@ -275,7 +271,6 @@ pub fn calculate_weights<'info>(
         if is_winner {
             market.total_winner_weight_revealed = market.total_winner_weight_revealed
                 .saturating_add(position.weight);
-            // Per-outcome tracking for split-based pot partitioning
             let oi = position.outcome as usize;
             if oi < market.winner_weight_per_outcome.len() {
                 market.winner_weight_per_outcome[oi] = market.winner_weight_per_outcome[oi]
@@ -291,7 +286,7 @@ pub fn calculate_weights<'info>(
 
     if market.positions_processed >= market.positions_total {
         market.weights_complete = true;
-        market.positions_processed = 0; // reset for push_payouts
+        market.positions_processed = 0;
     }
     Ok(())
 }

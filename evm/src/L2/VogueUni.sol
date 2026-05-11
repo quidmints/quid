@@ -239,9 +239,11 @@ contract VogueUni is
             if (amount > sent) { uint shortfall = amount - sent;
                 { uint currentPooledETH = V4.POOLED_ETH();
                   uint vaultShare = totalShares > 0
-                      ? FullMath.mulDiv(wethVault.maxWithdraw(address(this)), amount, totalShares)
+                      ? FullMath.mulDiv(wethVault.maxWithdraw(
+                        address(this)), amount, totalShares)
                       : wethVault.maxWithdraw(address(this));
-                  uint excess = Math.min(shortfall, vaultShare > currentPooledETH ? vaultShare - currentPooledETH : 0);
+                  uint excess = Math.min(shortfall, vaultShare > currentPooledETH 
+                                            ? vaultShare - currentPooledETH : 0);
                   if (excess > 0) {
                       excess = _sendETH(excess, msg.sender);
                       sent += excess; shortfall -= excess;
@@ -310,6 +312,29 @@ contract VogueUni is
                 _sendETH(unpaired, msg.sender);
             }
         }
+    }
+
+
+    /// @notice Called by Aux.deposit() when new dollars land so that
+    /// ETH already sitting in EtherFi (deposited before USD existed)
+    /// gets paired into the V4 pool retroactively (lest it sit unpaired).
+    /// @dev No LP share accounting here — shares were credited to each
+    /// ETH depositor at deposit time (in the deltaETH == 0 branch).
+    /// This only calls modLP to move ETH from "idle in EtherFi" to
+    /// "earning swap fees in the V4 pool". Safe to call repeatedly;
+    /// exits early when nothing to pair.
+    function tryPair() external onlyUs {
+        (uint160 sqrtPriceX96, int24 tickLower,
+         int24 tickUpper,) = _repack(); 
+        uint price = AUX.getTWAP(1800);
+        uint pooled = V4.POOLED_ETH();
+        uint available = AUX.vogueETH();
+        if (available <= pooled || price == 0) return;
+        (uint deltaUSD, uint deltaETH) = this.addLiquidityHelper(
+            				            available - pooled, price);
+        if (deltaETH > 0)
+            V4.modLP(sqrtPriceX96, deltaETH, deltaUSD,
+                     tickLower, tickUpper, address(0));
     }
 
     function addLiquidityHelper(

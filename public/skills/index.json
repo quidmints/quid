@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "comment": "Skill manifest consumed by both the bid-time UI (auto-detect from MIME/extension) and the keeper at resolution time. The keeper uploads evidence files into the Anthropic Files API and references them in the system prompt; if a file's MIME or extension matches a skill's triggers, the corresponding `instructions` block is injected as additional system context for that file.",
+  "skills": [
+    {
+      "id": "document-analysis",
+      "name": "Document Analysis",
+      "description": "Extract claims, dates, signatories, and verifiable facts from PDFs and Office documents.",
+      "triggers": {
+        "mimePrefixes": ["application/pdf", "application/msword",
+                         "application/vnd.openxmlformats-officedocument",
+                         "text/plain", "text/markdown", "text/html"],
+        "extensions": [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".html"]
+      },
+      "instructions": "skills/document-analysis.md"
+    },
+    {
+      "id": "video-analysis",
+      "name": "Video Analysis",
+      "description": "Decode video frames and timestamps; identify on-screen text, speakers, and scene transitions.",
+      "triggers": {
+        "mimePrefixes": ["video/", "audio/"],
+        "extensions": [".mp4", ".mov", ".webm", ".mkv", ".avi", ".mp3", ".wav", ".m4a"]
+      },
+      "instructions": "skills/video-analysis.md"
+    }
+  ]
+}

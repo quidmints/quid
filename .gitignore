@@ -1,7 +1,7 @@
 
 evm/node_modules/*
 evm/out/*
-evm/.env
+# evm/.env
 
 evm/cache/*
 evm/broadcast/*
