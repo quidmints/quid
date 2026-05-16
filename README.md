@@ -1,10 +1,6 @@
 
-# SOL, ETH, $ flash loan JAM
+# 
 
-Predictions, stocks, commodities,
-bonds Ethereum where exclusively
-Bebop's JAM settlement contract  
-gets free flash loans from `Aux`.   
 Liquidity boostrapping (the cold  
 start problem) is solved through  
 bonds: dollar depositors are able  
@@ -60,8 +56,6 @@ cre workflow simulate my-workflow --target staging-settings
 ```
 
 ### Solana tests
-
-Tickers available for demo: XAG, XAU, BTC, ETH, SOL
 
 ```
 cd svm  

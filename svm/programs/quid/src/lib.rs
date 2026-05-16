@@ -109,6 +109,16 @@ pub mod quid {
         out::claim_resolution_bond(ctx)
     }
 
+    /// Keeper resolves via Claude evaluation. template_url verified against
+    /// SHA256(resolution_source) committed at create_market — proves evaluation
+    /// used the correct criteria. winning_sides and confidence from aggregated
+    /// Claude verdict JSON (position-weighted across bettor evidence submissions).
+    /// Mirrors resolve() downstream: challengeable, jury-escalatable.
+    pub fn verdict_resolve(ctx: Context<VerdictResolve>,
+        template_url: String, winning_sides: Vec<u8>, confidence: u64) -> Result<()> {
+        out::verdict_resolve(ctx, template_url, winning_sides, confidence)
+    }
+
     /// The attestation certificate contains: verifiedBootState = VERIFIED,
     /// and the APK signing cert hash as written by the OS (not self-reported).
     /// The StrongBox key was generated with setAttestationChallenge =
@@ -255,29 +265,29 @@ pub mod quid {
         cpi_clear(
             ctx.accounts.store.endpoint_program,
             ctx.accounts.store.key(),
-            &clear_accounts, seeds, clear_params,
-        )?;
+            &clear_accounts, seeds, clear_params )?;
 
         // OFT bridge message: toAddress[32] + amountSD[8], no leading type byte.
         // Detected by fixed length. All other messages have a type byte at [0].
         if params.message.len() == LZ::OFT_BRIDGE_MSG_LEN {
-            require!(ctx.remaining_accounts.len() >= 4, PithyQuip::InsufficientAccounts);
-            LZ::handle_oft_receive(ctx.accounts.store.key(), ctx.accounts.store.bump,
-                &chain_config, &params.message, &ctx.remaining_accounts[1],
-                &ctx.remaining_accounts[2], &ctx.remaining_accounts[3])?;
-        } else {
+            require!(ctx.remaining_accounts.len() >= 4,
+                     PithyQuip::InsufficientAccounts);
+
+            LZ::handle_oft_receive(ctx.accounts.store.key(), 
+                ctx.accounts.store.bump, &chain_config, &params.message, 
+                &ctx.remaining_accounts[1], &ctx.remaining_accounts[2], 
+                &ctx.remaining_accounts[3])?;
+        } else { 
             let msg_type = params.message[0];
             match msg_type {
                 FINAL_RULING => {
                     let ruling = FinalRuling::decode(&params.message)?;
                     let (market_pda, _) = Pubkey::find_program_address(
                         &[b"market", &ruling.market_id.to_le_bytes()[..6]],
-                        ctx.program_id,
-                    );
-                    // Market is at remaining_accounts[1]
+                        ctx.program_id); // Market is at remaining_accounts[1]
                     let market_info = ctx.remaining_accounts.iter().skip(1)
-                        .find(|acc| acc.key() == market_pda)
-                        .ok_or(PithyQuip::InvalidParameters)?;
+                                        .find(|acc| acc.key() == market_pda)
+                                        .ok_or(PithyQuip::InvalidParameters)?;
 
                     require!(market_info.owner == ctx.program_id,
                              PithyQuip::InvalidParameters);
@@ -288,13 +298,11 @@ pub mod quid {
                         &mut market_data.as_ref())?;
 
                     let clock = Clock::get()?;
-                    process_final_ruling(
-                        &ruling, &mut market, &market_key,
-                        clock.unix_timestamp,
-                    )?;
+                    process_final_ruling(&ruling, 
+                        &mut market, &market_key,
+                        clock.unix_timestamp)?;
                     market.try_serialize(&mut market_data.as_mut())?;
-                },
-                _ => {
+                }, _ => {
                     return Err(PithyQuip::InvalidParameters.into());
                 }
             }

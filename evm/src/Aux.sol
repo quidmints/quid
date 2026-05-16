@@ -77,7 +77,7 @@ contract Aux is // Auxiliary
 
     address internal JAM;
     // "I keep my song in my soul...
-    // Blessed my heart and made it go
+    // Blessed my heart and made it go"
     uint public untouchable;
     // ^ in vault shares, 1e18
     address internal v3Router;

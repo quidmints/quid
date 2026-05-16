@@ -2,8 +2,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{ self, Mint, TokenAccount,
     TokenInterface, TransferChecked };
-use crate::state::*;
-use crate::etc::*;
+use crate::state::*; use crate::etc::*;
 
 // =============================================================================
 // RESOLVE — keeper-signed verdict (post-Claude resolution)
@@ -514,5 +513,110 @@ pub fn claim_resolution_bond(ctx: Context<ClaimResolutionBond>) -> Result<()> {
             bond,
         )?;
     }
+    Ok(())
+}
+
+
+// =============================================================================
+// VERDICT RESOLVE -- keeper submits Claude evaluation result
+// =============================================================================
+// Keeper-only. template_url verified against verdict_hash (SHA256(resolution_source)
+// stored at create_market), proving evaluation used the committed criteria.
+// winning_sides + confidence from aggregated Claude verdict JSON.
+// Wrong result can be challenged or escalated to jury.
+// Mirrors resolve_market() so challenge/weigh/payout work identically downstream.
+
+#[derive(Accounts)]
+pub struct VerdictResolve<'info> {
+    #[account(constraint = caller.key() == config.keeper @ PithyQuip::Unauthorized)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"program_config"], bump = config.bump)]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut,
+        seeds = [b"market", &market.market_id.to_le_bytes()[..6]],
+        bump = market.bump,
+    )]
+    pub market: Box<Account<'info, Market>>,
+}
+
+pub fn verdict_resolve(
+    ctx: Context<VerdictResolve>,
+    template_url: String,
+    winning_sides: Vec<u8>,
+    confidence: u64,
+) -> Result<()> {
+    let market_key = ctx.accounts.market.key();
+    let market = &mut ctx.accounts.market;
+    let clock = Clock::get()?;
+    let right_now = clock.unix_timestamp;
+
+    require!(right_now >= market.deadline, PithyQuip::TradingFrozen);
+    require!(!market.resolved && !market.cancelled, PithyQuip::AlreadyComplete);
+    require!(!market.challenged, PithyQuip::TradingFrozen);
+    require!(market.resolution_mode != MODE_JURY_ONLY, PithyQuip::NotResolved);
+    require!(!market.resolution_requested, PithyQuip::AlreadyRequested);
+
+    require!(template_url.len() <= MAX_THREAD_URL_LEN, PithyQuip::InvalidParameters);
+    let verdict_hash = market.verdict_hash
+        .ok_or(error!(PithyQuip::InvalidParameters))?;
+    let submitted_hash = anchor_lang::solana_program::hash::hash(template_url.as_bytes());
+    require!(submitted_hash.to_bytes() == verdict_hash, PithyQuip::InvalidParameters);
+
+    require!(winning_sides.len() <= 20, PithyQuip::InvalidResolution);
+
+    let num_outcomes = market.outcomes.len();
+    if num_outcomes < 2 {
+        market.cancelled = true; market.resolved = true;
+        market.resolution_time = right_now; market.weights_complete = true;
+        return Ok(());
+    }
+
+    if winning_sides.is_empty() {
+        require!(confidence >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::InsufficientConfidence);
+        market.cancelled = true; market.resolved = true;
+        market.resolution_time = right_now; market.weights_complete = true;
+        market.resolution_thread_url = template_url;
+        market.thread_content_hash = verdict_hash;
+        return Ok(());
+    }
+
+    require!(confidence >= MIN_RESOLUTION_CONFIDENCE, PithyQuip::InsufficientConfidence);
+    require!(winning_sides.len() <= market.num_winners as usize, PithyQuip::InvalidResolution);
+    for &w in &winning_sides {
+        require!((w as usize) < num_outcomes, PithyQuip::InvalidResolution);
+    }
+    for i in 0..winning_sides.len() {
+        for j in (i + 1)..winning_sides.len() {
+            require!(winning_sides[i] != winning_sides[j], PithyQuip::DuplicateOutcome);
+        }
+    }
+    if !market.winning_splits.is_empty() {
+        let total: u64 = winning_sides.iter()
+            .filter_map(|&ws| market.winning_splits.get(ws as usize)).sum();
+        require!(total == 10_000, PithyQuip::InvalidResolution);
+    }
+
+    market.winning_outcome = winning_sides[0];
+    market.winning_sides = winning_sides.clone();
+    market.resolution_confidence = confidence;
+    market.resolved = true;
+    market.resolution_time = right_now;
+    // resolution_finalized stays 0 -- set by claim_resolution_bond after
+    // challenge window expires, matching resolve_market() behaviour.
+    market.resolution_thread_url = template_url;
+    market.thread_content_hash = verdict_hash;
+
+    emit!(MarketResolved {
+        market_key,
+        winning_outcome: winning_sides[0],
+        winning_sides: winning_sides.clone(),
+        confidence,
+    });
+
+    let any_capital = winning_sides.iter()
+        .any(|&ws| market.total_capital_per_outcome[ws as usize] > 0);
+    if !any_capital { market.weights_complete = true; }
     Ok(())
 }

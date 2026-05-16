@@ -397,6 +397,11 @@ pub struct Market {
     pub resolution_finalized: i64,
     pub jury_fee_pool: u64,
     pub bump: u8,
+
+    /// SHA256(resolution_source) stored at create_market(). verdict_resolve
+    /// verifies the submitted template URL against this, proving the evaluation
+    /// used the criteria the creator committed to. None = no Claude oracle path.
+    pub verdict_hash: Option<[u8; 32]>,
 }
 
 impl Market {
@@ -408,8 +413,8 @@ impl Market {
     ///   = ~159 avg, padded to 166.
     /// Fixed: discriminator(8) + scalars(~280) + vec_prefixes(10×4=40)
     ///   + string_prefixes(4×4=16) + thread_url(4+200=204) + thread_hash(32)
-    ///   + jury_config(1+14=15) + safety(60) = ~655. Round to 660.
-    const FIXED_OVERHEAD: usize = 660;
+    ///   + jury_config(1+14=15) + safety(60) + verdict_hash(1+32=33) = ~688. Round to 695.
+    const FIXED_OVERHEAD: usize = 695;
     const PER_OUTCOME_BYTES: usize = 166;
 
     pub fn space_for(num_outcomes: u8, question_len: usize, context_len: usize,

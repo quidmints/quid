@@ -46,6 +46,9 @@ contract Basket is OFT, // LZ
     error MismatchedArrays();   // ids.length != amounts.length or empty
     error InsufficientBalance(); // sender balance < amount for a batch id
     error InsufficientUnlocked(); // transfer would exceed unlocked balance
+    
+    // QD holders call optInJury() to volunteer for paid jury duty...
+    address constant LZ = 0x1a44076050125825900e736c501f859c50fE728c;
 
     uint internal _deployed; // quidmint
     uint constant CAP = 600_000 * 1e18;
@@ -62,22 +65,20 @@ contract Basket is OFT, // LZ
         if (!auth(msg.sender))
             revert Unauthorized(); _;
     }
-
+    
     function auth(address who) public view returns (bool) {
         return (who == address(AUX) || who == V4 
             || who == address(LINK) || who == jury 
             || who == court); // vanilla (no hooks)
     }
-    // QD holders call optInJury() to volunteer for paid jury duty...
-    address constant LZ = 0x1a44076050125825900e736c501f859c50fE728c;
     uint32 public constant SOLANA_EID = 30168;
     uint32 public constant BASE_EID = 30184;
     uint32 public constant ARBI_EID = 30110;
     uint32 public constant POLY_EID = 30109;
-
-    uint public l2Deposits;
+    
     address[] internal l2Baskets;
     address[] internal juryPool;
+    uint public l2Deposits;
 
     mapping(address => uint) internal juryPoolIndex;
     mapping(address => uint) internal juryLocked;
@@ -92,23 +93,22 @@ contract Basket is OFT, // LZ
         _deployed = block.timestamp;
     }
 
-    function setup(address _hook, address _court,
-        address _jury/*, address[] l2BasketAddrs */) external { 
-            if (msg.sender != owner()
-            || address(LINK) != address(0))
-                revert Unauthorized();
-
+    function setup(address _hook, address _court, address _jury) external { 
+        if (msg.sender != owner() || address(LINK) != address(0)) revert Unauthorized();
         LINK = Link(payable(_hook)); court = payable(_court);
         jury = _jury; address[] memory stables = AUX.getStables();
+        LINK.createMarket(stables); quid = owner(); renounceOwnership();
+    }
+
+    function register(address[] l2BasketAddrs) external { // LayerZero on L1 Ethereum
+        if (msg.sender != quid || address(LINK) == address(0)) revert Unauthorized();
         /*
         setPeer(SOLANA_EID, solanaProgram32Bytes);
         for (uint i = 0; i < l2Eids.length; i++) {
             setPeer(l2Eids[i], l2PeerBytes32[i]);
             _registerL2Basket(l2BasketAddresses[i]);
         } */
-        LINK.createMarket(stables);
-        quid = owner(); 
-        // renounceOwnership();
+        // 
     }
 
     function _registerL2Basket(
@@ -116,7 +116,6 @@ contract Basket is OFT, // LZ
         if (msg.sender != owner()
             || isL2Basket[_l2])
             revert Unauthorized();
-
         isL2Basket[_l2] = true;
         l2Baskets.push(_l2);
     }
@@ -167,6 +166,7 @@ contract Basket is OFT, // LZ
     /// stake is locked (actively serving on a jury).
     function optOutJury() external {
         uint idx = juryPoolIndex[msg.sender];
+        juryPoolIndex[msg.sender] = 0;
         if (idx == 0) revert NotIn();
         if (juryLocked[msg.sender] != 0) 
             revert Locked();
@@ -177,7 +177,6 @@ contract Basket is OFT, // LZ
             juryPool[idx - 1] = lastAddr;
             juryPoolIndex[lastAddr] = idx;
         } juryPool.pop();
-        juryPoolIndex[msg.sender] = 0;
     } 
     
     function juryPoolSize() external 

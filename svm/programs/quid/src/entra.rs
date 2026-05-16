@@ -420,6 +420,15 @@ pub fn create_market<'info>(ctx: Context<'_, '_, '_, 'info,
     market.jury_fee_pool = 0;
 
     market.bump = ctx.bumps.market;
+
+    // Bind the Claude template thread URL immutably to the market.
+    // verdict_resolve verifies SHA256(submitted_url) == this value.
+    market.verdict_hash = if !params.resolution_source.is_empty() {
+        Some(anchor_lang::solana_program::hash::hash(
+            params.resolution_source.as_bytes()
+        ).to_bytes())
+    } else { None };
+
     bank.market_count += 1;
 
     emit!(MarketCreated {
@@ -1010,6 +1019,13 @@ pub fn test_create_market(ctx: Context<TestCreateMarket>,
     market.jury_fee_pool = 0;
 
     market.bump = ctx.bumps.market;
+
+    market.verdict_hash = if !params.resolution_source.is_empty() {
+        Some(anchor_lang::solana_program::hash::hash(
+            params.resolution_source.as_bytes()
+        ).to_bytes())
+    } else { None };
+
     bank.market_count += 1;
 
     Ok(())
