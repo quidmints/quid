@@ -323,7 +323,7 @@ contract VogueUni is
     /// This only calls modLP to move ETH from "idle in EtherFi" to
     /// "earning swap fees in the V4 pool". Safe to call repeatedly;
     /// exits early when nothing to pair.
-    function tryPair() external onlyUs {
+    function tryPair() external onlyAux {
         (uint160 sqrtPriceX96, int24 tickLower,
          int24 tickUpper,) = _repack(); 
         uint price = AUX.getTWAP(1800);

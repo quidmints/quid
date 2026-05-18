@@ -356,8 +356,8 @@ contract AuxArb is // Auxiliary
 
     function _supplyAAVE(address asset, uint amount,
         address to) internal returns (uint deposited) {
-        deposited = BasketLib.supplyAAVE(
-           SPOKE, asset, amount, to, HUB);
+        deposited = BasketLib.supplyAAVE(address(SPOKE), 
+                      asset, amount, to, address(HUB));
         if (asset == address(WETH)) _syncETH();
     }
 

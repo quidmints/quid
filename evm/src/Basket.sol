@@ -100,7 +100,7 @@ contract Basket is OFT, // LZ
         LINK.createMarket(stables); quid = owner(); renounceOwnership();
     }
 
-    function register(address[] l2BasketAddrs) external { // LayerZero on L1 Ethereum
+    function register(address[] memory l2BasketAddrs) external { // LayerZero on L1 Ethereum
         if (msg.sender != quid || address(LINK) == address(0)) revert Unauthorized();
         /*
         setPeer(SOLANA_EID, solanaProgram32Bytes);

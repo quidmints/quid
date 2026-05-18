@@ -56,7 +56,7 @@ contract Vogue is
         Ownable(msg.sender) {
     }   fallback() external payable {}
 
-     modifier onlyUs {
+    modifier onlyAux {
         require(msg.sender == address(AUX)
              || msg.sender == address(V4)
              || msg.sender == address(this), "403"); _;
@@ -325,7 +325,7 @@ contract Vogue is
     /// This only calls modLP to move ETH from "idle in EtherFi" to
     /// "earning swap fees in the V4 pool". Safe to call repeatedly;
     /// exits early when nothing to pair.
-    function tryPair() external onlyUs {
+    function tryPair() external onlyAux {
         (uint160 sqrtPriceX96, int24 tickLower,
          int24 tickUpper,) = _repack(); 
         uint price = AUX.getTWAP(1800);
@@ -341,7 +341,7 @@ contract Vogue is
     
     function addLiquidityHelper(
         uint deltaETH, uint price) public
-        onlyUs returns (uint, uint) {
+        onlyAux returns (uint, uint) {
         (uint[14] memory deposits,) = AUX.get_deposits();
         uint liquidTotal = deposits[12] - deposits[11]
                             + AUX.getUSYCRedeemable();
@@ -461,7 +461,7 @@ contract Vogue is
     }
 
     function takeETH(uint howMuch, address recipient)
-       external onlyUs returns (uint sent) {
+       external onlyAux returns (uint sent) {
        sent = _sendETH(howMuch, recipient);
     }
 
@@ -529,7 +529,7 @@ contract Vogue is
         }
     }
 
-    function repack() public onlyUs returns (uint160 sqrtPriceX96,
+    function repack() public onlyAux returns (uint160 sqrtPriceX96,
         int24 tickLower, int24 tickUpper, uint128 myLiquidity) {
         (sqrtPriceX96, tickLower, tickUpper, myLiquidity) = _repack();
     }
