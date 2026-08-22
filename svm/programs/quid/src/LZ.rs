@@ -1,7 +1,6 @@
 
 use anchor_lang::prelude::*;
 use crate::etc::PithyQuip;
-use crate::state::{Market, MIN_JURY_POOL, KEEPER_GRACE_SECS};
 
 pub const OAPP_STORE_SEED: &[u8] = b"Store";
 pub const CHAIN_SEED: &[u8] = b"Chain";
@@ -11,11 +10,8 @@ pub const PEER_SEED: &[u8] = b"Peer";
 pub const ENFORCED_OPTIONS_SEND_MAX_LEN: usize = 512;
 pub const ENFORCED_OPTIONS_SEND_AND_CALL_MAX_LEN: usize = 1024;
 
-pub const RESOLUTION_REQUEST: u8 = 5;
-pub const FINAL_RULING: u8 = 6;
-pub const JURY_COMPENSATION: u8 = 7;
-
 /// OFT message format: toAddress[32] + amountSD[8], no leading type byte.
+/// The only inbound message this OApp accepts.
 pub const OFT_BRIDGE_MSG_LEN: usize = 40;
 
 /// QD shared decimals on L1 (matches Basket.sol sharedDecimals()).
@@ -25,27 +21,30 @@ pub const QD_LOCAL_DECIMALS: u8 = 9;
 /// Multiply amountSD by this to get local token units.
 pub const SD_TO_LOCAL: u64 = 1_000;
 
+/// The OApp, and its single counterparty.
+///
+/// There was a `ChainConfig` PDA per registered chain, keyed by endpoint id.
+/// Solana accepts QD from exactly one place — Basket.sol on L1 — so a registry
+/// was a table with one row, an instruction to populate it, an account to pass
+/// on every receive, and an ownership check to get wrong. Folding the peer into
+/// the store removes all four: the peer is pinned at init and `lz_receive`
+/// validates against an account it already holds.
 #[account]
 pub struct OAppStore {
     pub admin: Pubkey, pub bump: u8,
     pub endpoint_program: Pubkey,
+    /// Endpoint id of the L1 we accept from.
+    pub eid: u32,
+    /// Basket.sol, left-padded to 32 bytes.
+    pub peer_address: [u8; 32],
+    /// QD mint on this chain.
+    pub mint: Pubkey,
+    pub enforced_options: EnforcedOptions,
 }
 
 impl OAppStore {
-    pub const SIZE: usize = 8 + 32 + 1 + 32;
-}
-
-#[account]
-pub struct ChainConfig {
-    pub eid: u32, pub mint: Pubkey,
-    pub peer_address: [u8; 32],
-    pub enforced_options: EnforcedOptions,
-    pub active: bool, pub bump: u8,
-}
-
-impl ChainConfig {
-    pub const SIZE: usize = 8 + 4 + 32 + 32
-        + EnforcedOptions::MAX_SIZE + 1 + 1;
+    pub const SIZE: usize = 8 + 32 + 1 + 32 + 4 + 32 + 32
+        + EnforcedOptions::MAX_SIZE;
 }
 
 #[derive(Clone, Default,
@@ -70,75 +69,10 @@ impl EnforcedOptions {
     }
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct FinalRuling {
-    pub market_id: u64,
-    pub winning_sides: Vec<u8>,
-}
-
-impl FinalRuling {
-    pub fn new(market_id: u64, winning_sides: Vec<u8>) -> Result<Self> {
-        Ok(Self { market_id, winning_sides })
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        require!(data.len() >= 10, PithyQuip::InvalidMessageFormat);
-        require!(data[0] == FINAL_RULING, PithyQuip::InvalidMessageType);
-
-        let mut offset = 1;
-        let market_id = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
-        offset += 8;
-
-        let num_sides = data[offset] as usize; offset += 1;
-        let mut winning_sides = Vec::with_capacity(num_sides);
-        for _ in 0..num_sides {
-            require!(offset < data.len(), PithyQuip::InvalidMessageFormat);
-            winning_sides.push(data[offset]);
-            offset += 1;
-        }
-        Ok(Self { market_id, winning_sides })
-    }
-    pub fn is_force_majeure(&self) -> bool { self.winning_sides.is_empty() }
-}
-
-#[derive(Clone, Debug)]
-pub struct ResolutionRequest {
-    pub market_id: u64,
-    pub num_sides: u8,
-    pub num_winners: u8,
-    pub requires_unanimous: bool,
-    pub appeal_cost: u64,
-    pub requester: Pubkey,
-}
-
-impl ResolutionRequest {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut message = vec![RESOLUTION_REQUEST];
-        message.extend_from_slice(&self.market_id.to_le_bytes());
-        message.push(self.num_sides);
-        message.push(self.num_winners);
-        message.push(if self.requires_unanimous { 1 } else { 0 });
-        message.extend_from_slice(&self.appeal_cost.to_le_bytes());
-        message.extend_from_slice(self.requester.as_ref());
-        message
-    }
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct JuryCompensation {
-    pub market_id: u64,
-    pub amount: u64,
-}
-
-impl JuryCompensation {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut data = vec![JURY_COMPENSATION];
-        data.extend_from_slice(&self.market_id.to_le_bytes());
-        data.extend_from_slice(&self.amount.to_le_bytes());
-        data
-    }
-}
-
+/// Encode an outbound OFT payload: `to[32] ‖ amountSD[8] ‖ composeMsg`.
+/// Retained for the outbound leg (burn QD on Solana → release on L1); the
+/// inbound half of that pair is `handle_oft_receive` below.
+#[allow(dead_code)]
 pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32]) -> Vec<u8> {
     let mut message = Vec::with_capacity(40 + compose_msg.len());
     message.extend_from_slice(&send_to);
@@ -147,240 +81,19 @@ pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32]) -> Vec<u8> {
     message
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
-pub struct RegisterChainParams {
-    pub eid: u32,
-    pub mint: Pubkey,
-    pub peer_address: [u8; 32],
-    pub enforced_options_send: Vec<u8>,
-}
-
-#[derive(Accounts)]
-#[instruction(params: RegisterChainParams)]
-pub struct RegisterChain<'info> {
-    #[account(mut, address = store.admin @ PithyQuip::Unauthorized)]
-    pub admin: Signer<'info>,
-
-    #[account(seeds = [OAPP_STORE_SEED], bump = store.bump)]
-    pub store: Account<'info, OAppStore>,
-
-    #[account(
-        init,
-        payer = admin,
-        space = ChainConfig::SIZE,
-        seeds = [CHAIN_SEED, &params.eid.to_be_bytes()],
-        bump
-    )]
-    pub chain_config: Account<'info, ChainConfig>,
-
-    pub system_program: Program<'info, System>,
-}
-
-pub fn register_chain_handler(ctx: Context<RegisterChain>,
-    params: RegisterChainParams) -> Result<()> {
-    let config = &mut ctx.accounts.chain_config;
-
-    config.eid = params.eid;
-    config.mint = params.mint;
-    config.peer_address = params.peer_address;
-    config.enforced_options = EnforcedOptions {
-        send: params.enforced_options_send,
-        send_and_call: Vec::new(),
-    };
-    config.active = true;
-    config.bump = ctx.bumps.chain_config;
-    Ok(())
-}
-
-// =============================================================================
-// SEND RESOLUTION REQUEST — escalate to LZ jury
-// =============================================================================
-//
-// Permissionless callable. Allowed in any of these states:
-//   - MODE_JURY_ONLY market past deadline (no keeper Claude pass at all)
-//   - Any mode past deadline + KEEPER_GRACE_SECS (keeper liveness fallback)
-//   - challenged + force_jury_pending (challenger requested LZ over keeper rerun)
-//
-// Reads jury_config directly from Market (was MarketEvidence in old design).
-
-#[derive(Accounts)]
-pub struct SendResolutionRequest<'info> {
-    #[account(mut)]
-    pub requester: Signer<'info>,
-
-    #[account(mut, seeds = [b"market", &market.market_id.to_le_bytes()[..6]],
-              bump = market.bump)]
-    pub market: Account<'info, Market>,
-
-    #[account(seeds = [OAPP_STORE_SEED], bump = oapp_store.bump)]
-    pub oapp_store: Account<'info, OAppStore>,
-
-    pub system_program: Program<'info, System>,
-}
-
-pub fn send_resolution_request(
-    ctx: Context<SendResolutionRequest>) -> Result<()> {
-    let market = &mut ctx.accounts.market; let clock = Clock::get()?;
-
-    require!(!market.resolution_received, PithyQuip::AlreadyResolved);
-    require!(!market.cancelled, PithyQuip::AlreadyComplete);
-    require!(!market.resolution_requested, PithyQuip::AlreadyRequested);
-    require!(market.total_capital >= MIN_JURY_POOL,
-                PithyQuip::RequesterPositionTooSmall);
-    require!(clock.unix_timestamp >= market.deadline,
-                PithyQuip::TooEarlyToResolve);
-
-    // Three permitted gates:
-    //   A. Originally MODE_JURY_ONLY (skips keeper entirely)
-    //   B. Past keeper grace window (any mode) — keeper liveness fallback
-    //   C. Challenge with force_jury_pending — challenger overrides keeper rerun
-    let past_grace = clock.unix_timestamp >= market.deadline + KEEPER_GRACE_SECS;
-    let force_jury = market.challenged && market.force_jury_pending;
-    let jury_only = market.resolution_mode == crate::state::MODE_JURY_ONLY;
-
-    require!(jury_only || past_grace || force_jury, PithyQuip::Unauthorized);
-
-    // For non-force_jury paths, market must not yet be resolved.
-    if !force_jury {
-        require!(!market.resolved, PithyQuip::AlreadyComplete);
-    }
-
-    // remaining_accounts layout:
-    //   [0]     = ChainConfig PDA
-    //   [1..7]  = LZ quote accounts
-    //   [7..]   = LZ send accounts
-    require!(!ctx.remaining_accounts.is_empty(), PithyQuip::InsufficientAccounts);
-    let chain_config_info = &ctx.remaining_accounts[0];
-    require!(chain_config_info.owner == &crate::ID, PithyQuip::InvalidPeer);
-
-    let chain_data = chain_config_info.try_borrow_data()?;
-    require!(chain_data.len() >= 12, PithyQuip::InvalidPeer);
-    let eid_bytes = u32::from_le_bytes(chain_data[8..12].try_into().unwrap()).to_be_bytes();
-    let (expected_pda, _) = Pubkey::find_program_address(&[CHAIN_SEED, &eid_bytes], &crate::ID);
-
-    let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
-                                         .map_err(|_| PithyQuip::InvalidPeer)?;
-    require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
-
-    require!(chain_config.active, PithyQuip::InvalidPeer);
-    require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
-
-    // Read jury_config directly from Market (folded in from removed MarketEvidence).
-    let jury_config = market.jury_config.as_ref()
-                                .ok_or(PithyQuip::InvalidParameters)?;
-
-    let request = ResolutionRequest {
-        market_id: market.market_id,
-        num_sides: market.outcomes.len() as u8, num_winners: market.num_winners,
-        requires_unanimous: jury_config.requires_unanimous,
-        appeal_cost: jury_config.appeal_cost,
-        requester: ctx.accounts.requester.key(),
-    };
-
-    market.resolution_requested = true;
-    market.resolution_requested_time = Some(clock.unix_timestamp);
-    market.resolution_requester = Some(ctx.accounts.requester.key());
-    // Clear force_jury_pending — request is now in flight.
-    market.force_jury_pending = false;
-    // If force_jury overrode a keeper verdict, also clear resolved/challenged
-    // so the jury ruling becomes authoritative.
-    if force_jury {
-        market.challenged = false;
-        market.resolved = false;
-    }
-
-    let compose_msg = request.encode();
-    let message = wrap_in_oft_format(compose_msg, chain_config.peer_address);
-    let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[ctx.accounts.oapp_store.bump]]];
-    let options = chain_config.enforced_options.get_enforced_options(&None::<Vec<u8>>);
-
-    let quote_start = 1;
-    let quote_end = quote_start + 6; let send_start = quote_end;
-    require!(ctx.remaining_accounts.len() >= send_start + 7,
-                    PithyQuip::InsufficientAccounts);
-
-    let quote_accounts = &ctx.remaining_accounts[quote_start..quote_end];
-    let send_accounts = &ctx.remaining_accounts[send_start..];
-    let quote_result = cpi_quote(
-        ctx.accounts.oapp_store.endpoint_program,
-        quote_accounts, QuoteParams {
-            sender: ctx.accounts.oapp_store.key(),
-            dst_eid: chain_config.eid,
-            receiver: chain_config.peer_address,
-            message: message.clone(),
-            options: options.clone(),
-            pay_in_lz_token: false,
-        },
-    )?;
-    require!(ctx.accounts.requester.lamports() >= quote_result.native_fee,
-                                            PithyQuip::InsufficientLZFee);
-    cpi_send(
-        ctx.accounts.oapp_store.endpoint_program,
-        ctx.accounts.oapp_store.key(), send_accounts,
-        seeds, SendParams { dst_eid: chain_config.eid,
-            receiver: chain_config.peer_address,
-            message, options,
-            native_fee: quote_result.native_fee,
-            lz_token_fee: quote_result.lz_token_fee,
-        })?;
-
-    emit!(crate::state::JuryRequested {
-        market_key: market.key(),
-        requester: ctx.accounts.requester.key(),
-    });
-    Ok(())
-}
-
-// =============================================================================
-// CANCEL JURY TIMEOUT — permissionless force-majeure escape
-// =============================================================================
-
-#[derive(Accounts)]
-pub struct CancelJuryTimeout<'info> {
-    pub caller: Signer<'info>,
-
-    #[account(mut, seeds = [b"market",
-    &market.market_id.to_le_bytes()[..6]],
-    bump = market.bump)]
-    pub market: Account<'info, Market>,
-}
-
-pub fn cancel_jury_timeout(ctx: Context<CancelJuryTimeout>) -> Result<()> {
-    let market = &mut ctx.accounts.market;
-    let clock = Clock::get()?;
-
-    require!(market.resolution_requested, PithyQuip::InvalidParameters);
-    require!(!market.resolution_received && !market.cancelled,
-             PithyQuip::AlreadyComplete);
-    let requested_at = market.resolution_requested_time
-        .ok_or(PithyQuip::InvalidParameters)?;
-    require!(
-        clock.unix_timestamp >= requested_at + crate::state::JURY_TIMEOUT_SECS,
-        PithyQuip::TooSoon
-    );
-    market.cancelled = true;
-    market.resolved = true;
-    market.resolution_received = true;
-    market.resolution_finalized = clock.unix_timestamp;
-    market.winning_sides = Vec::new();
-    market.winning_splits = Vec::new();
-    market.resolution_time = clock.unix_timestamp;
-    market.weights_complete = true;
-
-    emit!(crate::state::JuryRulingReceived {
-        market_key: market.key(),
-        winning_sides: Vec::new(),
-    });
-    Ok(())
-}
 
 /// Handle an incoming OFT QD bridge transfer from L1.
-pub fn handle_oft_receive<'a>(store_key: Pubkey,
-    store_bump: u8, chain_config: &ChainConfig,
+///
+/// `store_info` is both the mint authority and the PDA that signs for it, so
+/// it must be handed to `invoke_signed` alongside the mint and destination —
+/// the runtime resolves every AccountMeta against the infos passed here, and
+/// omitting the signing authority fails the CPI with a missing account.
+pub fn handle_oft_receive<'a>(store_info: &AccountInfo<'a>,
+    store_bump: u8, expected_mint: Pubkey,
     message: &[u8], mint_info: &AccountInfo<'a>,
     recipient_info: &AccountInfo<'a>, token_prog: &AccountInfo<'a>) -> Result<()> {
     require!(message.len() >= OFT_BRIDGE_MSG_LEN, PithyQuip::InvalidMessageFormat);
-    require!(chain_config.mint != Pubkey::default(), PithyQuip::InvalidParameters);
+    require!(expected_mint != Pubkey::default(), PithyQuip::InvalidParameters);
 
     let to_bytes: [u8; 32] = message[..32].try_into()
         .map_err(|_| PithyQuip::InvalidMessageFormat)?;
@@ -390,7 +103,7 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
     require!(amount_sd > 0, PithyQuip::InvalidParameters);
 
     let recipient_pubkey = Pubkey::from(to_bytes);
-    require!(mint_info.key() == chain_config.mint, PithyQuip::InvalidMint);
+    require!(mint_info.key() == expected_mint, PithyQuip::InvalidMint);
     {
         let ata_data = recipient_info.try_borrow_data()?;
         require!(ata_data.len() >= 64, PithyQuip::InvalidParameters);
@@ -408,7 +121,7 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
         accounts: vec![
             anchor_lang::solana_program::instruction::AccountMeta::new(*mint_info.key, false),
             anchor_lang::solana_program::instruction::AccountMeta::new(*recipient_info.key, false),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(store_key, true),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(*store_info.key, true),
         ],
         data: {
             let mut d = vec![7u8];
@@ -417,7 +130,8 @@ pub fn handle_oft_receive<'a>(store_key: Pubkey,
         },
     };
     anchor_lang::solana_program::program::invoke_signed(&mint_ix,
-        &[mint_info.clone(), recipient_info.clone()], signer_seeds)?;
+        &[mint_info.clone(), recipient_info.clone(),
+          store_info.clone(), token_prog.clone()], signer_seeds)?;
 
     emit!(QDBridgeReceived { recipient: recipient_pubkey,
                              amount_sd, amount_local });
@@ -431,94 +145,6 @@ pub struct QDBridgeReceived {
     pub recipient: Pubkey,
     pub amount_sd: u64,
     pub amount_local: u64,
-}
-
-/// Apply a jury FinalRuling to a market.
-pub fn process_final_ruling(ruling: &FinalRuling,
-    market: &mut Market, _market_key: &Pubkey,
-    timestamp: i64) -> Result<()> {
-    require!(!market.resolution_received,
-            PithyQuip::AlreadyResolved);
-
-    if ruling.is_force_majeure() {
-        market.cancelled = true;
-        market.winning_sides = Vec::new();
-        market.winning_splits = Vec::new();
-    } else {
-        market.winning_sides = ruling.winning_sides.clone();
-    }
-    market.resolution_received = true;
-    market.resolution_finalized = timestamp;
-    Ok(())
-}
-
-#[derive(Accounts)]
-pub struct SendJuryCompensation<'info> {
-    #[account(mut, seeds = [b"market",
-    &market.market_id.to_le_bytes()[..6]],
-    bump = market.bump)]
-    pub market: Account<'info, Market>,
-
-    #[account(seeds = [OAPP_STORE_SEED],
-               bump = oapp_store.bump)]
-    pub oapp_store: Account<'info, OAppStore>,
-
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-pub fn send_jury_compensation(ctx: Context<SendJuryCompensation>) -> Result<()> {
-    let market = &mut ctx.accounts.market;
-    require!(market.resolution_finalized > 0,
-            PithyQuip::ResolutionNotFinal);
-
-    let amount = market.jury_fee_pool;
-    market.jury_fee_pool = 0;
-    let compensation = JuryCompensation {
-        market_id: market.market_id, amount };
-
-    let compose_msg = compensation.encode();
-    let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED,
-                &[ctx.accounts.oapp_store.bump]]];
-
-    let chain_config_info = &ctx.remaining_accounts[0];
-    require!(chain_config_info.owner == &crate::ID, PithyQuip::InvalidPeer);
-
-    let chain_data = chain_config_info.try_borrow_data()?;
-    require!(chain_data.len() >= 12, PithyQuip::InvalidPeer);
-    let eid_bytes = u32::from_le_bytes(chain_data[8..12].try_into().unwrap()).to_be_bytes();
-    let (expected_pda, _) = Pubkey::find_program_address(&[CHAIN_SEED, &eid_bytes], &crate::ID);
-
-    let chain_config = ChainConfig::try_deserialize_unchecked(&mut chain_data.as_ref())
-                                         .map_err(|_| PithyQuip::InvalidPeer)?;
-    require!(chain_config_info.key() == expected_pda, PithyQuip::InvalidPeer);
-
-    require!(chain_config.active, PithyQuip::InvalidPeer);
-    require!(chain_config.peer_address != [0u8; 32], PithyQuip::PeerNotConfigured);
-
-    let message = wrap_in_oft_format(compose_msg, chain_config.peer_address);
-    let options = chain_config.enforced_options.get_enforced_options(&None::<Vec<u8>>);
-    let quote_accounts = &ctx.remaining_accounts[1..7];
-    let send_accounts = &ctx.remaining_accounts[7..];
-    let quote_result = cpi_quote(
-        ctx.accounts.oapp_store.endpoint_program, quote_accounts,
-        QuoteParams {
-            sender: ctx.accounts.oapp_store.key(),
-            dst_eid: chain_config.eid,
-            receiver: chain_config.peer_address,
-            message: message.clone(),
-            options: options.clone(),
-            pay_in_lz_token: false,
-        },
-    )?;
-    cpi_send(
-        ctx.accounts.oapp_store.endpoint_program,
-        ctx.accounts.oapp_store.key(), send_accounts, seeds,
-        SendParams { dst_eid: chain_config.eid, receiver: chain_config.peer_address,
-            message, options, native_fee: quote_result.native_fee, lz_token_fee: 0 },
-    )?;
-    Ok(())
 }
 
 #[derive(Accounts)]
@@ -563,26 +189,46 @@ pub struct LzReceive<'info> {
 pub struct LzReceiveTypes<'info> {
     #[account(seeds = [OAPP_STORE_SEED], bump = store.bump)]
     pub store: Account<'info, OAppStore>,
+
+    /// QD mint on this chain. Its account owner is the token program that
+    /// `handle_oft_receive` must be handed, and that the recipient's ATA is
+    /// derived under — Token and Token-2022 give different ATAs.
+    /// CHECK: address-checked against the store; only `owner` is read.
+    #[account(address = store.mint @ PithyQuip::InvalidMint)]
+    pub mint: AccountInfo<'info>,
 }
 
+/// Accounts `lz_receive` needs appended to `remaining_accounts`, in the exact
+/// order the handler indexes them: [mint, recipient_ata, token_program]. Returning an empty vec here (as the pre-fork code did for
+/// OFT messages) makes every inbound bridge transfer fail the handler's
+/// `remaining_accounts.len() >= 4` check — the executor builds the account
+/// list from this view, so nothing else can supply them.
+///
+/// The recipient ATA must already exist; `handle_oft_receive` mints into it
+/// and does not create it.
 pub fn lz_receive_types_handler(ctx: Context<LzReceiveTypes>,
     params: &LzReceiveParams) -> Result<Vec<LzAccount>> {
-    require!(!params.message.is_empty(), PithyQuip::InvalidMessageType);
-    let mut accounts = vec![];
+    require!(params.message.len() == OFT_BRIDGE_MSG_LEN,
+             PithyQuip::InvalidMessageFormat);
 
-    if params.message.len() == OFT_BRIDGE_MSG_LEN {
-        return Ok(accounts);
-    }
+    require!(params.src_eid == ctx.accounts.store.eid,
+             PithyQuip::InvalidParameters);
+    let mint = ctx.accounts.store.mint;
+    let token_program = *ctx.accounts.mint.owner;
 
-    let msg_type = params.message[0];
-    if msg_type == FINAL_RULING {
-        let ruling = FinalRuling::decode(&params.message)?;
-        let (market_pda, _) = Pubkey::find_program_address(&[b"market",
-                &ruling.market_id.to_le_bytes()[..6]], ctx.program_id);
-        accounts.push(LzAccount { pubkey: market_pda,
-            is_signer: false, is_writable: true });
-    }
-    Ok(accounts)
+    let to_bytes: [u8; 32] = params.message[..32].try_into()
+        .map_err(|_| PithyQuip::InvalidMessageFormat)?;
+
+    let recipient = Pubkey::from(to_bytes);
+    let (recipient_ata, _) = Pubkey::find_program_address(
+        &[recipient.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &anchor_spl::associated_token::ID);
+
+    Ok(vec![
+        LzAccount { pubkey: mint, is_signer: false, is_writable: true },
+        LzAccount { pubkey: recipient_ata, is_signer: false, is_writable: true },
+        LzAccount { pubkey: token_program, is_signer: false, is_writable: false },
+    ])
 }
 
 #[derive(Clone,
@@ -590,6 +236,10 @@ pub fn lz_receive_types_handler(ctx: Context<LzReceiveTypes>,
     AnchorDeserialize)]
 pub struct InitOAppStoreParams {
     pub endpoint: Pubkey,
+    pub eid: u32,
+    pub peer_address: [u8; 32],
+    pub mint: Pubkey,
+    pub enforced_options_send: Vec<u8>,
 }
 
 #[derive(Accounts)]
@@ -639,6 +289,13 @@ pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOA
     ctx.accounts.store.admin = ctx.accounts.payer.key();
     ctx.accounts.store.bump = ctx.bumps.store;
     ctx.accounts.store.endpoint_program = params.endpoint;
+    ctx.accounts.store.eid = params.eid;
+    ctx.accounts.store.peer_address = params.peer_address;
+    ctx.accounts.store.mint = params.mint;
+    ctx.accounts.store.enforced_options = EnforcedOptions {
+        send: params.enforced_options_send.clone(),
+        send_and_call: Vec::new(),
+    };
     ctx.accounts.lz_receive_types_accounts.store = ctx.accounts.store.key();
 
     #[cfg(not(feature = "testing"))]
@@ -717,6 +374,10 @@ pub struct MessagingFee {
     pub lz_token_fee: u64,
 }
 
+/// Outbound endpoint CPI shims. Unused while the OApp is receive-only; they
+/// are the other half of the QD bridge (burn on Solana → release on L1) and
+/// are kept wired so that leg is an instruction, not a re-implementation.
+#[allow(dead_code)]
 fn cpi_send<'info>(
     endpoint_program: Pubkey, _oapp: Pubkey,
     remaining_accounts: &[AccountInfo<'info>],
@@ -735,6 +396,7 @@ fn cpi_send<'info>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn cpi_quote<'info>(endpoint_program: Pubkey,
     accounts: &[AccountInfo<'info>], params: QuoteParams) -> Result<MessagingFee> {
     let mut ix_data = vec![53, 91, 145, 11, 230, 75, 175, 90];
@@ -787,20 +449,4 @@ pub fn cpi_register_oapp<'info>(
     anchor_lang::solana_program::program::invoke_signed(
                             &ix, accounts, signer_seeds)?;
     Ok(())
-}
-
-pub fn get_accounts_for_clear(_endpoint_program: &Pubkey,
-    _receiver: &Pubkey, _src_eid: u32, _sender: &[u8; 32],
-    _nonce: u64) -> Vec<LzAccount> { vec![] }
-
-#[cfg(feature = "testing")]
-#[derive(Accounts)]
-pub struct TestReceiveRuling<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-
-    #[account(mut, seeds = [b"market",
-              &market.market_id.to_le_bytes()[..6]],
-              bump = market.bump)]
-    pub market: Account<'info, Market>,
 }

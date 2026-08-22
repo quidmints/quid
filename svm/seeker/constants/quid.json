@@ -1,0 +1,2714 @@
+{
+  "address": "QDgHUZjtccRjKZ63MBvW8uzKR7qcqjpRfGhNSEGfDu9",
+  "metadata": {
+    "name": "quid",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "deposit",
+      "docs": [
+        "Deposit. Two legs, one entrypoint: pass `mint` + `quid` for an SPL",
+        "deposit, or `sol_pool` with ticker \"SOL\" for native lamports. Exactly",
+        "one leg must be supplied."
+      ],
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quid",
+          "docs": [
+            "Depositor's token account, source of an SPL deposit — and the only",
+            "account here that belongs to the depositor rather than the protocol,",
+            "so it is the only one the native leg cannot be expected to supply.",
+            "`mint` and `program_vault` stay required because they exist from",
+            "`init_config` onward for every caller; a wallet holding nothing but",
+            "lamports has no token account to name."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "sol_pool",
+          "docs": [
+            "Native leg: the lamport pool. Present ⇒ this is a SOL deposit and the",
+            "SPL accounts above are ignored. Anchor cannot express `seeds` over an",
+            "optional account, so only this one — whose seeds are constant — is",
+            "optional; the SPL accounts keep every declarative constraint they had."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "ticker",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "flash_borrow",
+      "discriminator": [
+        166,
+        221,
+        220,
+        25,
+        61,
+        73,
+        127,
+        240
+      ],
+      "accounts": [
+        {
+          "name": "flash_authority",
+          "docs": [
+            "JAM authority PDA — equivalent of require(msg.sender == JAM) in Aux.sol."
+          ],
+          "signer": true
+        },
+        {
+          "name": "borrower",
+          "writable": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "flash_loan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  108,
+                  97,
+                  115,
+                  104,
+                  95,
+                  108,
+                  111,
+                  97,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ix_sysvar",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "lamports",
+          "type": "u64"
+        },
+        {
+          "name": "token_amount",
+          "type": "u64"
+        },
+        {
+          "name": "vault_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "flash_repay",
+      "discriminator": [
+        182,
+        143,
+        19,
+        23,
+        39,
+        221,
+        184,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "repayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "flash_loan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  108,
+                  97,
+                  115,
+                  104,
+                  95,
+                  108,
+                  111,
+                  97,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  79,
+                  76
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "tip_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "tip_token_amount",
+          "type": "u64"
+        },
+        {
+          "name": "vault_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "init_config",
+      "discriminator": [
+        23,
+        235,
+        115,
+        232,
+        168,
+        96,
+        1,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "flash_loan",
+          "docs": [
+            "Flash loan state — separate from",
+            "Depository so core accounting is",
+            "never polluted with mid-tx sentinel values."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  108,
+                  97,
+                  115,
+                  104,
+                  95,
+                  108,
+                  111,
+                  97,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "init_oapp_store",
+      "discriminator": [
+        21,
+        133,
+        164,
+        45,
+        186,
+        137,
+        84,
+        61
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "store",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "lz_receive_types_accounts",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  76,
+                  122,
+                  82,
+                  101,
+                  99,
+                  101,
+                  105,
+                  118,
+                  101,
+                  84,
+                  121,
+                  112,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "store"
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "InitOAppStoreParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "liquidate",
+      "discriminator": [
+        223,
+        179,
+        226,
+        125,
+        48,
+        46,
+        39,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "liquidating"
+        },
+        {
+          "name": "liquidator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidating"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidator_depositor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidator"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "ticker",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "lz_receive",
+      "docs": [
+        "LayerZero receive handler. The only inbound message is the OFT bridge",
+        "transfer that mints QD on Solana against supply locked by Basket.sol on",
+        "L1 — the maturity is copied across, never issued twice."
+      ],
+      "discriminator": [
+        8,
+        179,
+        120,
+        109,
+        33,
+        118,
+        189,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "store",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "oapp_registry"
+        },
+        {
+          "name": "nonce"
+        },
+        {
+          "name": "payload_hash",
+          "writable": true
+        },
+        {
+          "name": "endpoint",
+          "writable": true
+        },
+        {
+          "name": "endpoint_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "LzReceiveParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "lz_receive_types",
+      "docs": [
+        "LZ receive types handler — tells LayerZero which accounts",
+        "to include for a given incoming message."
+      ],
+      "discriminator": [
+        221,
+        17,
+        246,
+        159,
+        248,
+        128,
+        31,
+        96
+      ],
+      "accounts": [
+        {
+          "name": "store",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  116,
+                  111,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "QD mint on this chain. Its account owner is the token program that",
+            "`handle_oft_receive` must be handed, and that the recipient's ATA is",
+            "derived under — Token and Token-2022 give different ATAs."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "LzReceiveParams"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "vec": {
+          "defined": {
+            "name": "LzAccount"
+          }
+        }
+      }
+    },
+    {
+      "name": "refresh_sol_collateral",
+      "discriminator": [
+        127,
+        246,
+        0,
+        67,
+        114,
+        140,
+        229,
+        64
+      ],
+      "accounts": [
+        {
+          "name": "depositor"
+        },
+        {
+          "name": "customer_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "depositor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sol_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  79,
+                  76
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_kestrel",
+      "docs": [
+        "Point SOL* parking at the issuer (admin only).",
+        "`kestrel_program = Pubkey::default()` disables parking."
+      ],
+      "discriminator": [
+        147,
+        232,
+        98,
+        28,
+        248,
+        46,
+        180,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "kestrel_program",
+          "type": "pubkey"
+        },
+        {
+          "name": "sol_star_mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "buffer_bps",
+          "type": "u16"
+        },
+        {
+          "name": "haircut_bps",
+          "type": "u16"
+        },
+        {
+          "name": "park_band_bps",
+          "type": "u16"
+        },
+        {
+          "name": "min_park_secs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "sweep",
+      "docs": [
+        "Permissionless batch amortisation. Supply the Pyth account for `ticker`",
+        "then any number of Depositor PDAs; healthy or too-fresh positions are",
+        "skipped rather than reverting the batch, and the cranker is paid a cut",
+        "of what it marks."
+      ],
+      "discriminator": [
+        40,
+        23,
+        234,
+        175,
+        14,
+        61,
+        154,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cranker_account",
+          "docs": [
+            "Commission lands here, so cranking pays for itself."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "cranker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "ticker",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "update_config",
+      "docs": [
+        "Rotate admin, or stage a bebop_authority rotation.",
+        "Pass None for any field to leave it unchanged."
+      ],
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "set_bebop_authority",
+          "type": {
+            "option": "pubkey"
+          }
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        183,
+        18,
+        70,
+        156,
+        148,
+        109,
+        161,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_token_account",
+          "docs": [
+            "Destination of an SPL withdrawal. Created on demand: a depositor who",
+            "arrived with native SOL has never needed a token account for this mint,",
+            "and requiring them to make one first is an enrollment step in all but",
+            "name. The address is the canonical ATA either way, so creating it here",
+            "cannot be pointed anywhere else."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "sol_pool",
+          "docs": [
+            "Native leg: the lamport pool. Present ⇒ this is a SOL withdrawal and",
+            "the SPL accounts above are ignored."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticker_risk",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "ticker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "i64"
+        },
+        {
+          "name": "ticker",
+          "type": "string"
+        },
+        {
+          "name": "exposure",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Depositor",
+      "discriminator": [
+        219,
+        74,
+        92,
+        245,
+        101,
+        149,
+        45,
+        97
+      ]
+    },
+    {
+      "name": "Depository",
+      "discriminator": [
+        241,
+        199,
+        229,
+        248,
+        165,
+        69,
+        224,
+        187
+      ]
+    },
+    {
+      "name": "FlashLoan",
+      "discriminator": [
+        178,
+        201,
+        231,
+        142,
+        247,
+        89,
+        211,
+        60
+      ]
+    },
+    {
+      "name": "LzReceiveTypesAccounts",
+      "discriminator": [
+        248,
+        87,
+        167,
+        117,
+        5,
+        251,
+        21,
+        126
+      ]
+    },
+    {
+      "name": "OAppStore",
+      "discriminator": [
+        192,
+        146,
+        140,
+        177,
+        133,
+        210,
+        10,
+        110
+      ]
+    },
+    {
+      "name": "ProgramConfig",
+      "discriminator": [
+        196,
+        210,
+        90,
+        231,
+        144,
+        149,
+        140,
+        63
+      ]
+    },
+    {
+      "name": "TickerRisk",
+      "discriminator": [
+        3,
+        214,
+        137,
+        123,
+        184,
+        229,
+        179,
+        16
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "QDBridgeReceived",
+      "discriminator": [
+        63,
+        169,
+        188,
+        46,
+        125,
+        51,
+        255,
+        140
+      ]
+    },
+    {
+      "name": "SolParked",
+      "discriminator": [
+        50,
+        58,
+        45,
+        30,
+        156,
+        143,
+        5,
+        172
+      ]
+    },
+    {
+      "name": "SolUnparked",
+      "discriminator": [
+        190,
+        19,
+        73,
+        192,
+        49,
+        50,
+        98,
+        24
+      ]
+    },
+    {
+      "name": "Swept",
+      "discriminator": [
+        254,
+        138,
+        9,
+        198,
+        192,
+        61,
+        165,
+        135
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotUndercollateralised",
+      "msg": "not under-collateralised...still gains to be realised"
+    },
+    {
+      "code": 6001,
+      "name": "MaxPositionsReached",
+      "msg": "cant be up another one pack a new gun"
+    },
+    {
+      "code": 6002,
+      "name": "NoPrice",
+      "msg": "pass in a price or call it off twice"
+    },
+    {
+      "code": 6003,
+      "name": "Tickers",
+      "msg": "pass in ticker no miss it or hickups"
+    },
+    {
+      "code": 6004,
+      "name": "TooSoon",
+      "msg": "call in too often or show stops then"
+    },
+    {
+      "code": 6005,
+      "name": "TakeProfit",
+      "msg": "too many ahead take profit instead"
+    },
+    {
+      "code": 6006,
+      "name": "PoolAtCapacity",
+      "msg": "Зарекалась баба не меняться - замоталась баба зарекаться."
+    },
+    {
+      "code": 6007,
+      "name": "UnknownSymbol",
+      "msg": ""
+    },
+    {
+      "code": 6008,
+      "name": "Undercollateralised",
+      "msg": "Recap..."
+    },
+    {
+      "code": 6009,
+      "name": "InvalidAmount",
+      "msg": "Slow it up...amount is either not enough or too much."
+    },
+    {
+      "code": 6010,
+      "name": "InvalidUser",
+      "msg": "Double-check who you're trying to touch."
+    },
+    {
+      "code": 6011,
+      "name": "InvalidMint",
+      "msg": "We only work with stars here."
+    },
+    {
+      "code": 6012,
+      "name": "UnderExposed",
+      "msg": "Your position is under-exposed."
+    },
+    {
+      "code": 6013,
+      "name": "DepositFirst",
+      "msg": "You must deposit before you can do this."
+    },
+    {
+      "code": 6014,
+      "name": "InvalidPrice",
+      "msg": "pyth we clip"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidParameters",
+      "msg": "Invalid parameters"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidMessageFormat",
+      "msg": "Invalid message format"
+    },
+    {
+      "code": 6017,
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidAccountOwner",
+      "msg": "who thee QD"
+    },
+    {
+      "code": 6019,
+      "name": "InsufficientAccounts",
+      "msg": "Insufficient accounts provided"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidReturnData",
+      "msg": "Invalid return data from cross-program call"
+    },
+    {
+      "code": 6021,
+      "name": "NoReturnData",
+      "msg": "No return data from cross-program call"
+    },
+    {
+      "code": 6022,
+      "name": "TradingFrozen",
+      "msg": "Trading is frozen (resolution pending)"
+    },
+    {
+      "code": 6023,
+      "name": "PriceUncertain",
+      "msg": "Oracle price confidence too wide - price uncertain"
+    },
+    {
+      "code": 6024,
+      "name": "OracleManipulated",
+      "msg": "Oracle price deviates too much from TWAP - possible manipulation"
+    },
+    {
+      "code": 6025,
+      "name": "FlashLoanActive",
+      "msg": "flash loan already outstanding"
+    },
+    {
+      "code": 6026,
+      "name": "FlashRepayMissing",
+      "msg": "flash_repay instruction not found in transaction"
+    },
+    {
+      "code": 6027,
+      "name": "InvalidSettlementProgram",
+      "msg": "caller is not the authorised JAM settlement program"
+    },
+    {
+      "code": 6028,
+      "name": "NoActiveFlashLoan",
+      "msg": "no active flash loan to repay"
+    },
+    {
+      "code": 6029,
+      "name": "InsufficientFunds",
+      "msg": "insufficient lamports in SOL vault"
+    }
+  ],
+  "types": [
+    {
+      "name": "Actuary",
+      "docs": [
+        "Actuary: adaptive risk",
+        "",
+        "Unlike traditional systems with preset volatility/jump parameters per asset",
+        "class, the Actuary starts conservative and discovers each ticker's true",
+        "characteristics through observation. No priors needed — only Pyth feeds",
+        "",
+        "## State Size: ~104 bytes (fits comfortably in PDA)",
+        "",
+        "## Confidence Model",
+        "",
+        "The system uses observation count to build confidence:",
+        "- 0 obs: 0% confidence → 400 bps vol floor (conservative)",
+        "- 10 obs: 50% confidence → 200 bps vol floor",
+        "- 50 obs: 83% confidence → 68 bps vol floor",
+        "- 100 obs: 91% confidence → 36 bps vol floor",
+        "",
+        "This prevents the \"quiet start\" attack where a ticker with no",
+        "activity gets assigned near-zero vol and offers insane leverage.",
+        ""
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "observed_vol_bps",
+            "docs": [
+              "EMA of observed absolute returns (bps). Updated on each price change.",
+              "Fast up, slow down — reacts quickly to vol spikes, decays gradually."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "max_drawdown_bps",
+            "docs": [
+              "Maximum single-slot price move observed recently (bps).",
+              "Used for collar buffer calculation. Decays after calm periods.",
+              "Initialized at 2× vol floor on first observation — the Actuary's",
+              "structural memory of the black swan it has not yet seen on this ticker",
+              "but has already paid for on a different one."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_price",
+            "docs": [
+              "Last oracle price (in token's native precision).",
+              "Used to calculate returns on next update."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_price_slot",
+            "docs": [
+              "Slot number of last price update. Used for staleness penalty."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_trade_slot",
+            "docs": [
+              "Slot number of last trade. Used for velocity decay."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "jump_count",
+            "docs": [
+              "Count of recent jump events [0, 20]. Jump = move > 3σ.",
+              "Decays over time (1 per 1000 slots). Affects eta and collar.",
+              "In the founding loss event, jump_count would have saturated to 20",
+              "and stayed there — a forced liquidation cascade is precisely the",
+              "multi-slot jump sequence this field is designed to detect and price."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "velocity",
+            "docs": [
+              "Trade velocity score [0, 255]. Higher = more urgent activity.",
+              "Combines local (this ticker) and global (all tickers) activity."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "momentum_bps",
+            "docs": [
+              "Open interest change rate [-10000, 10000] bps.",
+              "Negative = liquidation cascade risk. Affects fee multiplier.",
+              "A strongly negative momentum_bps is the on-chain signature of the",
+              "shadow banking run — the exit race that turns a peg wobble into a",
+              "peg collapse. The momentum multiplier in fee_bps is the protocol's",
+              "structural response: discount exits, penalise entries, absorb the",
+              "cascade rather than amplifying it."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "net_exposure",
+            "docs": [
+              "Sum of (exposure × leverage) across all positions, SIGNED.",
+              "Positive = net long bias, negative = net short bias."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "total_exposure",
+            "docs": [
+              "Sum of |exposure × leverage| across all positions, always positive.",
+              "Total counterparty risk regardless of direction.",
+              "This is the denominator of the solvency invariant:",
+              "max_liability = Σ(total_exposure × collar_bps) ≤ total_deposits.",
+              "Even under the worst correlated tail event, the pool survives."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "twap_price",
+            "docs": [
+              "EMA smoothed price for manipulation detection.",
+              "Slower than spot price — large deviations indicate potential manipulation.",
+              "Also the TWAP overlay that makes prediction market manipulation",
+              "prohibitively expensive: sustaining artificial price pressure across",
+              "the full TWAP window requires keeping that capital at risk the entire",
+              "time — the attacker is the natural short against their own manipulation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "obs_count",
+            "docs": [
+              "Number of price observations. Used to compute confidence level.",
+              "Capped at 255 to fit in u8 if needed for space optimization.",
+              "The confidence decay from 150% vol to empirical vol is the Actuary's",
+              "Bayesian update: pessimistic prior (maximum fear), empirical likelihood",
+              "(observed vol), posterior interpolating between them weighted by",
+              "observation count. A new ticker starts where the founding position was",
+              "when the black swan hit — zero confidence, maximum assumed fragility."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "exceed_count",
+            "docs": [
+              "Exceedance count, and the running sum and sum-of-squares of the",
+              "excesses over the threshold, all in bps.",
+              "",
+              "These three numbers are the sufficient statistics for a Generalised",
+              "Pareto fit by method of moments — the tail model Koutsouri, Petch and",
+              "Knottenbelt fit offline to standardised residuals. Keeping them online",
+              "means the tail is ESTIMATED from what this ticker actually did, rather",
+              "than assumed Gaussian and patched with a jump term."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "exceed_sum",
+            "type": "i64"
+          },
+          {
+            "name": "exceed_sumsq",
+            "type": "i128"
+          },
+          {
+            "name": "shortfall_bps",
+            "docs": [
+              "Expected shortfall of the fitted tail at COLLAR_BREACH_BPS, in bps.",
+              "",
+              "Derived once per price update rather than per read. Inverting the",
+              "survival function costs a bisection, and `collar_bps` is called several",
+              "times per instruction — computing it on every read exhausted the",
+              "compute budget outright. It is a property of the ticker's tail, so it",
+              "changes when the tail estimate changes and at no other time."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "downside_vol_bps",
+            "docs": [
+              "EMA of downside-only moves, in bps. GJR's asymmetry: a negative",
+              "innovation raises conditional variance more than a positive one of the",
+              "same size, so the two are tracked separately rather than through one",
+              "symmetric estimator over |change|."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Depositor",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_quid",
+            "type": "u64"
+          },
+          {
+            "name": "deposited_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "sol_pledged_usd",
+            "type": "u64"
+          },
+          {
+            "name": "deposit_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "drawn",
+            "type": "u64"
+          },
+          {
+            "name": "balances",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Stock"
+                }
+              }
+            }
+          },
+          {
+            "name": "realized_pnl",
+            "type": "i64"
+          },
+          {
+            "name": "total_interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "total_collar_dollar_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "sol_yield_checkpoint",
+            "docs": [
+              "Value of `Depository::sol_yield_index` when this depositor's SOL",
+              "position was last settled. The difference is what they are owed."
+            ],
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Depository",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "total_deposits",
+            "type": "u64"
+          },
+          {
+            "name": "total_deposit_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "total_drawn",
+            "type": "u64"
+          },
+          {
+            "name": "max_liability",
+            "type": "u64"
+          },
+          {
+            "name": "sol_lamports",
+            "docs": [
+              "Hot buffer: native lamports in the sol_pool PDA. This is what",
+              "flash_borrow lends and withdraw_sol pays out — both need lamports in",
+              "hand, so neither can ever be served from the parked tranche."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sol_usd_contrib",
+            "type": "u64"
+          },
+          {
+            "name": "sol_star_shares",
+            "docs": [
+              "SOL* shares held by the sol_pool PDA. SOL* is Perena-branded but",
+              "Kestrel-issued: its mint authority is long_yield_carry's Token PDA, and",
+              "Perena's own app mints it with a top-level LYC instruction. Minting it",
+              "the way Perena does means calling that program — see SOL-STAR-REFERENCE.md."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sol_star_cost_lamports",
+            "docs": [
+              "Lamports that bought those shares. Carry and unwind loss are realised",
+              "against this basis at unpark, not marked continuously."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sol_star_credited_lamports",
+            "docs": [
+              "Cost less the park haircut — what the parked tranche is credited for in",
+              "depositor collateral. Anything that re-marks SOL collateral from scratch",
+              "must value `sol_lamports + sol_star_credited_lamports`; `flash_repay`",
+              "does, and using `sol_lamports` alone silently wipes parked backing."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sol_star_parked_at",
+            "docs": [
+              "Unix seconds of the most recent park — starts the discretionary hold.",
+              "A fresh park restarts it for the whole tranche: churn gets harder."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "swept_at",
+            "docs": [
+              "Coverage proof for the permissionless sweep: when a full pass last",
+              "completed, and how many positions it touched. Nothing on Solana can",
+              "enumerate accounts on-chain, so the pool cannot iterate its own book —",
+              "but it can record that someone did, which is what makes \"was every",
+              "position looked at?\" an answerable question rather than a hope."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "swept_count",
+            "type": "u64"
+          },
+          {
+            "name": "pool_realized_pnl",
+            "docs": [
+              "Pool-wide realised P&L and capital-at-risk-time — the denominator an",
+              "account's own RAROC is measured against. Comparing to the pool average",
+              "keeps the rebate relative (size cannot game it) and self-bounding (the",
+              "average account earns nothing) without ranking accounts against",
+              "each other."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "pool_collar_dollar_seconds",
+            "type": "u128"
+          },
+          {
+            "name": "sol_yield_index",
+            "docs": [
+              "Cumulative SOL* carry per lamport of SOL principal, scaled by",
+              "SOL_YIELD_SCALE.",
+              "",
+              "Carry used to be booked straight into `total_deposits`, which shares it",
+              "by `deposit_seconds` across every depositor — so a USD*/QD depositor",
+              "earned staking yield on lamports they never posted, while SOL price",
+              "losses stayed idiosyncratic (`pool_mark_down` hits one depositor's",
+              "`sol_pledged_usd`). Risk was individual and reward was socialised. The",
+              "index attributes the yield to the tranche that funded it, in O(1)."
+            ],
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EnforcedOptions",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "send",
+            "type": "bytes"
+          },
+          {
+            "name": "send_and_call",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FlashLoan",
+      "docs": [
+        "Per-order flash loan state. Separate from Depository so the core accounting",
+        "struct never carries mutable mid-tx state. Exactly one FlashLoan account",
+        "exists (seeds=[b\"flash_loan\"]) and is init_if_needed at program deploy.",
+        "Zero-valued fields mean no active loan."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "flash_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "flash_token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "flash_token_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitOAppStoreParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "endpoint",
+            "type": "pubkey"
+          },
+          {
+            "name": "eid",
+            "type": "u32"
+          },
+          {
+            "name": "peer_address",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "enforced_options_send",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "is_signer",
+            "type": "bool"
+          },
+          {
+            "name": "is_writable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzReceiveParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "src_eid",
+            "type": "u32"
+          },
+          {
+            "name": "sender",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "guid",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "message",
+            "type": "bytes"
+          },
+          {
+            "name": "extra_data",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LzReceiveTypesAccounts",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "store",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OAppStore",
+      "docs": [
+        "The OApp, and its single counterparty.",
+        "",
+        "There was a `ChainConfig` PDA per registered chain, keyed by endpoint id.",
+        "Solana accepts QD from exactly one place — Basket.sol on L1 — so a registry",
+        "was a table with one row, an instruction to populate it, an account to pass",
+        "on every receive, and an ownership check to get wrong. Folding the peer into",
+        "the store removes all four: the peer is pinned at init and `lz_receive`",
+        "validates against an account it already holds."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "endpoint_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "eid",
+            "docs": [
+              "Endpoint id of the L1 we accept from."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "peer_address",
+            "docs": [
+              "Basket.sol, left-padded to 32 bytes."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "QD mint on this chain."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "enforced_options",
+            "type": {
+              "defined": {
+                "name": "EnforcedOptions"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProgramConfig",
+      "docs": [
+        "Off-chain: derive the Squads v4 vault PDA (index 0) for a given multisig.",
+        "Seeds: [b\"vault\", multisig.as_ref(), &[0u8]], program = SQUADS_MULTISIG_V4"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "docs": [
+              "Protocol admin. After init_config, should be a Squads v4 vault PDA.",
+              "Controls: bebop_authority, registered_mints, the SOL* settings."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "registered_mints",
+            "type": {
+              "array": [
+                "pubkey",
+                2
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "bebop_authority",
+            "docs": [
+              "JAM settlement program authority PDA.",
+              "flash_borrow requires flash_authority.key() == this field.",
+              "Pubkey::default() = flash loans disabled.",
+              "SENSITIVE: rotated by `update_config`. A flash loan must balance",
+              "within its own transaction, so the worst a rotated authority can do is",
+              "execute a flash that still has to repay — the admin path (Squads, with",
+              "its own proposal delay) is the real protection, and a second on-chain",
+              "timelock on top of it bought nothing."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "config_version",
+            "type": "u32"
+          },
+          {
+            "name": "kestrel_program",
+            "docs": [
+              "Kestrel `long_yield_carry` — the SOL* issuer. Pubkey::default() = parking",
+              "off, which is both the default and the kill switch: `park_sol` fails",
+              "closed while `unpark_sol` keeps working so a position can be wound down."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "sol_star_mint",
+            "docs": [
+              "SOL* mint (`FDhu9642…` on mainnet)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "sol_buffer_bps",
+            "docs": [
+              "Share of the SOL pool that stays native — flash-loanable and",
+              "synchronously withdrawable. Floored at MIN_BUFFER_BPS."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "sol_star_haircut_bps",
+            "docs": [
+              "Discount applied to parked lamports when crediting depositor collateral."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "sol_park_band_bps",
+            "docs": [
+              "Deadband: idle lamports are left alone until the excess over the floor",
+              "exceeds this, and a park must move at least this much. The round trip",
+              "costs ~40 bps, so churn is a leak."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "sol_min_park_secs",
+            "docs": [
+              "Minimum hold before a *discretionary* unpark. Refilling a buffer that is",
+              "below its floor is exempt — liquidity repair is never time-locked."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QDBridgeReceived",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_sd",
+            "type": "u64"
+          },
+          {
+            "name": "amount_local",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SolParked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "shares_out",
+            "type": "u64"
+          },
+          {
+            "name": "credit_haircut_usd",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SolUnparked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "shares",
+            "type": "u64"
+          },
+          {
+            "name": "lamports_out",
+            "type": "u64"
+          },
+          {
+            "name": "cost_released",
+            "type": "u64"
+          },
+          {
+            "name": "realised_usd",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Stock",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ticker",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "pledged",
+            "type": "u64"
+          },
+          {
+            "name": "exposure",
+            "type": "i64"
+          },
+          {
+            "name": "updated",
+            "type": "i64"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "collar_bps",
+            "type": "u16"
+          },
+          {
+            "name": "cost_basis",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "collar_dollar_seconds",
+            "docs": [
+              "Time-integrated economic capital: sum of (collar_dollars × seconds).",
+              "RAROC denominator — how much capital was at risk, for how long..."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "collar_dollars",
+            "docs": [
+              "Collar dollars this pod currently contributes to `max_liability`.",
+              "Stored rather than re-derived: the reserve used to be incremented on an",
+              "exposure base and decremented on a pledged base, so for any levered pod",
+              "the decrement was L× too small and `max_liability` ratcheted up forever,",
+              "starving `has_capacity()` and `withdrawable()`. Booking the exact figure",
+              "that was added is the only way the two sides cannot drift."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "breached_at",
+            "docs": [
+              "Unix time this position first went outside its band, 0 while inside it.",
+              "Liquidation is a Parisian barrier — it triggers on the *excursion*, the",
+              "unbroken time spent beyond the barrier — so the clock that gates it has",
+              "to measure the excursion and nothing else."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Swept",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ticker",
+            "type": "string"
+          },
+          {
+            "name": "touched",
+            "type": "u64"
+          },
+          {
+            "name": "commission",
+            "type": "u64"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TickerRisk",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ticker",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "actuary",
+            "type": {
+              "defined": {
+                "name": "Actuary"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "docs": [
+              "Dollars this ticker currently contributes to `Depository::max_liability`.",
+              "Stored so the contribution can be replaced rather than recomputed from",
+              "per-pod figures — the same discipline that stopped `max_liability`",
+              "ratcheting when it was booked on one base and released on another."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

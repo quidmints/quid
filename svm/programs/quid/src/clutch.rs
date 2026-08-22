@@ -1,20 +1,19 @@
 
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{ self, Mint,
-    TokenAccount, TokenInterface, TransferChecked
+use anchor_spl::token_interface::{ Mint,
+    TokenAccount, TokenInterface
 };
 use anchor_lang::solana_program::{
     program::invoke_signed,
+    instruction::AccountMeta,
     system_instruction
 };
 
 use crate::stay::*;
-use crate::state::{
+use crate::stay::{
     transfer_from_vault,
     transfer_from_vaults,
-    ProgramConfig, USD_STAR,
-    SOL_POOL_SEED, FLASH_REPAY_DISC,
-    DeviceEnrollment,
+    ProgramConfig, SOL_POOL_SEED,
 };
 use crate::etc::{ get_account,
     PithyQuip, fetch_price,
@@ -22,9 +21,20 @@ use crate::etc::{ get_account,
     TickerRisk, fee_bps
 };
 use anchor_lang::prelude::*;
-use crate::entra::{
-    collar_adjusted_usd
-};
+
+
+/// Replace this ticker's contribution to the pool reserve with one computed on
+/// its NET book. Called after `record_activity` has moved `net_exposure`, and
+/// it is the only writer of `max_liability` outside the per-pod band update —
+/// so the reserve reflects what the pool is actually short.
+fn reconcile_ticker_reserve(risk: &mut TickerRisk, bank: &mut Depository) {
+    let net = risk.actuary.get_net().unsigned_abs();
+    let target = crate::etc::ticker_reserve_dollars(net, &risk.actuary);
+    bank.max_liability = bank.max_liability
+        .saturating_sub(risk.reserved)
+        .saturating_add(target);
+    risk.reserved = target;
+}
 
 #[derive(Accounts)]
 #[instruction(ticker: String)]
@@ -48,7 +58,7 @@ pub struct Liquidate<'info> {
     pub bank: Box<Account<'info, Depository>>,
 
     #[account(mut, seeds = [b"vault", mint.key().as_ref()], bump)]
-    pub bank_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub bank_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(mut, seeds = [liquidating.key().as_ref()], bump)]
     pub customer_account: Account<'info, Depositor>,
@@ -112,7 +122,7 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
         std::str::from_utf8(&p.ticker).unwrap()
                   .trim_end_matches('\0') == t);
 
-    let (prior_exposure, leverage) = if let Some(p) = pos {
+    let (prior_exposure, _leverage) = if let Some(p) = pos {
         let l = if p.pledged > 0 {
             ((p.exposure.abs() as u128) *
                (adjusted_price as u128) * 100 /
@@ -127,7 +137,8 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
          // depositors, at the expense of one
         Banks.total_deposits += delta as u64;
         risk.actuary.record_activity(prior_exposure, -delta,
-        leverage, slot, delta, Banks.total_deposits as i64);
+            slot, delta, Banks.total_deposits as i64);
+        reconcile_ticker_reserve(risk, Banks);
     } else if delta > 0 {
         // Position was saved from liquidation
         // before we try to deduct from depository
@@ -141,8 +152,14 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
 
         Banks.total_deposits -= remainder as u64;
         risk.actuary.record_activity(prior_exposure, delta,
-        leverage, slot, delta, Banks.total_deposits as i64);
+            slot, delta, Banks.total_deposits as i64);
+        reconcile_ticker_reserve(risk, Banks);
     }
+    // Being amortised is proof this account's risk was mispriced, so it
+    // cancels the rebate. Without this a trader could bank a strong RAROC,
+    // ride it into a liquidation, and keep paying less.
+    customer.reset_raroc();
+
     let liquidator_dep = &mut ctx.accounts.liquidator_depositor;
     if liquidator_dep.owner == Pubkey::default() {
         liquidator_dep.owner = ctx.accounts.liquidator.key();
@@ -178,52 +195,48 @@ pub struct Withdraw<'info> {
     pub bank: Box<Account<'info, Depository>>,
 
     #[account(mut, seeds = [b"vault", mint.key().as_ref()], bump)]
-    pub bank_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub bank_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(mut, seeds = [signer.key().as_ref()], bump)]
     pub customer_account: Box<Account<'info, Depositor>>,
 
-    #[account(mut, 
-        associated_token::mint = mint, 
+    /// Destination of an SPL withdrawal. Created on demand: a depositor who
+    /// arrived with native SOL has never needed a token account for this mint,
+    /// and requiring them to make one first is an enrollment step in all but
+    /// name. The address is the canonical ATA either way, so creating it here
+    /// cannot be pointed anywhere else.
+    #[account(init_if_needed, payer = signer,
+        associated_token::mint = mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program,
-        constraint = customer_token_account.owner == signer.key()
     )]
-    pub customer_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub customer_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// Native leg: the lamport pool. Present ⇒ this is a SOL withdrawal and
+    /// the SPL accounts above are ignored.
+    /// CHECK: PDA verified by seeds.
+    #[account(mut, seeds = [SOL_POOL_SEED], bump)]
+    pub sol_pool: Option<AccountInfo<'info>>,
 
     #[account(mut, seeds = [b"risk", ticker.as_bytes()], bump = ticker_risk.bump)]
-    pub ticker_risk: Option<Account<'info, TickerRisk>>,
+    pub ticker_risk: Option<Box<Account<'info, TickerRisk>>>,
 
-    /// Hardware-attestation gate, REQUIRED only when growing exposure
-    /// (amount > 0 && exposure == true) — the branch in handle_out that calls
-    /// repo()'s "Adding exposure" path, which pulls from deposited_quid to
-    /// expand pod.pledged. This is the second cycling vector: after an all-in
-    /// TP leaves a zombie pod (pledged=0, exposure=0) in balances, this branch
-    /// can repower it from the user's pool balance without ever calling
-    /// handle_in.
-    ///
-    /// Pass None for all exit paths — TP withdrawals, pool withdrawals,
-    /// withdraw-pledged-only. Funds must remain withdrawable even if the
-    /// device's enrollment is later revoked or the admin rotates
-    /// config_version.
-    ///
-    /// Constraints are checked in the handler, only on the gated branch,
-    /// because Anchor account-level constraints would fire for all callers.
-    #[account(seeds = [b"device_enrollment", 
-                      signer.key().as_ref()], bump
-    )]
-    pub enrollment: Option<Account<'info, DeviceEnrollment>>,
-    /// Pass None for mobile paths and all paths that don't add exposure
-    /// CHECK: validated in handler against config
-    pub keeper: Option<Signer<'info>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_out<'info>(ctx: Context<'_, '_, 
+pub fn handle_out<'info>(ctx: Context<'_, '_,
     'info, 'info, Withdraw<'info>>, mut amount: i64,
     ticker: String, exposure: bool) -> Result<()> {
+    // Exactly one leg, same rule as handle_in: native SOL is `sol_pool` with
+    // no `mint`, an SPL withdrawal is the mirror. The native leg alone accepts
+    // 0, meaning all of it: a depositor cannot know their own accrued carry
+    // ahead of time, and a full exit is exactly the case where guessing the
+    // figure strands lamports behind.
+    if ctx.accounts.sol_pool.is_some() {
+        return withdraw_native(ctx, amount.unsigned_abs());
+    }
     require!(amount != 0, PithyQuip::InvalidAmount);
 
     let Banks = &mut ctx.accounts.bank;
@@ -298,8 +311,11 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
             &ctx.remaining_accounts[vault_offset..]
         } else { &[] };
         // in vault_accounts. Empty slice = no alt vaults (primary only).
+        // `amt` is accounting units; transfer_from_vaults normalises each
+        // vault and converts every payout back to that mint's precision.
         transfer_from_vaults(&ctx.accounts.bank_token_account,
-            &ctx.accounts.mint, &ctx.accounts.customer_token_account,
+            &ctx.accounts.mint,
+            &ctx.accounts.customer_token_account,
             ctx.bumps.bank_token_account, vault_accounts,
             &ctx.accounts.token_program, ctx.program_id,
             &ctx.accounts.config.registered_mints, amt)?;
@@ -308,35 +324,15 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
         if !exposure { // < withdraw pledged from specific ticker (no exposure change)
             require!(amount < 0, PithyQuip::InvalidAmount);
             customer.renege(Some(t), amount, None, right_now)?;
+            // renege() worked in accounting units; the vault pays raw units.
             transfer_from_vault(&ctx.accounts.bank_token_account,
-                &ctx.accounts.mint, &ctx.accounts.customer_token_account,
+                &ctx.accounts.mint,
+                &ctx.accounts.customer_token_account,
                 ctx.bumps.bank_token_account, &ctx.accounts.token_program,
-                -amount as u64, // TODO make sure frontend always passes a negative here
+                from_accounting((-amount) as u64,
+                    ctx.accounts.mint.decimals)?,
             )?;
-        } else { // Position-growth gate: when amount > 0, this branch can pull
-            // from deposited_quid to expand pod.pledged (or repower a zombie
-            // pod left by a prior all-in TP). Same trio of checks as Stockup;
-             #[cfg(not(feature = "testing"))]
-            {
-                let enr = ctx.accounts.enrollment.as_ref()
-                    .ok_or(error!(PithyQuip::Unauthorized))?;
-
-                require!(!enr.revoked, PithyQuip::Unauthorized);
-                require!(enr.config_version == ctx.accounts.config.config_version,
-                        PithyQuip::Unauthorized);
-                        
-                if enr.platform == DeviceEnrollment::PLATFORM_WEB {
-                    let cosigner = ctx.accounts.keeper.as_ref()
-                            .ok_or(error!(PithyQuip::Unauthorized))?;
-
-                    require!(cosigner.key() == ctx.accounts.config.keeper,
-                                                    PithyQuip::Unauthorized);
-                } else {
-                    // Mobile: enrollment PDA proves possession of HW-attested device.
-                    require!(enr.device_pubkey == ctx.accounts.signer.key(),
-                            PithyQuip::Unauthorized);
-                }
-            }
+        } else {
             let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
             let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
             let first: &AccountInfo = &ctx.remaining_accounts[0];
@@ -356,8 +352,22 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
             let leverage = if pos.pledged > 0 { (pos.exposure.abs() as u64
                               * adjusted_price * 100 / pos.pledged) as i64
             } else { 100 };
-            let fee = fee_bps(Banks.concentration(), prior_exposure,
-                                amount, &risk.actuary, leverage);
+            // Same barrier distance the carry prices against, so the entry
+            // prepayment and the running charge cannot disagree.
+            let exposure_value = (prior_exposure.unsigned_abs() as u128)
+                .saturating_mul(adjusted_price as u128)
+                .min(u64::MAX as u128) as u64;
+            let collar_now = crate::etc::collar_bps(leverage, &risk.actuary);
+            let barrier = collar_notional(exposure_value, pre_pledged)
+                .saturating_add(collar_notional(exposure_value, pre_pledged)
+                    .saturating_mul(collar_now as u64) / 10_000);
+            let distance_bps = if exposure_value > 0 {
+                ((barrier.saturating_sub(exposure_value) as u128)
+                    .saturating_mul(10_000) / exposure_value as u128)
+                    .min(i64::MAX as u128) as i64
+            } else { 10_000 };
+            let fee = fee_bps(Banks.utilisation_bps(), prior_exposure,
+                                amount, &risk.actuary, leverage, distance_bps);
             // Pre-call snapshot of deposited_quid. Combined with pre_pledged
             // and post-call reads, lets clutch compute total_deposits delta
             // directly from vault invariant: dq + Σpledged + T = vault
@@ -393,8 +403,10 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 let payout = interest.saturating_sub(fee_amount);
 
                 transfer_from_vault(&ctx.accounts.bank_token_account,
-                    &ctx.accounts.mint, &ctx.accounts.customer_token_account,
-                    ctx.bumps.bank_token_account, &ctx.accounts.token_program, payout)?;
+                    &ctx.accounts.mint,
+                    &ctx.accounts.customer_token_account,
+                    ctx.bumps.bank_token_account, &ctx.accounts.token_program,
+                    from_accounting(payout, ctx.accounts.mint.decimals)?)?;
 
                 -(dq_delta_repo.saturating_add(pledged_delta)).saturating_sub(payout as i128)
             } 
@@ -439,56 +451,57 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 Banks.total_deposits = Banks.total_deposits
                     .saturating_sub((-signed_t_delta) as u64);
             }
-            risk.actuary.record_activity(prior_exposure,
-                amount, leverage, slot, amount.abs(),
-                Banks.total_deposits as i64);
+            // `amount` is in asset units here; the risk state is dollars.
+            let value_delta = (amount as i128)
+                .saturating_mul(adjusted_price as i128)
+                .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+            risk.actuary.record_activity(prior_exposure, value_delta,
+                slot, value_delta.abs(), Banks.total_deposits as i64);
+            reconcile_ticker_reserve(risk, Banks);
         }
     } Ok(())
 }
 
-#[derive(Accounts)]
-pub struct WithdrawSol<'info> {
-    #[account(mut)]
-    pub depositor: Signer<'info>,
-
-    #[account(
-        mut, seeds = [depositor.key().as_ref()], bump,
-        constraint = customer_account.owner == depositor.key() @ PithyQuip::InvalidUser,
-    )]
-    pub customer_account: Box<Account<'info, Depositor>>,
-
-    #[account(mut, seeds = [b"depository"], bump)]
-    pub bank: Box<Account<'info, Depository>>,
-
-    #[account(mut, seeds = [b"risk", "SOL".as_bytes()], bump = sol_risk.bump)]
-    pub sol_risk: Box<Account<'info, TickerRisk>>,
-
-    /// CHECK: PDA verified by seeds
-    #[account(mut, seeds = [SOL_POOL_SEED], bump)]
-    pub sol_pool: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
-    // remaining_accounts[0] = Pyth SOL/USD price account
-}
-
-pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
-             lamports: u64) -> Result<()> { 
+/// Native-SOL branch of `handle_out`. Kept as its own function for the same
+/// reason the SPL branch is inline: one instruction, two disjoint account sets.
+fn withdraw_native<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>,
+    mut lamports: u64) -> Result<()> {
+    let sol_pool = ctx.accounts.sol_pool.as_ref().unwrap().clone();
+    if lamports == 0 { lamports = ctx.accounts.customer_account.deposited_lamports; }
     require!(lamports > 0, PithyQuip::InvalidAmount);
     require!(lamports <= ctx.accounts.customer_account.deposited_lamports,
-            PithyQuip::InsufficientFunds);
-
-    require!(lamports <= ctx.accounts.bank.sol_lamports, 
             PithyQuip::InsufficientFunds);
 
     let now = Clock::get()?.unix_timestamp;
     let slot = Clock::get()?.slot as i64;
     let pyth = ctx.remaining_accounts.first();
     let sol_price = crate::etc::fetch_price("SOL", pyth)?;
-    ctx.accounts.sol_risk.actuary.update_price(
-                        sol_price as i64, slot);
+    let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
+    risk.actuary.update_price(sol_price as i64, slot);
+
+    // Anything the hot buffer cannot cover comes out of the parked tranche,
+    // and the round trip is charged to the caller who forced it rather than
+    // socialised — see `unpark_for_withdrawal`. Without the Kestrel accounts
+    // the withdrawal is limited to the buffer, as it always was.
+    let rest = ctx.remaining_accounts.get(1..).unwrap_or(&[]);
+    let forfeit = match SolStarLegs::from_remaining(&ctx.accounts.config,
+            &sol_pool, ctx.bumps.sol_pool.unwrap(),
+            &ctx.accounts.token_program.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(), rest)? {
+        Some(legs) => unpark_for_withdrawal(&mut ctx.accounts.bank,
+            &ctx.accounts.config, &legs, &ctx.accounts.signer.to_account_info(),
+            lamports, sol_price, &risk.actuary)?,
+        None => {
+            require!(lamports <= ctx.accounts.bank.sol_lamports,
+                     PithyQuip::InsufficientFunds);
+            0
+        }
+    };
 
     let bank = &mut ctx.accounts.bank;
     let customer = &mut ctx.accounts.customer_account;
+    // Pay out carry earned on this SOL before the principal shrinks.
+    customer.settle_sol_yield(bank);
     // Proportional share of the locked USD contribution being withdrawn
     let locked_fraction = (lamports as u128)
         .saturating_mul(customer.sol_pledged_usd as u128)
@@ -496,7 +509,7 @@ pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
         .unwrap_or(0) as u64;
 
     // Current collar-adjusted value of the lamports being withdrawn
-    let current_floor = collar_adjusted_usd(lamports, sol_price, &ctx.accounts.sol_risk.actuary);
+    let current_floor = collar_adjusted_usd(lamports, sol_price, &risk.actuary);
     // Use min(locked, current): prevents withdrawing stale value if SOL has dropped.
     // If SOL rose: depositor gets no windfall (conservative, matches Aux headroom logic).
     // If SOL fell: depositor can only take out what it's worth now — no pool theft.
@@ -509,12 +522,15 @@ pub fn handle_withdraw_sol(ctx: Context<WithdrawSol>,
     bank.sol_lamports = bank.sol_lamports.saturating_sub(lamports);
     customer.pool_withdraw(bank, usd_reduction, now)?;
 
-    invoke_signed(&system_instruction::transfer(ctx.accounts.sol_pool.key, 
-                                                ctx.accounts.depositor.key, lamports),
-        &[ctx.accounts.sol_pool.to_account_info(), 
-          ctx.accounts.depositor.to_account_info(),
+    // The forfeit stays in the pool: the caller's claim falls by `lamports`
+    // but only `lamports - forfeit` leaves, which is what "the withdrawer eats
+    // the haircut" means in lamports.
+    invoke_signed(&system_instruction::transfer(sol_pool.key,
+                        ctx.accounts.signer.key, lamports.saturating_sub(forfeit)),
+        &[sol_pool.to_account_info(),
+          ctx.accounts.signer.to_account_info(),
           ctx.accounts.system_program.to_account_info()],
-        &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool]]])?; Ok(())
+        &[&[SOL_POOL_SEED, &[ctx.bumps.sol_pool.unwrap()]]])?; Ok(())
 }
 
 
@@ -678,9 +694,160 @@ pub fn handle_flash_repay<'info>(ctx: Context<'_, '_, '_, 'info,
         let pyth = ctx.remaining_accounts.first();
         let sol_price = crate::etc::fetch_price("SOL", pyth)?;
         ctx.accounts.sol_risk.actuary.update_price(sol_price as i64, slot);
-        let restored = collar_adjusted_usd(bank.sol_lamports, sol_price,
+        // Re-mark on hot + parked-net-of-haircut. flash_borrow zeroes the whole
+        // sol_usd_contrib, so restoring from sol_lamports alone would delete the
+        // parked tranche's backing on every SOL flash loan.
+        let restored = collar_adjusted_usd(credited_lamports(bank), sol_price,
                                           &ctx.accounts.sol_risk.actuary);
         bank.total_deposits = bank.total_deposits.saturating_add(restored);
         bank.sol_usd_contrib = restored;
     } Ok(())
+}
+
+// =============================================================================
+// SOL* PARKING — unpark
+// =============================================================================
+
+
+// =============================================================================
+// SWEEP — permissionless, fault-tolerant batch amortisation
+// =============================================================================
+//
+// `amortise` only ever runs if somebody calls it for one specific position, so
+// nothing guaranteed that every position was examined. The C++ this replaces
+// solves that with a cursor and a batch size, walking its user table inside a
+// keeper-authorised `doupdate`. Solana cannot iterate accounts on-chain at all,
+// so the equivalent inverts: the caller supplies the batch, the program checks
+// each account is genuinely one of ours, and coverage is recorded rather than
+// enumerated.
+//
+// Two properties that matter more than the iteration itself:
+//
+//   * Permissionless. Vigor's sweep needs contract authority; this one needs a
+//     signer with rent for their own commission account. A dark keeper cannot
+//     stop the book from being marked.
+//   * Fault-tolerant. A position that is healthy, too fresh, or malformed is
+//     SKIPPED, not reverted. One bad account in a batch of thirty used to mean
+//     the whole transaction failed and nothing was marked.
+//
+// The price is fetched once for the batch rather than once per position, which
+// is what makes a large batch cheaper than N separate `amortise` calls.
+
+#[derive(Accounts)]
+#[instruction(ticker: String)]
+pub struct Sweep<'info> {
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+
+    #[account(seeds = [b"program_config"], bump = config.bump)]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut, seeds = [b"depository"], bump)]
+    pub bank: Box<Account<'info, Depository>>,
+
+    #[account(mut, seeds = [b"risk", ticker.as_bytes()], bump = ticker_risk.bump)]
+    pub ticker_risk: Box<Account<'info, TickerRisk>>,
+
+    /// Commission lands here, so cranking pays for itself.
+    #[account(init_if_needed, payer = cranker,
+        space = 8 + Depositor::INIT_SPACE,
+        seeds = [cranker.key().as_ref()], bump)]
+    pub cranker_account: Box<Account<'info, Depositor>>,
+
+    pub system_program: Program<'info, System>,
+    // remaining_accounts[0]  = Pyth price account for `ticker`
+    // remaining_accounts[1..] = Depositor PDAs to examine (writable)
+}
+
+pub fn handle_sweep<'info>(ctx: Context<'_, '_, 'info, 'info, Sweep<'info>>,
+    ticker: String) -> Result<()> {
+    let t: &str = ticker.as_str();
+    let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
+    let first = ctx.remaining_accounts.first().ok_or(PithyQuip::NoPrice)?;
+    require!(first.key.to_string() == key, PithyQuip::UnknownSymbol);
+
+    let clock = Clock::get()?;
+    let (now, slot) = (clock.unix_timestamp, clock.slot as i64);
+
+    // Once for the batch, not once per position.
+    let price = fetch_price(t, Some(first))?;
+    let risk = &mut ctx.accounts.ticker_risk;
+    risk.actuary.update_price(price as i64, slot);
+    risk.actuary.check_twap_deviation(price as i64)?;
+
+    let bank = &mut ctx.accounts.bank;
+    let elapsed = now.saturating_sub(bank.last_updated);
+    bank.total_deposit_seconds = bank.total_deposit_seconds
+        .saturating_add((bank.total_deposits as u128)
+            .saturating_mul(elapsed.max(0) as u128));
+    bank.last_updated = now;
+
+    let mut commission: u64 = 0;
+    let mut touched: u64 = 0;
+
+    for info in ctx.remaining_accounts.iter().skip(1) {
+        // Ours, writable, and a real Depositor — or skipped, never reverted.
+        if info.owner != ctx.program_id || !info.is_writable { continue; }
+        let mut data = match info.try_borrow_mut_data() { Ok(d) => d, Err(_) => continue };
+        let mut customer = match Depositor::try_deserialize(&mut data.as_ref()) {
+            Ok(c) => c, Err(_) => continue,
+        };
+        // The PDA is seeded by its owner, so this rules out a look-alike
+        // account carrying someone else's balances.
+        let (expected, _) = Pubkey::find_program_address(
+            &[customer.owner.as_ref()], ctx.program_id);
+        if expected != info.key() { continue; }
+
+        let before = customer.deposited_quid;
+        match customer.repo(t, 0, price, now, slot, &risk.actuary, bank) {
+            Ok((delta, interest)) if delta != 0 => {
+                let cut = (delta.unsigned_abs()) / 250;
+                bank.total_deposits = bank.total_deposits.saturating_add(interest);
+                if delta < 0 {
+                    // Profit taken on behalf of every depositor, at the
+                    // expense of this one — less the cranker's cut.
+                    let credited = delta.unsigned_abs().saturating_sub(cut);
+                    bank.total_deposits = bank.total_deposits.saturating_add(credited);
+                    risk.actuary.record_activity(0, -(credited as i64), slot,
+                        credited as i64, bank.total_deposits as i64);
+                    reconcile_ticker_reserve(risk, bank);
+                } else {
+                    // Salvaged from the depositor's own free balance. Without
+                    // prices for their other positions a sweep cannot sell
+                    // across the book, so it takes only what is already liquid.
+                    let take = (delta as u64).min(customer.deposited_quid);
+                    customer.deposited_quid -= take;
+                    bank.total_deposits = bank.total_deposits.saturating_add(take);
+                }
+                commission = commission.saturating_add(cut);
+                touched += 1;
+                let _ = before;
+                if customer.try_serialize(&mut data.as_mut()).is_err() { continue; }
+            }
+            // Healthy, too fresh, or unpriceable: leave it alone.
+            _ => continue,
+        }
+    }
+
+    bank.swept_at = now;
+    bank.swept_count = bank.swept_count.saturating_add(touched);
+
+    let cranker_acct = &mut ctx.accounts.cranker_account;
+    if cranker_acct.owner == Pubkey::default() {
+        cranker_acct.owner = ctx.accounts.cranker.key();
+        cranker_acct.last_updated = now;
+    }
+    cranker_acct.deposited_quid = cranker_acct.deposited_quid
+        .saturating_add(commission);
+
+    emit!(Swept { ticker, touched, commission, at: now });
+    Ok(())
+}
+
+#[event]
+pub struct Swept {
+    pub ticker: String,
+    pub touched: u64,
+    pub commission: u64,
+    pub at: i64,
 }

@@ -12,6 +12,11 @@ name = "quid"
 [features]
 default = []
 testing = []
+# Turns on the registered-mint whitelist constraints in Stockup / Withdraw /
+# Liquidate. Referenced by cfg_attr in entra.rs and clutch.rs but never
+# declared, so `--features mainnet` could not be built: production would have
+# shipped without the mint whitelist.
+mainnet = []
 
 cpi = ["no-entrypoint"]
 no-entrypoint = []

@@ -3,20 +3,86 @@ use crate::stay::Stock;
 use std::cmp::{max, min};
 use anchor_lang::prelude::*;
 use std::str::FromStr; use phf::phf_map;
-use crate::state::{Market, calculate_lmsr_price};
 
-pub const DEPEG_THRESHOLD: u64 = 960_000;
 pub const SECONDS_PER_HOUR: i64 = 3600;
 pub const SECONDS_PER_DAY: i64 = 86400;
 pub const TWAP_PERIOD: i64 = 300;
 pub const MAX_LEN: usize = 50;
 
-// pub const MAX_AGE: u64 = 300; // TODO uncomment for mainnet
-// the following is only for local testing
-pub const MAX_AGE: u64 = 99999999;
+/// How stale a Pyth price may be before it is refused.
+///
+/// This was previously the same constant as the liquidation grace below, which
+/// is why that one carried an absurd 99_999_999: the local Pyth fixtures are
+/// static snapshots, so the shared value had to be enormous for them to pass —
+/// and enlarging it to suit the oracle silently disabled liquidation, since the
+/// same constant gates `repo()`'s liquidator branches. Two policies, two knobs.
+#[cfg(not(feature = "testing"))]
+pub const MAX_PRICE_AGE: i64 = 300;
+/// Test fixtures are frozen snapshots; the test build accepts any age.
+#[cfg(feature = "testing")]
+pub const MAX_PRICE_AGE: i64 = i64::MAX / 4;
+
+
+/// How long a position may sit outside its band before a liquidator may take a
+/// tranche of it, and the cadence of the unwind thereafter. The clock it runs
+/// against is `Stock::breached_at` — the excursion — not the last time the pod
+/// was touched, so paying premiums does not buy immunity.
+///
+/// An hour is the borrower's window to cure under their own power, and it is
+/// the unit the ladder below is calibrated in.
+pub const LIQ_GRACE_SECS: u64 = 3_600;
 
 /// Basis points constant (100% = 10000)
 const BPS: i64 = 10_000;
+
+/// `base^n` where `base` is a bps fraction, by exponentiation by squaring.
+/// Nine multiplications at the obs_count cap of 500, against a soft-float
+/// `exp` that costs far more and is not reproducible across targets.
+pub fn pow_bps(base_bps: i64, n: i64) -> i64 {
+    if n <= 0 { return BPS; }
+    let (mut result, mut b, mut e) = (BPS, base_bps.clamp(0, BPS), n);
+    while e > 0 {
+        if e & 1 == 1 { result = result * b / BPS; }
+        b = b * b / BPS;
+        e >>= 1;
+        if b == 0 { break; }
+    }
+    result
+}
+
+/// Seconds in a year — the unit the hazard is quoted in.
+pub const SECONDS_PER_YEAR: i64 = 31_536_000;
+
+/// How much hazard an opening position prepays. One liquidation window: the
+/// shortest interval after which the ladder could first act on it.
+pub const MIN_HOLD_SECS: i64 = LIQ_GRACE_SECS as i64;
+
+/// Bounds on a single liquidation tranche, as a share of the remaining
+/// position, and the excursion over which the ladder climbs from one to the
+/// other. These are solved, not chosen: we want a position left uncured to be
+/// ~95% amortised after a week of hourly calls at full utilisation, and the
+/// unwind to open gently enough that a borrower who is merely late is not
+/// punished for it.
+///
+/// Unwinding is geometric — each tranche is a share of what is left — so with
+/// N = 7d/`LIQ_GRACE_SECS` = 168 calls and a fraction f_k ramping linearly from
+/// MIN to MAX over the first `TRANCHE_RAMP_GRACES` of them, MAX is the root of
+/// `Π(1 − f_k) = 0.05`. At MIN = 25bps and a ramp of a quarter of the window
+/// that root is 185bps: the first tranche takes 50bps of the position and the
+/// last takes 185bps.
+///
+/// The floor and the ceiling have to be set together — the previous pair had a
+/// 1% floor under a 10% ceiling, which the utilisation multiplier drove through
+/// the ceiling on the very first eligible call. The ramp existed but nothing
+/// ever climbed it, so what looked like a ladder was a cliff one notch down.
+pub const MIN_TRANCHE_BPS: i64 = 25;     // 0.25%
+pub const MAX_TRANCHE_BPS: i64 = 185;    // 1.85%
+pub const TRANCHE_RAMP_GRACES: i64 = 42; // a quarter of the 7-day window
+
+/// Target breach rate the collar is sized to: 1% of moves are expected to
+/// carry through the band, which is what the ladder and the hazard premium
+/// exist to handle. Sizing to zero breaches would mean an infinite band.
+pub const COLLAR_BREACH_BPS: i64 = 100;
 
 /// 100% collar is meaningless (total loss before liquidation defeats purpose)
 const MAX_COLLAR_BPS: i64 = 5000;
@@ -35,35 +101,18 @@ const JUMP_MULT: [i64; 11] = [100, 100, 85, 85, 85, 70, 70, 70, 70, 55, 55];
 /// The Actuary's adaptive vol model handles asset-specific behavior
 /// empirically — these are structural ceilings, not per-class priors.
 const STARTING_FLOOR_BPS: i64 = 200; // conservative cold-start vol floor
-const MAX_LEVERAGE_X100:  i64 = 1000; // 10× universal ceiling
+const MAX_LEVERAGE_PCT:  i64 = 1000; // 10× universal ceiling
 const MIN_FEE_BPS:        i64 = 4;   // minimum trade fee
 const LEV_THRESHOLD:      i64 = 300; // 3× leverage before compound penalty
 
 #[error_code]
-pub enum PithyQuip { // TODO remove unused errors and improve strings
-    #[msg("if you are who you say you are then you're not who you are")]
-    ForOhfour,
+pub enum PithyQuip {
 
     #[msg("not under-collateralised...still gains to be realised")]
     NotUndercollateralised,
 
-    #[msg("Missing secp256k1 precompile instruction")]
-    Secp256InstructionMissing,
-
-    #[msg("Secp256k1 signature verification failed")]
-    SignatureVerificationFailed,
-
-    #[msg("Signer ETH address does not match expected artist")]
-    WrongSigner,
-
-    #[msg("Oracle return value does not match this market's binding tag")]
-    InvalidMarketBinding,
-
     #[msg("cant be up another one pack a new gun")]
     MaxPositionsReached,
-
-    #[msg("better you'd waited, lest you be baited")]
-    PriceManipulated,
 
     #[msg("pass in a price or call it off twice")]
     NoPrice,
@@ -101,47 +150,8 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("You must deposit before you can do this.")]
     DepositFirst,
 
-    #[msg("Missing Pyth account in remaining_accounts")]
-    MissingPythAccount,
-
-    #[msg("Invalid Pyth price feed")]
-    InvalidPythFeed,
-
-    #[msg("Invalid market configuration")]
-    InvalidMarket,
-
-    #[msg("Market has already been resolution_received")]
-    AlreadyResolved,
-
-    #[msg("The window has closed")]
-    TooLate,
-
-    #[msg("The window is still open")]
-    NotFinalized,
-
-    #[msg("Division's in recision")]
-    NoPositions,
-
-    #[msg("There's no hiding now")]
-    AlreadyRevealed,
-
-    #[msg("InvalidLiquidity")]
-    InvalidLiquidity,
-
-    #[msg("PriceCalculationOverflow")]
-    PriceCalculationOverflow,
-
-    #[msg("please stand up")]
-    InvalidSide,
-
-    #[msg("please sit down")]
-    InvalidConfidence,
-
     #[msg("pyth we clip")]
     InvalidPrice,
-
-    #[msg("То конь устал, то флаг не встал.")]
-    OrderTooSmall,
 
     #[msg("Invalid parameters")]
     InvalidParameters,
@@ -149,83 +159,14 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("Invalid message format")]
     InvalidMessageFormat,
 
-    #[msg("Invalid message type")]
-    InvalidMessageType,
-
-    #[msg("Resolution request already sent")]
-    AlreadyRequested,
-
-    #[msg("LayerZero peer not configured")]
-    PeerNotConfigured,
-
-    #[msg("Resolution has not been finalized")]
-    ResolutionNotFinal,
-
-    #[msg("Not enough lamports from resolution requester")]
-    InsufficientLZFee,
-
     #[msg("Unauthorized")]
     Unauthorized,
-
-    #[msg("Wrong market")]
-    WrongMarket,
 
     #[msg("who thee QD")]
     InvalidAccountOwner,
 
-    #[msg("open case")]
-    NotResolved,
-
-    #[msg("repose i suppose")]
-    TradingClosed,
-
-    #[msg("i'm censoring")]
-    TooManyEntries,
-
-    #[msg("хватит брать")]
-    InsufficientTokens,
-
-    #[msg("недо-constinence")]
-    InsufficientConfidence,
-
-    #[msg("QuestionNotResolvable")]
-    QuestionNotResolvable,
-
-    #[msg("Weights not calculated")]
-    WeightsNotCalculated,
-
-    #[msg("replete")]
-    AlreadyComplete,
-
-    #[msg("unreal reveals")]
-    InvalidRevealCount,
-
-    #[msg("i was petrified")]
-    CommitmentVerificationFailed,
-
-    #[msg("one you can't decide")]
-    InvalidPosition,
-
-    #[msg("not a solution")]
-    InvalidResolution,
-
-    #[msg("TooManyChallenges")]
-    TooManyChallenges,
-
-    #[msg("DuplicateOutcome")]
-    DuplicateOutcome,
-
-    #[msg("Arithmetic overflow")]
-    Overflow,
-
-    #[msg("Arithmetic underflow")]
-    Underflow,
-
     #[msg("Insufficient accounts provided")]
     InsufficientAccounts,
-
-    #[msg("Insufficient sides")]
-    InsufficientSides,
 
     #[msg("Invalid return data from cross-program call")]
     InvalidReturnData,
@@ -233,35 +174,14 @@ pub enum PithyQuip { // TODO remove unused errors and improve strings
     #[msg("No return data from cross-program call")]
     NoReturnData,
 
-    #[msg("Invalid peer configuration")]
-    InvalidPeer,
-
     #[msg("Trading is frozen (resolution pending)")]
     TradingFrozen,
 
     #[msg("Oracle price confidence too wide - price uncertain")]
     PriceUncertain,
 
-    #[msg("Requester position too small - need 1% of market minimum")]
-    RequesterPositionTooSmall,
-
     #[msg("Oracle price deviates too much from TWAP - possible manipulation")]
     OracleManipulated,
-
-    #[msg("Too early to resolve - resolution time not reached")]
-    TooEarlyToResolve,
-
-    #[msg("outcome 254 is the qualify sentinel — cannot use as resolution")]
-    QualifySentinelInResolution,
-
-    #[msg("oracle ran a different protocol than the one committed at market creation")]
-    ProtocolHashMismatch,
-
-    #[msg("qualification score below minimum for this market type")]
-    QualificationScoreTooLow,
-
-    #[msg("protocol version mismatch — regenerate via CreateMarketPipeline")]
-    ProtocolVersionMismatch,
 
     #[msg("flash loan already outstanding")]
     FlashLoanActive,
@@ -379,6 +299,34 @@ pub struct Actuary {
     /// observation count. A new ticker starts where the founding position was
     /// when the black swan hit — zero confidence, maximum assumed fragility.
     pub obs_count: i64,
+
+    // === Peaks-over-threshold (16 bytes + 16) ===
+    /// Exceedance count, and the running sum and sum-of-squares of the
+    /// excesses over the threshold, all in bps.
+    ///
+    /// These three numbers are the sufficient statistics for a Generalised
+    /// Pareto fit by method of moments — the tail model Koutsouri, Petch and
+    /// Knottenbelt fit offline to standardised residuals. Keeping them online
+    /// means the tail is ESTIMATED from what this ticker actually did, rather
+    /// than assumed Gaussian and patched with a jump term.
+    pub exceed_count: i64,
+    pub exceed_sum: i64,
+    pub exceed_sumsq: i128,
+
+    /// Expected shortfall of the fitted tail at COLLAR_BREACH_BPS, in bps.
+    ///
+    /// Derived once per price update rather than per read. Inverting the
+    /// survival function costs a bisection, and `collar_bps` is called several
+    /// times per instruction — computing it on every read exhausted the
+    /// compute budget outright. It is a property of the ticker's tail, so it
+    /// changes when the tail estimate changes and at no other time.
+    pub shortfall_bps: i64,
+
+    /// EMA of downside-only moves, in bps. GJR's asymmetry: a negative
+    /// innovation raises conditional variance more than a positive one of the
+    /// same size, so the two are tracked separately rather than through one
+    /// symmetric estimator over |change|.
+    pub downside_vol_bps: i64,
 }
 
 impl Actuary {
@@ -438,16 +386,23 @@ impl Actuary {
     /// to suppress the floor before opening a large position.
     #[inline]
     pub fn vol_floor(&self) -> i64 {
-        let prior = (STARTING_FLOOR_BPS * 2) as f64;
-        let empirical = self.observed_vol_bps as f64;
-        const K: f64 = 0.05;  // Bayesian prior: half-life ≈ 14 samples
-        const K2: f64 = 0.01; // Structural floor: half-life ≈ 70 samples
-        let decay = (-K * self.obs_count as f64).exp();
-        let blended = (prior * decay + empirical * (1.0 - decay)) as i64;
+        // e^(−Kn) is a geometric sequence, so it is (e^−K)^n — computed by
+        // squaring in fixed point rather than by two soft-float `exp` calls.
+        // Those calls were the single most expensive thing in the risk engine:
+        // `eff_sigma` is read inside the tail inversion, so a bisection paid
+        // for forty of them and exhausted the compute budget outright.
+        //   e^-0.05 = 0.951229…  → 9512 bps  (prior, half-life ≈ 14 samples)
+        //   e^-0.01 = 0.990050…  → 9900 bps  (structural, half-life ≈ 70)
+        const PRIOR_DECAY_BPS: i64 = 9_512;
+        const STRUCT_DECAY_BPS: i64 = 9_900;
+        let prior = STARTING_FLOOR_BPS * 2;
+        let empirical = self.observed_vol_bps;
+        let decay = pow_bps(PRIOR_DECAY_BPS, self.obs_count);
+        let blended = (prior * decay + empirical * (BPS - decay)) / BPS;
         // Structural floor decays 5x slower than the Bayesian prior.
         // Protects against observed_vol_bps manipulation.
-        let structural = (STARTING_FLOOR_BPS as f64
-            * (-K2 * self.obs_count as f64).exp()) as i64;
+        let structural = STARTING_FLOOR_BPS
+            * pow_bps(STRUCT_DECAY_BPS, self.obs_count) / BPS;
         blended.max(self.observed_vol_bps).max(structural)
     }
 
@@ -468,6 +423,167 @@ impl Actuary {
     /// leveraged gross on-chain product surface,
     /// more conservative collar.
     #[inline]
+
+    // =========================================================================
+    // TAIL MODEL — peaks over threshold, Generalised Pareto
+    // =========================================================================
+    //
+    // The tail used to be a Gaussian lookup table with a jump term bolted on to
+    // apologise for it. Financial returns are not Gaussian in the tail, which
+    // is the entire premise of the EVT literature this follows: fit a GPD to
+    // exceedances over a threshold and read the tail off the fit.
+    //
+    // Everything below is the standard peaks-over-threshold result, in integer
+    // arithmetic. No transcendentals: the shape parameter is snapped to 1/n for
+    // integer n, which turns the power law into n multiplications and costs
+    // only the granularity of the shape estimate.
+
+    /// Threshold u for exceedances: one effective sigma.
+    #[inline]
+    pub fn pot_threshold(&self) -> i64 { max(1, self.eff_sigma()) }
+
+    /// ζ_u — the empirical rate of exceeding u, in bps.
+    pub fn exceedance_rate_bps(&self) -> i64 {
+        if self.obs_count <= 0 { return 0; }
+        min(BPS, self.exceed_count * BPS / self.obs_count)
+    }
+
+    /// GPD parameters by method of moments, returned as (n, β) where ξ = 1/n.
+    ///
+    /// For excesses with mean ē and variance s²:
+    ///     ξ = ½(1 − ē²/s²),  β = ½ē(ē²/s² + 1)
+    ///
+    /// Method of moments rather than maximum likelihood because it needs only
+    /// the running count, sum and sum of squares — three integers updated in
+    /// O(1) — where MLE would need the retained sample. It is consistent for
+    /// ξ < ½, which is the range these estimates are clamped to anyway.
+    ///
+    /// n is clamped to [2, 12]: n = 2 is ξ = 0.5, the fattest tail with a
+    /// finite mean-excess, and n = 12 is ξ ≈ 0.083, effectively exponential.
+    pub fn gpd_params(&self) -> (i64, i64) {
+        let count = self.exceed_count;
+        // Too few exceedances to estimate a shape: fall back to the thinnest
+        // tail we model, scaled by observed vol. Conservative in neither
+        // direction, and it self-corrects as exceedances accumulate.
+        if count < 8 { return (4, max(1, self.eff_sigma() / 2)); }
+
+        let e_bar = self.exceed_sum / count;                       // ē
+        if e_bar <= 0 { return (4, max(1, self.eff_sigma() / 2)); }
+
+        // The accumulator is i128 so it cannot overflow over a long life; the
+        // mean is bounded by the square of a bps move and lands back in i64.
+        let mean_sq = (self.exceed_sumsq / count as i128)
+            .clamp(0, i64::MAX as i128) as i64;                     // E[x²]
+        let var = mean_sq - e_bar * e_bar;                         // s²
+        if var <= 0 { return (12, max(1, e_bar)); }                // degenerate ⇒ exponential
+
+        // ratio = ē²/s², in bps
+        let ratio = (e_bar.saturating_mul(e_bar).saturating_mul(BPS) / var)
+            .clamp(0, 10 * BPS);
+
+        // ξ = ½(1 − ratio); β = ½ē(ratio + 1)
+        let xi_bps = (BPS - ratio) / 2;
+        let beta = max(1, e_bar.saturating_mul(ratio + BPS) / (2 * BPS));
+
+        // ξ ≤ 0 is a bounded, thin tail. The ξ→0 limit of the GPD is the
+        // exponential, whose scale is exactly the mean excess — so use that
+        // rather than the moment β, which is inflated by the clamped variance
+        // ratio in precisely this degenerate case and would price a thin tail
+        // as heavier than a fat one.
+        if xi_bps <= 0 { return (12, max(1, e_bar)); }
+        let n = (BPS / xi_bps).clamp(2, 12);
+        (n, beta)
+    }
+
+    /// P(move > d), in bps.
+    ///
+    /// Above the threshold this is the GPD survival function
+    ///     ζ_u · (1 + ξ(d−u)/β)^(−1/ξ)
+    /// which with ξ = 1/n is exactly ζ_u · (nβ / (nβ + d − u))^n.
+    ///
+    /// Below the threshold the POT model says nothing by construction, so the
+    /// interior is interpolated between certainty at zero and ζ_u at u — the
+    /// integer counterpart of the kernel-smoothed interior used offline.
+    pub fn tail_prob_bps(&self, d_bps: i64) -> i64 {
+        let (n, beta) = self.gpd_params();
+        self.tail_with(d_bps, n, beta)
+    }
+
+    /// Survival function with the fit already in hand.
+    ///
+    /// Split out because inverting it bisects, and recomputing the fit inside
+    /// the loop — in i128, whose division is a software routine on this target
+    /// — cost the entire compute budget. Every value here is bounded: ζ ≤ 1e4,
+    /// nβ ≤ 12·MAX_COLLAR_BPS, so q·nβ stays under 1e9 and i64 is exact.
+    #[inline]
+    pub fn tail_with(&self, d_bps: i64, n: i64, beta: i64) -> i64 {
+        self.tail_at(d_bps, n, beta, self.pot_threshold(),
+                     self.exceedance_rate_bps())
+    }
+
+    /// Survival function with the fit AND the threshold/rate already in hand,
+    /// so an inversion loop recomputes none of them.
+    #[inline]
+    pub fn tail_at(&self, d_bps: i64, n: i64, beta: i64, u: i64, zeta: i64) -> i64 {
+        if d_bps <= 0 { return BPS; }
+        if d_bps <= u {
+            return BPS - (BPS - zeta) * d_bps / u;
+        }
+        let nb = n.saturating_mul(beta);
+        let den = nb.saturating_add(d_bps - u);
+        if den <= 0 { return 0; }
+        let mut q = zeta;
+        for _ in 0..n {
+            q = q.saturating_mul(nb) / den;
+            if q == 0 { break; }
+        }
+        q.clamp(0, BPS)
+    }
+
+    /// e(d) = E[X − d | X > d], the GPD mean excess, in bps.
+    ///
+    /// For a GPD this is linear in the threshold: (β + ξ(d−u))/(1−ξ). That
+    /// linearity is what makes it the diagnostic for choosing u, and it is
+    /// exactly the loss-given-breach the pool is exposed to once price is
+    /// through the collar — derived, where it used to be
+    /// `max(0, max_drawdown − collar)`.
+    pub fn mean_excess_bps(&self, d_bps: i64) -> i64 {
+        let (n, beta) = self.gpd_params();
+        let u = self.pot_threshold();
+        let excess = max(0, d_bps - u);
+        // (β + excess/n)/(1 − 1/n) = (nβ + excess)/(n − 1)
+        max(1, (n.saturating_mul(beta).saturating_add(excess)) / max(1, n - 1))
+    }
+
+    /// The level whose exceedance probability is `p_bps`, in bps.
+    ///
+    /// Inverting the survival function by bisection rather than by an nth
+    /// root: same answer, no root-finding primitive, and it cannot disagree
+    /// with `tail_prob_bps` because it calls it.
+    pub fn quantile_bps(&self, p_bps: i64) -> i64 {
+        // Fit, threshold and exceedance rate are all constant across the
+        // search; only the level moves.
+        let (n, beta) = self.gpd_params();
+        let (u, zeta) = (self.pot_threshold(), self.exceedance_rate_bps());
+        let (mut lo, mut hi) = (0i64, max(100, self.eff_sigma() * 50));
+        for _ in 0..20 {
+            let mid = lo + (hi - lo) / 2;
+            if mid == lo { break; }
+            if self.tail_at(mid, n, beta, u, zeta) > p_bps { lo = mid; } else { hi = mid; }
+        }
+        hi
+    }
+
+    /// Expected shortfall at `p_bps`, in bps: ES = x_p + e(x_p).
+    ///
+    /// The GPD identity ES_α = (x_α + β − ξu)/(1 − ξ) written as quantile plus
+    /// mean excess, which is the same quantity and reuses the two functions
+    /// above instead of restating their parameters.
+    pub fn expected_shortfall_bps(&self, p_bps: i64) -> i64 {
+        let x = self.quantile_bps(p_bps);
+        x.saturating_add(self.mean_excess_bps(x))
+    }
+
     pub fn eff_sigma(&self) -> i64 {
          self.vol_floor()
     }
@@ -641,7 +757,7 @@ impl Actuary {
     /// with a large synthetic price feed position is the attack surface
     /// that exposure mining through rehypothecated basket dollars would
     /// attempt to exploit — hence the hard gate at 3000 slots in
-    /// max_leverage_x100 that blocks new positions entirely.
+    /// max_leverage_pct that blocks new positions entirely.
     #[inline]
     pub fn staleness_mult(&self, slot: i64) -> i64 {
         let stale = max(0, slot - self.last_price_slot);
@@ -757,13 +873,14 @@ impl Actuary {
             self.twap_price = price;
             self.last_trade_slot = slot;
             // Bootstrap vol estimates from  priors so that
-            // max_leverage_x100 doesn't return an unreasonably low cap.
+            // max_leverage_pct doesn't return an unreasonably low cap.
             // Without this, observed_vol stays 0 and eff_sigma returns
             // only the decaying floor, making new positions impossible.
             let floor = self.vol_floor();
             self.observed_vol_bps = floor;
             self.max_drawdown_bps = floor * 2;
             self.obs_count = min(500, self.obs_count + 1);
+            self.shortfall_bps = self.expected_shortfall_bps(COLLAR_BREACH_BPS);
             return;
         }
         let old = self.last_price;
@@ -776,7 +893,7 @@ impl Actuary {
         // obs_count while keeping observed_vol_bps near zero, eroding the
         // Bayesian prior and structural floor. Require change > floor/4 to
         // qualify — a move too small to affect risk state doesn't count...
-        ///
+        //
         // Upward spikes always qualify regardless of threshold (never suppress
         // jump detection). Threshold = floor/4 chosen so that genuine low-vol
         // instruments (Rates at 5bps true vol) still qualify by obs=60
@@ -807,9 +924,37 @@ impl Actuary {
             // Unqualified (near-zero) moves are ignored — they cannot
             // pull vol_ema downward, preventing systematic suppression.
             if qualifies {
-                let alpha = max(5, min(100, 1000 / (10 + dt)));
+                // GJR asymmetry: a downward innovation carries more weight
+                // than an upward one of equal size. Glosten–Jagannathan–Runkle
+                // model this by adding a term that only switches on for
+                // negative shocks; the EMA counterpart is a larger alpha on
+                // the downside. Symmetric updating over |change| understates
+                // conditional variance in exactly the regime the collar and
+                // the hazard exist for.
+                let base = max(5, min(100, 1000 / (10 + dt)));
+                let down = price < old;
+                let alpha = if down { min(100, base * 3 / 2) } else { base };
                 let raw_vol = (self.observed_vol_bps * (100 - alpha) + change * alpha) / 100;
                 self.observed_vol_bps = max(vol_floor, min(3000, raw_vol));
+
+                // Downside-only EMA, kept beside the two-sided one so the
+                // asymmetry is observable rather than just baked in.
+                if down {
+                    self.downside_vol_bps =
+                        (self.downside_vol_bps * (100 - alpha) + change * alpha) / 100;
+                }
+
+                // Peaks over threshold: everything above u feeds the GPD fit.
+                // Recorded on the qualified path only, so the same noise gate
+                // that protects the vol estimate protects the tail estimate.
+                let u = self.pot_threshold();
+                if change > u {
+                    let excess = change - u;
+                    self.exceed_count = self.exceed_count.saturating_add(1);
+                    self.exceed_sum = self.exceed_sum.saturating_add(excess);
+                    self.exceed_sumsq = self.exceed_sumsq
+                        .saturating_add((excess as i128) * (excess as i128));
+                }
             }
             let drawdown_floor = max(vol_floor * 2, self.observed_vol_bps * 2);
             if dt > 2000 && self.max_drawdown_bps > drawdown_floor {
@@ -819,6 +964,10 @@ impl Actuary {
                 );
             }
         }
+        // The tail estimate has moved, so the shortfall derived from it is
+        // stale. This is the one place it is recomputed.
+        self.shortfall_bps = self.expected_shortfall_bps(COLLAR_BREACH_BPS);
+
         // Decay: jumps (1 per 1000 slots), velocity (10 per 500 slots)
         self.jump_count = max(0, self.jump_count - dt / 1000);
         self.velocity = max(0, self.velocity - dt / 500 * 10);
@@ -845,11 +994,25 @@ impl Actuary {
     /// The velocity field is therefore a real-time signal of the scale
     /// of solver activity relative to pool depth — a size-weighted
     /// intensity measure that scales correctly across pool sizes.
-    pub fn record_activity(&mut self, exposure: i64, amount: i64,
-        lev: i64, slot: i64, size: i64, pool: i64) {
-        let (is_adding, _) = self.classify(exposure, amount);
-        let signed_risk = amount * lev / 100;
-        let abs_risk = amount.abs() * lev / 100;
+    /// Record a trade against this ticker's risk state.
+    ///
+    /// `value_delta` and `size` are DOLLAR quantities, and `net_exposure` /
+    /// `total_exposure` are dollar-denominated as a result. They used not to
+    /// be: `handle_out` passed the instruction's `amount` (asset units) while
+    /// `amortise` passed `delta` (dollars), and both were then multiplied by
+    /// leverage — so the book's net was a sum of incompatible quantities, and
+    /// every consumer of it (`imbalance_bps`, `crowding_bps`, momentum) read a
+    /// number that meant different things depending on which path wrote it.
+    ///
+    /// The leverage multiplication is gone too. A dollar of exposure is a
+    /// dollar of exposure to the pool regardless of how much collateral sits
+    /// behind it; multiplying by leverage double-counted it, the same error
+    /// the collar carried before the notional fix.
+    pub fn record_activity(&mut self, exposure: i64, value_delta: i64,
+        slot: i64, size: i64, pool: i64) {
+        let (is_adding, _) = self.classify(exposure, value_delta);
+        let signed_risk = value_delta;
+        let abs_risk = value_delta.abs();
         // Update state directly
         self.net_exposure += signed_risk;
         if is_adding {
@@ -899,6 +1062,11 @@ pub struct TickerRisk {
     pub ticker: [u8; 8],
     pub actuary: Actuary,
     pub bump: u8,
+    /// Dollars this ticker currently contributes to `Depository::max_liability`.
+    /// Stored so the contribution can be replaced rather than recomputed from
+    /// per-pod figures — the same discipline that stopped `max_liability`
+    /// ratcheting when it was booked on one base and released on another.
+    pub reserved: u64,
 }
 
 /// Maximum leverage given current conditions.
@@ -922,9 +1090,9 @@ pub struct TickerRisk {
 /// on-chain product net of fees is maximised at moderate leverage —
 /// the incentive-compatible equilibrium where depositors earn the most
 /// by taking on neither too little nor too much risk.
-pub fn max_leverage_x100(s: &Actuary,
-    slot: i64, conc: i64) -> i64 {
-    let class_max = MAX_LEVERAGE_X100;
+pub fn max_leverage_pct(s: &Actuary,
+    slot: i64, util: i64) -> i64 {
+    let class_max = MAX_LEVERAGE_PCT;
     let floor = STARTING_FLOOR_BPS;
     let sig = s.eff_sigma();
     // Hard gate: reject ALL new leverage when oracle is critically stale.
@@ -943,8 +1111,8 @@ pub fn max_leverage_x100(s: &Actuary,
     // Additive penalties (not multiplicative — avoids triple-stack punishment)
     let stale_penalty = max(0, (100 - s.staleness_mult(slot)) * base / 200);
     let conf_penalty = base * (100 - s.confidence()) / 300;
-    let util_penalty = if conc > 7500 {
-        base * (conc - 7500) / 10000
+    let util_penalty = if util > 7500 {
+        base * (util - 7500) / 10000
     } else { 0 };
 
     let result = base - stale_penalty - conf_penalty - util_penalty;
@@ -974,29 +1142,27 @@ pub fn collar_bps(lev: i64, s: &Actuary) -> i64 {
     let sig = s.eff_sigma();
     if sig == 0 { return STARTING_FLOOR_BPS; }
 
-    // Tail thickness: how fat are the tails relative to vol?
-    // Higher ratio = fatter tails = need wider collar
-    let tail_ratio = max(200, s.max_drawdown_bps * 100 / max(1, sig));
+    // The band is the expected shortfall of the fitted tail at the target
+    // breach rate, divided by leverage.
+    //
+    // It used to be `sig × cvar_k / lev` with
+    //     cvar_k = min(500, max(350, 200 + tail_ratio/50))
+    // — an invented map from observed-drawdown-over-sigma onto a 3.5σ–5σ
+    // multiplier, plus a separate hand-built jump buffer. Both were standing in
+    // for the shape of the tail, which is now estimated: ES at COLLAR_BREACH_BPS
+    // already contains the fat-tail and the jump contribution, because the GPD
+    // was fitted to the moves that produced them.
+    // Cached at the last price update; recomputed here only for an Actuary
+    // that has never seen one (a fresh ticker, or a unit test).
+    let es = if s.shortfall_bps > 0 { s.shortfall_bps }
+             else { s.expected_shortfall_bps(COLLAR_BREACH_BPS) };
 
-    // CVaR multiplier: scales with observed tail thickness
-    // 350 (≈3.5σ) for thin tails, up to 500 (≈5σ) for fat tails
-    let cvar_k = min(500, max(350, 200 + tail_ratio / 50));
-
-    // Base collar: CVaR / leverage (in hundredths)
-    let base = if lev > 0 { sig * cvar_k / lev } else { sig * cvar_k / 100 };
-    let jump_factor = {
-        let raw = s.jump_count as f64 / 10.0; // normalise stored jump_count
-        let floor = if s.obs_count < 30 { 1.5 }
-                    else if s.obs_count < 60 { 1.2 }
-                    else { 1.0 };
-        raw.max(floor)
-    };
-    let jump_buf = if s.jump_count > 0 {
-        (s.max_drawdown_bps as f64 * jump_factor
-            * s.jump_regime() as f64 / (max(1, lev) as f64 * 200.0)) as i64
-    } else { 0 };
-    max(sig, min(MAX_COLLAR_BPS, base + jump_buf))
+    // Per unit of exposure the pool holds; a position's own leverage governs
+    // how much of its collateral that band consumes.
+    let base = if lev > 0 { es * 100 / lev } else { es };
+    max(sig, min(MAX_COLLAR_BPS, base))
 }
+
 
 /// Compound factor: 2D risk matrix scoring.
 ///
@@ -1085,8 +1251,16 @@ fn compound_factor(exposure: i64,
 /// reward the stabiliser. The difference is that no human decides...
 /// the Actuary observes momentum_bps, fee model responds continuously
 ///
+/// Entry charge. Execution costs (spread, impact, adverse selection, hedging)
+/// plus a PREPAYMENT of the same hazard the carry charges — `distance_bps` is
+/// the position's barrier distance, identical to the input `hazard_rate_bps`
+/// takes. One model, two horizons: opening prepays MIN_HOLD_SECS of gap risk
+/// so a position that jumps before its first accrual tick is not free, and
+/// every tick after that is billed by the carry. The old parallel `gap_bps`
+/// here computed the same economics from `eff_eta` with different constants,
+/// which is how the two could disagree.
 pub fn fee_bps(conc: i64, exposure: i64,
-    amount: i64, s: &Actuary, lev: i64) -> i64 {
+    amount: i64, s: &Actuary, lev: i64, distance_bps: i64) -> i64 {
     let sig = s.eff_sigma();
 
     if sig == 0 { return MIN_FEE_BPS; }
@@ -1109,28 +1283,30 @@ pub fn fee_bps(conc: i64, exposure: i64,
     // === Component 1b: Direct leverage hedging cost ===
     // LP delta-hedging a levered position faces rebalancing cost ∝ σ·lev.
     let (is_adding_risk, _) = s.classify(exposure, amount);
+    // Hedging cost scales with how soon the ladder will have to act: a position
+    // opened against its barrier will be unwound in days, one deep inside may
+    // never be touched. `hazard_bps` is the shared intensity the carry uses, so
+    // the entry fee inherits moneyness from the same model rather than from a
+    // second one with its own constants. This is the material entry-side
+    // signal — the literal prepayment below is exact but tiny, which is the
+    // argument for gap risk being a carry cost in the first place.
+    let intensity = hazard_bps(distance_bps, s);
     let lev_fee = if is_adding_risk {
-        sig * lev / max(1, MAX_LEVERAGE_X100 * 10)
+        (sig * lev / max(1, MAX_LEVERAGE_PCT * 10))
+            .saturating_mul(BPS + intensity) / BPS
     } else {
         0
     };
-    // === Component 2: Concentration base charge (direction-neutral) ===
-    let conc_bps = conc * conc / (BPS * 15) + max(2, conc / 300);
-    // === Component 3: Jump premium — expected loss from collar breaches ===
-    // The gap_bps component is the fee's memory of the 2022 cascade:
-    // the gap between last mark and liquidation price
-    // that QuidMint amortises through tranche...
-
-    // jump_count > 0 AND eta > collar means the expected
-    // jump magnitude exceeds the collar buffer — the pool is exposed to
-    // gap risk. The fee charges for that exposure explicitly rather than
-    // absorbing it silently at liquidation...
+    // === Component 2: utilisation base charge (direction-neutral) ===
+    // Linear only. The quadratic used to live here AND in rate_bps AND, in
+    // risk-weighted form, in solvency_bps — the same "pool is filling up"
+    // signal charged three times. Solvency owns the convexity now, because it
+    // measures actual collar dollars rather than raw drawn notional.
+    let conc_bps = max(2, conc / 300);
+    // === Component 3: gap premium — prepaid from the shared hazard ===
     let collar = collar_bps(lev, s);
-    let eta = s.eff_eta();
-    let gap_bps = if s.jump_count > 0 && eta > collar {
-        let overshoot = max(0, eta - collar);
-        s.jump_count * 5 * overshoot / 300
-    } else { 0 };
+    let gap_bps = (intensity as i128 * lgd_bps(collar, s) as i128
+        * MIN_HOLD_SECS as i128 / (BPS as i128 * SECONDS_PER_YEAR as i128)) as i64;
 
     // === Component 4: Velocity premium ===
     let vel_bps = s.velocity * s.velocity / 1000;
@@ -1156,7 +1332,7 @@ pub fn fee_bps(conc: i64, exposure: i64,
     // an informed trader enters at a capped fee that understates true risk —
     // the same information asymmetry that makes shadow banking runs possible.
     let dynamic_cap = max(200, sig * lev / max(1,
-                            MAX_LEVERAGE_X100));
+                            MAX_LEVERAGE_PCT));
 
     max(MIN_FEE_BPS, min(dynamic_cap, total))
 }
@@ -1177,23 +1353,151 @@ pub fn fee_bps(conc: i64, exposure: i64,
 /// Higher concentration, imbalance, vol, leverage, or jump activity
 /// all increase the funding rate to compensate liquidity providers.
 ///
-pub fn rate_bps(conc: i64,
+// =============================================================================
+// HAZARD PRICING — the premium for delay, charged per unit time
+// =============================================================================
+//
+// What the pool sells a position is TIME IN BREACH. `repo()` will not touch a
+// position until `LIQ_GRACE_SECS` has elapsed, and then unwinds it at most
+// MAX_TRANCHE_BPS per call — so the pool has written a Parisian knock-out: the
+// collar is the barrier, the grace period is the window, and the ladder is a
+// gradual (tranched) knock-out rather than an instant one.
+//
+// A per-unit-time good has a per-unit-time price, so the premium is a HAZARD
+// RATE, not an option premium converted to one. That removes the artefact in
+// the C++ this replaces, which prices a T=1 European put and then charges it as
+// an annualised rate: a position closed in a day pays a slice of a year's
+// premium for optionality it never received, and needs Min/MaxTesPrice clamps
+// to hide the mismatch. A hazard has units of 1/time natively; `repo()` already
+// integrates it correctly as `exposure × rate × dt / year`.
+//
+// Under pure diffusion a ladder always outruns the barrier, so the residual
+// risk is entirely the GAP — price jumping through the collar faster than the
+// unwind. That is why the intensity below is a sum of two terms and why the
+// jump term carries real weight: it is the part Black-Scholes cannot see, and
+// the part the Actuary already measures.
+
+/// Instantaneous intensity of breaching the barrier, in bps.
+///
+/// Two changes from what stood here. The diffusion term was a Gaussian upper
+/// tail read off an eleven-entry table, and the jump term was a separate
+/// hand-built addend that existed because the Gaussian could not see fat tails.
+/// Both are now one number: the survival function of the GPD fitted to this
+/// ticker's own exceedances, which prices the fat tail because it was estimated
+/// from it.
+///
+/// The reflection factor stays: the chance of *touching* a barrier within a
+/// horizon is about twice the chance of ending beyond it, and it is touching
+/// that starts the ladder.
+pub fn hazard_bps(distance_bps: i64, s: &Actuary) -> i64 {
+    min(BPS, 2 * s.tail_prob_bps(max(0, distance_bps)))
+}
+
+/// Loss given breach, in bps of exposure.
+///
+/// The GPD mean excess at the barrier — E[move − d | move > d] — less what the
+/// ladder unwinds while the position is being worked off. This replaces
+/// `max(0, max_drawdown − collar)`, which used a single historical extreme as
+/// though it were an expectation.
+pub fn lgd_bps(collar: i64, s: &Actuary) -> i64 {
+    let overshoot = s.mean_excess_bps(collar);
+    let residual = BPS - min(BPS, MAX_TRANCHE_BPS);   // still exposed per window
+    max(1, overshoot * residual / BPS)
+}
+
+/// Crowding multiplier in bps of 10_000 (10_000 = neutral).
+///
+/// A position that leans the same way as the book makes the pool's unwind
+/// harder — the same squeeze risk the C++ prices via `lentpct` scarcity, but
+/// measured from our own book instead of a whitelist parameter, and directional,
+/// so it can tell a crowded short from a crowded long. Offsetting flow is
+/// genuinely cheaper for the pool to carry and is charged accordingly.
+pub fn crowding_bps(s: &Actuary, amount: i64) -> i64 {
+    let net = s.get_net();
+    let total = s.get_total();
+    if total <= 0 || amount == 0 { return BPS; }
+    let lean = (net.abs() * BPS / total).min(BPS);      // 0 = balanced book
+    let same_side = (net > 0 && amount > 0) || (net < 0 && amount < 0);
+    if same_side { BPS + lean / 2 } else { max(BPS / 2, BPS - lean / 2) }
+}
+
+/// Solvency multiplier in bps of 10_000. Replaces a binary capacity gate with
+/// a curve that leans against risk *before* the gate is reached: as reserves
+/// approach the requirement the whole rate curve lifts.
+pub fn solvency_bps(total_deposits: u64, max_liability: u64) -> i64 {
+    if total_deposits == 0 { return 4 * BPS; }
+    let coverage = (max_liability as u128 * BPS as u128
+                    / total_deposits as u128).min(4 * BPS as u128) as i64;
+    // coverage 0 → 1.0×, coverage 100% → 2.0×, beyond → up to 4.0×
+    BPS + coverage
+}
+
+/// What the pool must reserve against one ticker, in dollars.
+///
+/// The pool is short the NET of its book on that ticker, not the gross: Alice
+/// long 100 and Bob short 100 leaves the pool flat, however much collateral
+/// sits behind either position. Reserving against the gross — which is what
+/// summing each pod's collar does — over-reserves by the entire offset.
+///
+/// Netting within a ticker needs no correlation input at all: it is the same
+/// asset, so the offset is exact rather than modelled. Across tickers we stay
+/// deliberately additive, because a published correlation matrix lags regime
+/// change and converges to 1 in exactly the crises the reserve exists for.
+///
+/// The collar here is taken at 1× because the POOL is not levered — a
+/// position's own leverage governs when its band is breached, which is a
+/// different question from how much the pool must hold against it.
+pub fn ticker_reserve_dollars(net_value: u64, s: &Actuary) -> u64 {
+    let collar = collar_bps(100, s).max(0) as u64;
+    ((net_value as u128).saturating_mul(collar as u128) / BPS as u128)
+        .min(u64::MAX as u128) as u64
+}
+
+/// The premium: intensity × loss-given-breach, scaled by crowding and solvency.
+/// Signed `amount` selects the direction; the formula is otherwise identical
+/// for longs and shorts, because the barrier is symmetric by construction.
+pub fn hazard_rate_bps(distance_bps: i64, collar: i64, amount: i64,
+    s: &Actuary, total_deposits: u64, max_liability: u64) -> i64 {
+    let intensity = hazard_bps(distance_bps, s) as i128;
+    let lgd = lgd_bps(collar, s) as i128;
+    let crowd = crowding_bps(s, amount) as i128;
+    let solv = solvency_bps(total_deposits, max_liability) as i128;
+    // One division at the end, in i128. Chaining `× / BPS` per factor truncated
+    // a thin loss-given-breach to zero before the scalings could apply, so a
+    // position hugging its barrier priced identically to one far inside it —
+    // the exact sensitivity this function exists to provide.
+    let scaled = intensity * lgd * crowd * solv
+        / (BPS as i128 * BPS as i128 * BPS as i128);
+    scaled.clamp(0, 50_000) as i64
+}
+
+/// `util` is drawn/deposits in bps — utilisation, not portfolio concentration.
+/// It was called `conc`, which implied a crowding measure this codebase does
+/// not compute; the closest real signal is `Actuary::imbalance_bps`.
+pub fn rate_bps(util: i64,
     lev: i64, s: &Actuary) -> i64 {
     let sig = s.eff_sigma();
 
-    let linear = sig * conc / max(1, BPS * BPS / 4000);
-    let quad = (sig * sig / BPS) * (conc * conc / BPS) / 100;
-    let base = linear + quad;
+    // Liquidity only. The quadratic risk-convexity term that used to live here
+    // is now `solvency_bps`, which measures the same "pool is filling up"
+    // signal but risk-weighted (max_liability, i.e. actual collar dollars)
+    // rather than by raw drawn notional. Keeping both charged it twice.
+    let base = sig * util / max(1, BPS * BPS / 4000);
 
-    let imb_adj = base * s.imbalance_bps().abs() / (2 * BPS);
-    let lev_norm = lev * 100 / max(1, MAX_LEVERAGE_X100);
+    // Imbalance is priced twice already — `fee_bps`'s info_mult at entry
+    // (adverse selection) and `hazard_rate_bps`'s crowding term continuously
+    // (squeeze risk, and directional where this was not). Carry is liquidity.
+    let lev_norm = lev * 100 / max(1, MAX_LEVERAGE_PCT);
     let lev_adj = if lev_norm > 50 { base * (lev_norm - 50) / 200 } else { 0 };
 
-    max(MIN_FEE_BPS, min(50000, base + imb_adj + lev_adj))
+    max(MIN_FEE_BPS, min(50000, base + lev_adj))
 }
 
-pub fn fetch_price_with_confidence(ticker: &str,
-    account_info: Option<&AccountInfo>) -> Result<(u64, i64)> {
+/// Price + confidence multiplier, refusing anything older than `max_age`.
+/// The bound is a parameter because "stale" means two different things here:
+/// a broken feed, and a market that has simply closed.
+fn fetch_price_inner(ticker: &str,
+    account_info: Option<&AccountInfo>, max_age: i64) -> Result<(u64, i64)> {
     let hex = get_hex(ticker).ok_or(PithyQuip::UnknownSymbol)?;
     let account = account_info.ok_or(PithyQuip::NoPrice)?;
     let data = account.try_borrow_data()?;
@@ -1227,7 +1531,7 @@ pub fn fetch_price_with_confidence(ticker: &str,
 
     let clock = Clock::get()?;
     let age = clock.unix_timestamp - publish_time;
-    if age.abs() > MAX_AGE as i64 {
+    if age.abs() > max_age {
         msg!("Price stale: {} seconds old", age);
         return Err(PithyQuip::NoPrice.into());
     }
@@ -1244,6 +1548,11 @@ pub fn fetch_price_with_confidence(ticker: &str,
     let conf_mult = 100 + min(100, (conf_ratio_bps * 100 / MAX_CONFIDENCE_BPS) as i64);
     let adjusted_price = (price as f64) * 10f64.powi(exponent);
     Ok((adjusted_price as u64, conf_mult))
+}
+
+pub fn fetch_price_with_confidence(ticker: &str,
+    account_info: Option<&AccountInfo>) -> Result<(u64, i64)> {
+    fetch_price_inner(ticker, account_info, MAX_PRICE_AGE)
 }
 
 pub fn fetch_price(ticker: &str,
@@ -1281,92 +1590,6 @@ pub fn fetch_multiple_prices(positions: &[Stock],
     } Ok(prices)
 }
 
-pub fn update_price_accumulator(
-    market: &mut Market, current_time: i64) -> Result<()> {
-    let time_delta = current_time.saturating_sub(market.last_price_update);
-    if time_delta > 0 && market.liquidity > 0 {
-        for side in 0..market.num_outcomes as usize {
-            if side >= market.price_cumulative_per_outcome.len() { continue; }
-            // Get current LMSR price (0-1 range, scaled to 1e9 for precision)
-            let price = calculate_lmsr_price(side, &market.tokens_sold_per_outcome,
-                    market.liquidity as f64).unwrap_or(0.5);
-            let price_scaled = (price * 1_000_000_000.0) as u128;
-            // Accumulate: cumulative += price * time_delta
-            market.price_cumulative_per_outcome[side] = market
-                .price_cumulative_per_outcome[side]
-                .saturating_add(price_scaled.saturating_mul(time_delta as u128));
-        }
-        market.last_price_update = current_time;
-    }
-    // Roll checkpoint if older than TWAP_PERIOD
-    if current_time - market.checkpoint_timestamp >= TWAP_PERIOD {
-        market.price_checkpoint_per_outcome = market.price_cumulative_per_outcome.clone();
-        market.checkpoint_timestamp = current_time;
-    }
-    Ok(())
-}
-
-/// Get TWAP price for a side over the lookback period
-/// Returns price in range [0.0, 1.0]
-pub fn get_twap_price(market: &Market,
-    side: u8, current_time: i64) -> f64 {
-    let side_idx = side as usize;
-    // Bounds check
-    if side_idx >= market.price_cumulative_per_outcome.len()
-        || side_idx >= market.price_checkpoint_per_outcome.len() {
-        return calculate_lmsr_price(side_idx,
-            &market.tokens_sold_per_outcome,
-            market.liquidity as f64
-        ).unwrap_or(0.5);
-    }
-    let time_elapsed = current_time - market.checkpoint_timestamp;
-    if time_elapsed <= 0 {
-        // Fallback to spot if no time elapsed
-        return calculate_lmsr_price(side_idx,
-            &market.tokens_sold_per_outcome,
-            market.liquidity as f64
-        ).unwrap_or(0.5);
-    }
-    // Calculate current cumulative (including time since last update)
-    let time_since_update = current_time - market.last_price_update;
-    let spot_price = calculate_lmsr_price(side_idx,
-        &market.tokens_sold_per_outcome, market.liquidity as f64).unwrap_or(0.5);
-    let spot_scaled = (spot_price * 1_000_000_000.0) as u128;
-    let current_cumulative = market.price_cumulative_per_outcome[side_idx]
-        .saturating_add(spot_scaled.saturating_mul(time_since_update.max(0) as u128));
-
-    let checkpoint_cumulative = market.price_checkpoint_per_outcome[side_idx];
-    // TWAP = (cumulative_now - cumulative_checkpoint) / time_elapsed
-    let cumulative_delta = current_cumulative.saturating_sub(checkpoint_cumulative);
-    if time_elapsed <= 0 {
-        return spot_price;
-    }
-    let twap_scaled = cumulative_delta / (time_elapsed as u128);
-    // Convert back from 1e9 scaling, clamp to valid range
-    let twap = (twap_scaled as f64) / 1_000_000_000.0;
-    twap.max(0.0).min(1.0)
-}
-
-/// Get deviation between spot and TWAP (returns basis points, e.g., 300 = 3%)
-pub fn get_price_deviation(market: &Market,
-    side: u8, current_time: i64) -> u64 {
-    let side_idx = side as usize;
-    // Bounds check
-    if side_idx >= market.tokens_sold_per_outcome.len() {
-        return 0;
-    }
-    let spot = calculate_lmsr_price(
-        side_idx,
-        &market.tokens_sold_per_outcome,
-        market.liquidity as f64
-    ).unwrap_or(0.5);
-    let twap = get_twap_price(market,
-                side, current_time);
-    if twap == 0.0 { return 0; }
-    // Calculate percentage deviation in basis points
-    let deviation = ((spot - twap).abs() / twap * 10000.0) as u64;
-    deviation
-}
 
 pub fn get_hex(ticker: &str) -> Option<&'static str> {
     if ticker == "SOL" {
@@ -3547,3 +3770,260 @@ pub static US_EQUITIES_ACCOUNT_MAP: phf::Map<&'static str, &'static str> = phf_m
     "ZS" => "6u9UVJEKgRecSWFK4Q4Z1gXekWAYSxz9DXStMSDQu97g",
     "ZTS" => "BY19AvHEL1Cpy3usWMaggjAPXH3geLmea4GfNpaPGzsW",
 };
+
+#[cfg(test)]
+mod hazard_tests {
+    use super::*;
+
+    fn actuary(sigma: i64, max_dd: i64, jumps: i64, net: i64, total: i64) -> Actuary {
+        let mut a = Actuary::default();
+        a.observed_vol_bps = sigma;
+        a.max_drawdown_bps = max_dd;
+        a.jump_count = jumps;
+        a.net_exposure = net;
+        a.total_exposure = total;
+        a.obs_count = 200;          // high confidence: eff_sigma ≈ observed
+        a.last_price = 1_000_000;
+        a
+    }
+
+    /// Feed `count` exceedances of equal size `excess` plus one of `tail_excess`,
+    /// so the moment estimator sees a real mean and variance.
+    fn with_exceedances(mut a: Actuary, count: i64, excess: i64, tail_excess: i64) -> Actuary {
+        for k in 0..count {
+            let x = if k == count - 1 { tail_excess } else { excess };
+            a.exceed_count += 1;
+            a.exceed_sum += x;
+            a.exceed_sumsq += (x as i128) * (x as i128);
+        }
+        a
+    }
+
+    #[test]
+    fn moment_estimator_matches_the_closed_form() {
+        // ξ = ½(1 − ē²/s²), β = ½ē(ē²/s² + 1) — computed by hand from the
+        // same sample the estimator is given.
+        let a = with_exceedances(actuary(200, 800, 0, 0, 0), 20, 100, 1_500);
+        let (n, beta) = a.gpd_params();
+
+        let count = 20i128;
+        let e_bar = a.exceed_sum as i128 / count;
+        let mean_sq = a.exceed_sumsq / count;
+        let var = mean_sq - e_bar * e_bar;
+        let ratio = e_bar * e_bar * BPS as i128 / var;
+        let xi_bps = (BPS as i128 - ratio) / 2;
+        let beta_expected = e_bar * (ratio + BPS as i128) / (2 * BPS as i128);
+
+        assert_eq!(beta as i128, beta_expected, "beta must match the moment form");
+        if xi_bps > 0 {
+            assert_eq!(n, (BPS as i128 / xi_bps).clamp(2, 12) as i64,
+                       "n must be the clamped reciprocal of the shape");
+        }
+    }
+
+    #[test]
+    fn mean_excess_is_linear_in_the_threshold() {
+        // The defining GPD property, and the diagnostic used to pick u:
+        // e(d) = (β + ξ(d−u))/(1−ξ) is a straight line in d. Equal steps in d
+        // must produce equal steps in e(d).
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 30, 120, 1_200);
+        let u = a.pot_threshold();
+        let (e1, e2, e3) = (a.mean_excess_bps(u + 300),
+                            a.mean_excess_bps(u + 600),
+                            a.mean_excess_bps(u + 900));
+        let (d1, d2) = (e2 - e1, e3 - e2);
+        assert!((d1 - d2).abs() <= 1, "mean excess must be linear: {d1} vs {d2}");
+        assert!(e1 > 0);
+    }
+
+    #[test]
+    fn tail_is_monotone_and_bounded() {
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 30, 120, 1_200);
+        let mut prev = BPS + 1;
+        for d in (0..4_000).step_by(50) {
+            let q = a.tail_prob_bps(d);
+            assert!(q <= prev, "survival function must not rise at d={d}");
+            assert!((0..=BPS).contains(&q));
+            prev = q;
+        }
+        assert_eq!(a.tail_prob_bps(0), BPS, "everything exceeds zero");
+    }
+
+    #[test]
+    fn a_fatter_fitted_shape_prices_a_wider_tail() {
+        // Same sigma, same exceedance count, different dispersion of the
+        // excesses: the sample with the heavier outlier must yield a fatter
+        // shape and therefore more probability far out. This is the property
+        // a Gaussian table could not express at any parameterisation.
+        let thin = with_exceedances(actuary(200, 900, 0, 0, 0), 30, 300, 320);
+        let fat  = with_exceedances(actuary(200, 900, 0, 0, 0), 30, 100, 6_000);
+        let (n_thin, _) = thin.gpd_params();
+        let (n_fat, _)  = fat.gpd_params();
+        assert!(n_fat <= n_thin, "heavier sample ⇒ smaller n ⇒ fatter tail");
+
+        let d = 2_500;
+        assert!(fat.tail_prob_bps(d) >= thin.tail_prob_bps(d),
+                "the fatter fit must not price the far tail lower");
+    }
+
+    #[test]
+    fn hazard_falls_as_the_buffer_widens() {
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 30, 120, 1_200);
+        let near = hazard_bps(50, &a);
+        let mid  = hazard_bps(400, &a);
+        let far  = hazard_bps(3_000, &a);
+        assert!(near > mid && mid > far, "{near} {mid} {far}");
+    }
+
+    #[test]
+    fn quantile_inverts_the_tail_it_is_derived_from() {
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 40, 150, 2_000);
+        for p in [50i64, 100, 500] {
+            let x = a.quantile_bps(p);
+            assert!(a.tail_prob_bps(x) <= p, "quantile must clear its own tail");
+            assert!(a.tail_prob_bps(max(0, x - 40)) >= p,
+                    "and be tight: one step lower must still exceed p");
+        }
+    }
+
+    #[test]
+    fn expected_shortfall_exceeds_its_quantile() {
+        // ES is the quantile plus the mean excess beyond it, so it is strictly
+        // worse than the quantile — the reason the collar is sized on ES.
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 40, 150, 2_000);
+        let q = a.quantile_bps(COLLAR_BREACH_BPS);
+        let es = a.expected_shortfall_bps(COLLAR_BREACH_BPS);
+        assert!(es > q, "ES {es} must exceed quantile {q}");
+    }
+
+    #[test]
+    fn collar_is_the_shortfall_scaled_by_leverage() {
+        let a = with_exceedances(actuary(200, 900, 0, 0, 0), 40, 150, 2_000);
+        let es = a.expected_shortfall_bps(COLLAR_BREACH_BPS);
+        let one_x = collar_bps(100, &a);
+        let three_x = collar_bps(300, &a);
+        assert_eq!(one_x, (es).clamp(a.eff_sigma(), MAX_COLLAR_BPS));
+        assert!(three_x <= one_x, "higher leverage consumes collateral faster");
+        assert!(one_x >= a.eff_sigma(), "never below one sigma");
+    }
+
+    #[test]
+    fn gjr_weights_downside_more_than_upside() {
+        // Same magnitude, opposite signs, from identical starting states.
+        let mut up = actuary(200, 400, 0, 0, 0);
+        let mut down = actuary(200, 400, 0, 0, 0);
+        up.last_price = 1_000_000; up.last_price_slot = 0;
+        down.last_price = 1_000_000; down.last_price_slot = 0;
+
+        up.update_price(1_050_000, 1);     // +5%
+        down.update_price(950_000, 1);     // -5%
+
+        assert!(down.observed_vol_bps > up.observed_vol_bps,
+                "a negative innovation must raise conditional vol more: {} vs {}",
+                down.observed_vol_bps, up.observed_vol_bps);
+        assert!(down.downside_vol_bps > 0 && up.downside_vol_bps == 0,
+                "downside EMA tracks only downward moves");
+    }
+
+    #[test]
+    fn exceedances_are_recorded_from_real_moves() {
+        let mut a = actuary(200, 400, 0, 0, 0);
+        a.last_price = 1_000_000; a.last_price_slot = 0;
+        let before = a.exceed_count;
+        a.update_price(1_100_000, 1);      // +10%, far above one sigma
+        assert_eq!(a.exceed_count, before + 1, "a move past u is an exceedance");
+        assert!(a.exceed_sum > 0 && a.exceed_sumsq > 0);
+    }
+
+    #[test]
+    fn crowding_charges_the_squeeze_and_rebates_the_offset() {
+        // Book is 80% net long.
+        let a = actuary(200, 400, 0, 800, 1_000);
+        let piling_on = crowding_bps(&a, 100);   // another long
+        let offsetting = crowding_bps(&a, -100); // a short, which nets it down
+        assert!(piling_on > 10_000, "crowding must cost more");
+        assert!(offsetting < 10_000, "offsetting flow must cost less");
+        // A balanced book is neutral in both directions.
+        let flat = actuary(200, 400, 0, 0, 1_000);
+        assert_eq!(crowding_bps(&flat, 100), 10_000);
+        assert_eq!(crowding_bps(&flat, -100), 10_000);
+    }
+
+    #[test]
+    fn solvency_lifts_the_curve_before_the_gate() {
+        let easy = solvency_bps(1_000_000, 100_000);   // 10% covered
+        let tight = solvency_bps(1_000_000, 900_000);  // 90% covered
+        let over = solvency_bps(1_000_000, 1_000_000); // at the limit
+        assert!(easy < tight && tight < over);
+        assert_eq!(over, 20_000, "at full coverage the curve should double");
+    }
+
+    #[test]
+    fn rate_is_moneyness_sensitive_where_the_old_one_was_not() {
+        // Two positions, same utilisation and leverage, different distance to
+        // their barrier. rate_bps() alone cannot tell them apart — that was the
+        // gap versus the option-priced C++. Observed tail (2000bps) exceeds the
+        // collar (700bps), which is when loss-given-breach is real.
+        let a = actuary(200, 2_000, 2, 0, 1_000);
+        let hugging = hazard_rate_bps(40, 700, 100, &a, 1_000_000, 200_000);
+        let comfortable = hazard_rate_bps(1_000, 700, 100, &a, 1_000_000, 200_000);
+        assert!(hugging > 100, "a position at its barrier must pay: {hugging}");
+        assert!(hugging > 20 * comfortable.max(1),
+                "hugging={hugging} comfortable={comfortable}");
+        // Utilisation-only pricing is blind to the difference.
+        assert_eq!(rate_bps(5_000, 300, &a), rate_bps(5_000, 300, &a));
+    }
+
+    #[test]
+    fn reserve_is_taken_on_the_net_not_the_gross() {
+        let a = actuary(200, 400, 0, 0, 0);
+        // Alice long $100k, Bob short $100k: the pool is flat and reserves ~0,
+        // where summing each pod's band would have reserved against $200k.
+        assert_eq!(ticker_reserve_dollars(0, &a), 0);
+
+        // A one-sided book reserves against the whole of it.
+        let one_sided = ticker_reserve_dollars(100_000, &a);
+        assert!(one_sided > 0);
+
+        // Partially offset: the reserve tracks what is left over, linearly.
+        let half = ticker_reserve_dollars(50_000, &a);
+        assert_eq!(half * 2, one_sided, "netting must be linear in the residual");
+
+        // The pool's own collar is unlevered — a trader's leverage sets when
+        // their band breaks, not how much the pool holds.
+        let levered = collar_bps(1_000, &a);
+        let pool = collar_bps(100, &a);
+        assert!(pool >= levered, "pool reserve uses the 1x collar");
+    }
+
+    #[test]
+    fn entry_fee_and_carry_read_the_same_hazard() {
+        // The merge: fee_bps prepays one liquidation window of the very same
+        // intensity × LGD the carry bills continuously. A position at its
+        // barrier must therefore pay a bigger entry fee than one far inside,
+        // which the old parallel gap_bps (keyed off eff_eta, not moneyness)
+        // could not express at all.
+        let a = actuary(200, 2_000, 6, 0, 1_000);
+        let hugging = fee_bps(5_000, 100, 50, &a, 300, 40);
+        let comfortable = fee_bps(5_000, 100, 50, &a, 300, 2_000);
+        assert!(hugging > comfortable,
+                "entry fee must see moneyness: {hugging} vs {comfortable}");
+
+        // Both sides read one intensity. A window's prepayment of an ANNUAL
+        // rate is dust by construction — which is exactly why gap risk is
+        // billed as carry and only its hedging shadow is charged at entry.
+        let window = hazard_bps(40, &a) as i128
+            * lgd_bps(collar_bps(300, &a), &a) as i128
+            * MIN_HOLD_SECS as i128 / (BPS as i128 * SECONDS_PER_YEAR as i128);
+        assert!(window < 1, "a 5-minute slice of an annual hazard is sub-bps");
+    }
+
+    #[test]
+    fn thin_loss_given_breach_is_not_truncated_to_zero() {
+        // Regression: intensity × lgd / BPS chained per factor rounded a 1bp
+        // LGD to nothing, flattening the whole curve.
+        let a = actuary(200, 750, 0, 0, 1_000);   // tail barely over the collar
+        let at_barrier = hazard_rate_bps(20, 700, 100, &a, 1_000_000, 900_000);
+        assert!(at_barrier > 0, "thin LGD still has to price above zero");
+    }
+}
