@@ -45,14 +45,13 @@ pub struct Liquidate<'info> {
     #[account(mut)]
     pub liquidator: Signer<'info>,
 
-    #[cfg_attr(feature = "mainnet", account(
-        constraint = config.registered_mints.contains(&mint.key())
-            @ PithyQuip::InvalidMint
-    ))]
-    pub mint: InterfaceAccount<'info, Mint>,
+    /// Whitelisted unconditionally — see the note on `Stockup::mint`.
+    #[account(constraint = config.registered_mints.contains(&mint.key())
+            @ PithyQuip::InvalidMint)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(seeds = [b"program_config"], bump = config.bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 
     #[account(mut, seeds = [b"depository"], bump)]
     pub bank: Box<Account<'info, Depository>>,
@@ -61,16 +60,16 @@ pub struct Liquidate<'info> {
     pub bank_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(mut, seeds = [liquidating.key().as_ref()], bump)]
-    pub customer_account: Account<'info, Depositor>,
+    pub customer_account: Box<Account<'info, Depositor>>,
 
     #[account(init_if_needed, payer = liquidator,
         space = 8 + Depositor::INIT_SPACE,
         seeds = [liquidator.key().as_ref()], bump)]
-    pub liquidator_depositor: Account<'info, Depositor>,
+    pub liquidator_depositor: Box<Account<'info, Depositor>>,
 
     #[account(mut, seeds = [b"risk",
     ticker.as_bytes()], bump = ticker_risk.bump)]
-    pub ticker_risk: Account<'info, TickerRisk>,
+    pub ticker_risk: Box<Account<'info, TickerRisk>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -183,13 +182,13 @@ pub struct Withdraw<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
-    #[cfg_attr(feature = "mainnet", account(
-        constraint = config.registered_mints.contains(&mint.key()) @ PithyQuip::InvalidMint
-    ))]
-    pub mint: InterfaceAccount<'info, Mint>,
+    /// Whitelisted unconditionally — see the note on `Stockup::mint`.
+    #[account(constraint = config.registered_mints.contains(&mint.key())
+            @ PithyQuip::InvalidMint)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(seeds = [b"program_config"], bump = config.bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 
     #[account(mut, seeds = [b"depository"], bump)]
     pub bank: Box<Account<'info, Depository>>,

@@ -30,7 +30,16 @@
           "signer": true
         },
         {
-          "name": "mint"
+          "name": "mint",
+          "docs": [
+            "Unconditional, and deliberately so. `handle_in`'s SPL leg looks up no",
+            "price: it moves tokens into `vault/<mint>` and credits",
+            "`to_accounting(amount, decimals)` as dollars. Without this constraint",
+            "anyone can mint a worthless six-decimal token and be credited one for",
+            "one, so the whitelist is the only thing standing between the pool and",
+            "unbacked deposits. It used to sit behind a `mainnet` feature, which",
+            "meant the protection was absent from every build that forgot the flag."
+          ]
         },
         {
           "name": "config",
@@ -664,7 +673,10 @@
           "signer": true
         },
         {
-          "name": "mint"
+          "name": "mint",
+          "docs": [
+            "Whitelisted unconditionally — see the note on `Stockup::mint`."
+          ]
         },
         {
           "name": "config",
@@ -1288,7 +1300,10 @@
           "signer": true
         },
         {
-          "name": "mint"
+          "name": "mint",
+          "docs": [
+            "Whitelisted unconditionally — see the note on `Stockup::mint`."
+          ]
         },
         {
           "name": "config",

@@ -27,7 +27,7 @@ pub struct InitConfig<'info> {
     #[account(init, payer = admin,
         space = ProgramConfig::SPACE,
         seeds = [b"program_config"], bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 
     /// Flash loan state — separate from
     /// Depository so core accounting is
@@ -72,7 +72,7 @@ pub struct UpdateConfig<'info> {
     #[account(mut,
         seeds = [b"program_config"],
         bump = config.bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 }
 
 pub fn update_config(ctx: Context<UpdateConfig>,
@@ -104,14 +104,19 @@ pub struct Stockup<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
-    #[cfg_attr(feature = "mainnet", account(
-        constraint = config.registered_mints.contains(&mint.key())
-            @ PithyQuip::InvalidMint
-    ))]
-    pub mint: InterfaceAccount<'info, Mint>,
+    /// Unconditional, and deliberately so. `handle_in`'s SPL leg looks up no
+    /// price: it moves tokens into `vault/<mint>` and credits
+    /// `to_accounting(amount, decimals)` as dollars. Without this constraint
+    /// anyone can mint a worthless six-decimal token and be credited one for
+    /// one, so the whitelist is the only thing standing between the pool and
+    /// unbacked deposits. It used to sit behind a `mainnet` feature, which
+    /// meant the protection was absent from every build that forgot the flag.
+    #[account(constraint = config.registered_mints.contains(&mint.key())
+            @ PithyQuip::InvalidMint)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(seeds = [b"program_config"], bump = config.bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 
     #[account(init_if_needed, space = 8 + Depository::INIT_SPACE,
         payer = signer, seeds = [b"depository"], bump)]
@@ -121,7 +126,7 @@ pub struct Stockup<'info> {
         token::authority = program_vault,
         payer = signer, seeds = [b"vault",
         mint.key().as_ref()], bump)]
-    pub program_vault: InterfaceAccount<'info, TokenAccount>,
+    pub program_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(init_if_needed, payer = signer,
         space = 8 + Depositor::INIT_SPACE,
@@ -131,7 +136,7 @@ pub struct Stockup<'info> {
     #[account(init_if_needed, payer = signer,
         space = 8 + TickerRisk::INIT_SPACE,
         seeds = [b"risk", ticker.as_bytes()], bump)]
-    pub ticker_risk: Option<Account<'info, TickerRisk>>,
+    pub ticker_risk: Option<Box<Account<'info, TickerRisk>>>,
 
     /// Depositor's token account, source of an SPL deposit — and the only
     /// account here that belongs to the depositor rather than the protocol,
@@ -140,7 +145,7 @@ pub struct Stockup<'info> {
     /// `init_config` onward for every caller; a wallet holding nothing but
     /// lamports has no token account to name.
     #[account(mut)]
-    pub quid: Option<InterfaceAccount<'info, TokenAccount>>,
+    pub quid: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
 
     /// Native leg: the lamport pool. Present ⇒ this is a SOL deposit and the
     /// SPL accounts above are ignored. Anchor cannot express `seeds` over an
@@ -402,7 +407,7 @@ pub struct SetKestrel<'info> {
     pub admin: Signer<'info>,
 
     #[account(mut, seeds = [b"program_config"], bump = config.bump)]
-    pub config: Account<'info, ProgramConfig>,
+    pub config: Box<Account<'info, ProgramConfig>>,
 }
 
 /// Point SOL* parking at the issuer. `kestrel_program = Pubkey::default()`

@@ -2592,3 +2592,50 @@ mod tests {
                    "So11111111111111111111111111111111111111112");
     }
 }
+
+#[cfg(test)]
+mod frame_budget {
+    use super::*;
+    use crate::etc::{TickerRisk, Actuary};
+
+    /// Anchor deserialises every `Account<T>` inline on the instruction's
+    /// stack frame, and SBF gives each frame 4KB. `Box` moves the payload to
+    /// the 32KB bump heap for the price of one indirection.
+    ///
+    /// The trap is that the overflow is silent — the program aborts with
+    /// "Program failed to complete" and a compute count far under budget, and
+    /// whether it happens at all shifts when an unrelated constraint is added.
+    /// This test makes the budget explicit so growth in an account type fails
+    /// here, loudly, rather than in whichever instruction happened to be
+    /// closest to the edge.
+    #[test]
+    fn account_types_stay_inside_the_frame_budget() {
+        let sizes: [(&str, usize); 6] = [
+            ("Depositor",     core::mem::size_of::<Depositor>()),
+            ("Depository",    core::mem::size_of::<Depository>()),
+            ("TickerRisk",    core::mem::size_of::<TickerRisk>()),
+            ("Actuary",       core::mem::size_of::<Actuary>()),
+            ("ProgramConfig", core::mem::size_of::<ProgramConfig>()),
+            ("FlashLoan",     core::mem::size_of::<FlashLoan>()),
+        ];
+        for (name, size) in sizes { println!("{name:>14}: {size:>6} bytes inline"); }
+
+        // These are all small — the collections that dominate them
+        // (`Depositor::balances`, the Actuary's history) are `Vec`s, whose
+        // contents Borsh already puts on the heap. What overflows a frame is
+        // the sum across a context: every account's payload, plus the
+        // temporaries Anchor generates per constraint. That total is not
+        // visible from any one type, which is why the policy is to box every
+        // deserialised account rather than to box the ones that look big.
+        //
+        // The cost of the policy is bounded and worth stating: at most a
+        // dozen accounts in any context, none of them above this bound, is
+        // well under the 32KB bump heap — where an over-allocation fails
+        // loudly, unlike the silent frame overflow it replaces.
+        for (name, size) in sizes {
+            assert!(size < 4_096, "{name} is {size} bytes — too large to ever sit inline");
+        }
+        assert!(sizes.iter().map(|(_, s)| s).sum::<usize>() * 2 < 32_768,
+                "boxing every account twice over must still fit the bump heap");
+    }
+}

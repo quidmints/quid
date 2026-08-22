@@ -151,7 +151,7 @@ pub struct QDBridgeReceived {
 #[instruction(params: LzReceiveParams)]
 pub struct LzReceive<'info> {
     #[account(mut, seeds = [OAPP_STORE_SEED], bump = store.bump)]
-    pub store: Account<'info, OAppStore>,
+    pub store: Box<Account<'info, OAppStore>>,
 
     /// CHECK: LayerZero endpoint account
     #[account(seeds = [b"OApp", store.key().as_ref()],
@@ -188,7 +188,7 @@ pub struct LzReceive<'info> {
 #[derive(Accounts)]
 pub struct LzReceiveTypes<'info> {
     #[account(seeds = [OAPP_STORE_SEED], bump = store.bump)]
-    pub store: Account<'info, OAppStore>,
+    pub store: Box<Account<'info, OAppStore>>,
 
     /// QD mint on this chain. Its account owner is the token program that
     /// `handle_oft_receive` must be handed, and that the recipient's ATA is
@@ -249,11 +249,11 @@ pub struct InitOAppStore<'info> {
     pub payer: Signer<'info>,
 
     #[account(init, payer = payer, space = OAppStore::SIZE, seeds = [OAPP_STORE_SEED], bump)]
-    pub store: Account<'info, OAppStore>,
+    pub store: Box<Account<'info, OAppStore>>,
 
     #[account(init, payer = payer, space = LzReceiveTypesAccounts::SIZE,
               seeds = [LZ_RECEIVE_TYPES_SEED, &store.key().to_bytes()], bump)]
-    pub lz_receive_types_accounts: Account<'info, LzReceiveTypesAccounts>,
+    pub lz_receive_types_accounts: Box<Account<'info, LzReceiveTypesAccounts>>,
 
     /// CHECK: Verified via constraint - program data must be derived from program
     #[account(

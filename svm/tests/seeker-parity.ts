@@ -16,8 +16,32 @@ import * as path from "path";
 
 const ROOT = path.join(__dirname, "..");
 const PROGRAM_IDL = path.join(ROOT, "target/idl/quid.json");
-const SEEKER_IDL  = path.join(ROOT, "seeker/constants/quid.json");
-const HOOK        = path.join(ROOT, "seeker/hooks/useStockExposure.ts");
+
+/**
+ * The app lives beside this package in the monorepo (`seeker/` at the repo
+ * root, next to the SPA) but this package is also checked out on its own, so
+ * both layouts are accepted. The sibling is only believed when its parent
+ * really is this monorepo — walking up looking for any directory called
+ * "seeker" will happily find an unrelated one in a home directory and compare
+ * against the wrong program.
+ *
+ * Absent, these tests skip loudly rather than fail: nothing is wrong with the
+ * program because the client is not in the tree.
+ */
+function findSeeker(): string | null {
+  const override = process.env.QUID_SEEKER_DIR;
+  if (override) return override;
+
+  const isApp = (d: string) => fs.existsSync(path.join(d, "hooks/useStockExposure.ts"));
+  const here = path.join(ROOT, "seeker");
+  if (isApp(here)) return here;
+
+  const repo = path.dirname(ROOT);
+  const sibling = path.join(repo, "seeker");
+  if (fs.existsSync(path.join(repo, "svm/Anchor.toml")) && isApp(sibling)) return sibling;
+  return null;
+}
+const SEEKER = findSeeker();
 
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -41,10 +65,14 @@ function accountsFor(src: string, method: string): string[] {
     .map(l => l.split(/[:,]/)[0].trim());
 }
 
-describe("Seeker ↔ program parity", () => {
+describe("Seeker ↔ program parity", function () {
+  if (!SEEKER) {
+    it("skipped — the Seeker app is not in this checkout", function () { this.skip(); });
+    return;
+  }
   const program = JSON.parse(fs.readFileSync(PROGRAM_IDL, "utf8"));
-  const seeker  = JSON.parse(fs.readFileSync(SEEKER_IDL, "utf8"));
-  const hook    = fs.readFileSync(HOOK, "utf8");
+  const seeker  = JSON.parse(fs.readFileSync(path.join(SEEKER, "constants/quid.json"), "utf8"));
+  const hook    = fs.readFileSync(path.join(SEEKER, "hooks/useStockExposure.ts"), "utf8");
 
   it("P.1 The app ships the program's own IDL, not a stale copy", () => {
     expect(seeker.address).to.equal(program.address);

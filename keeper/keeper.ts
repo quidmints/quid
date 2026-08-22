@@ -47,7 +47,6 @@
 
 
 import { SolanaKeeper } from './keeper_solana'
-import { PredictionMarketKeeper } from './keeper_prediction'
 import { ethers } from 'ethers'
 
 // Optional: uncomment if using dotenv
@@ -1199,22 +1198,19 @@ class QuidKeeper {
 async function main() {
   const evmKeeper = new QuidKeeper()
   const solKeeper = new SolanaKeeper()
-  const pmKeeper = new PredictionMarketKeeper()
 
   const shutdown = () => {
     evmKeeper.stop()
     solKeeper.stop()
-    pmKeeper.stop()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 
-  // Run all three in parallel — each can fail independently
+  // Both in parallel — each can fail independently
   await Promise.allSettled([
     evmKeeper.start().catch(e => console.error('EVM keeper error:', e.message)),
     solKeeper.start().catch(e => console.error('Solana stock keeper error:', e.message)),
-    pmKeeper.start().catch(e => console.error('Solana PM keeper error:', e.message)),
   ])
 }
 
