@@ -70,13 +70,23 @@ impl EnforcedOptions {
 }
 
 /// Encode an outbound OFT payload: `to[32] ‖ amountSD[8] ‖ composeMsg`.
-/// Retained for the outbound leg (burn QD on Solana → release on L1); the
-/// inbound half of that pair is `handle_oft_receive` below.
+///
+/// The `compose_msg` is what carries the ERC-6909 ids home. `Basket.sol`'s
+/// `_handleBasketTransfer` decodes it as `abi.encode(uint[] ids, uint[]
+/// amounts)` and mints at exactly those ids, so a QD balance that arrived
+/// under one id returns under the same one only if this payload names it.
+/// Solana never interprets an id — it is an opaque label here, and the whole
+/// job is to hand it back unaltered.
+///
+/// `amount_sd` used to be hardcoded to zero, which would have failed L1's
+/// `require(_handleBasketTransfer(...) == amountReceivedLD)` on the first
+/// real send.
 #[allow(dead_code)]
-pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(40 + compose_msg.len());
+pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32],
+    amount_sd: u64) -> Vec<u8> {
+    let mut message = Vec::with_capacity(OFT_BRIDGE_MSG_LEN + compose_msg.len());
     message.extend_from_slice(&send_to);
-    message.extend_from_slice(&0u64.to_be_bytes());
+    message.extend_from_slice(&amount_sd.to_be_bytes());
     message.extend(compose_msg);
     message
 }
@@ -111,6 +121,16 @@ pub fn handle_oft_receive<'a>(store_info: &AccountInfo<'a>,
             .map_err(|_| PithyQuip::InvalidParameters)?;
         require!(acct_owner == recipient_pubkey, PithyQuip::InvalidParameters);
     }
+    // Anything past the fixed header is the OFT composeMsg — the metadata
+    // field the standard already provides, and the one `Basket.sol` already
+    // decodes as `abi.encode(uint[] ids, uint[] amounts)`. Ignoring it here is
+    // deliberate: QD is a single fungible mint on this chain, the ERC-6909 id
+    // is remembered on Ethereum, and Solana's job is to avoid corrupting a
+    // label it does not interpret.
+    //
+    // Ignored, not rejected. A revert inside `lz_receive` is not a safe way to
+    // object: an undeliverable message leaves the QD locked on L1 with no way
+    // through, so a tail we do not need must never be able to wedge the bridge.
     let amount_local = amount_sd.checked_mul(SD_TO_LOCAL)
         .ok_or(PithyQuip::InvalidParameters)?;
 
@@ -449,4 +469,42 @@ pub fn cpi_register_oapp<'info>(
     anchor_lang::solana_program::program::invoke_signed(
                             &ix, accounts, signer_seeds)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod bridge_label {
+    use super::*;
+
+    /// `Basket.sol` mints at whatever ids the composeMsg names, so the id a
+    /// balance came in under survives a round trip only if the return payload
+    /// carries it. These pin the two halves of that: the header is fixed-width
+    /// and the label rides behind it, and the amount field is real.
+    #[test]
+    fn outbound_payload_carries_the_label_and_a_real_amount() {
+        let to = [7u8; 32];
+        // abi.encode(uint[] ids, uint[] amounts) — opaque to us, and that is
+        // the point: it is handed back exactly as it must arrive at L1.
+        let label = vec![0xAB, 0xCD, 0xEF];
+        let msg = wrap_in_oft_format(label.clone(), to, 1_234_567);
+
+        assert_eq!(&msg[..32], &to, "recipient occupies the first word");
+        assert_eq!(u64::from_be_bytes(msg[32..40].try_into().unwrap()), 1_234_567,
+                   "amount must be the real figure — L1 requires it to match");
+        assert_eq!(&msg[OFT_BRIDGE_MSG_LEN..], &label[..],
+                   "the id label must survive encoding byte for byte");
+    }
+
+    #[test]
+    fn a_trailing_label_cannot_wedge_the_bridge() {
+        // The header is a floor, not an exact width. A composeMsg Solana has
+        // no use for must pass through harmlessly: rejecting it would make the
+        // message undeliverable and strand the QD locked on L1, which is a far
+        // worse failure than ignoring a label Ethereum already remembers.
+        let bare = vec![0u8; OFT_BRIDGE_MSG_LEN];
+        let labelled = { let mut m = bare.clone(); m.extend_from_slice(&[0xFF; 96]); m };
+        for m in [&bare, &labelled] {
+            assert!(m.len() >= OFT_BRIDGE_MSG_LEN,
+                    "both shapes clear the header check that gates delivery");
+        }
+    }
 }
