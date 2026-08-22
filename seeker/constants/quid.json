@@ -599,6 +599,39 @@
           }
         },
         {
+          "name": "config",
+          "docs": [
+            "The protocol config, for the one thing it settles here: which token",
+            "this bridge is allowed to mint. `registered_mints` is fixed at",
+            "`init_config` to exactly `[token_mint, USD_STAR]` and nothing can",
+            "change it afterwards, so tying the bridge's mint to `token_mint` is",
+            "what makes \"only these two\" true rather than merely intended."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "lz_receive_types_accounts",
           "writable": true,
           "pda": {
@@ -2442,6 +2475,17 @@
           },
           {
             "name": "registered_mints",
+            "docs": [
+              "Exactly two mints are ever acceptable, and neither is chosen after the",
+              "fact: `USD_STAR` is a compile-time constant, and `token_mint` is fixed",
+              "by `init_config` — which uses `init`, so it runs once — with no path in",
+              "`update_config` to revise either. `init_oapp_store` then requires the",
+              "token LayerZero mints to be that same `token_mint`, so the bridge and",
+              "the deposit whitelist cannot name different assets.",
+              "",
+              "This matters because `handle_in`'s SPL leg does no price lookup: a mint",
+              "that reaches `registered_mints` is credited as dollars at face value."
+            ],
             "type": {
               "array": [
                 "pubkey",

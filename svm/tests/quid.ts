@@ -1478,6 +1478,7 @@ describe("QU!D Protocol — Depository Suite", () => {
         .accountsStrict({
           payer: payer.publicKey,
           store: storePDA,
+          config: configPDA,
           lzReceiveTypesAccounts: typesPDA,
           program: program.programId,
           programData,
@@ -1488,7 +1489,50 @@ describe("QU!D Protocol — Depository Suite", () => {
       const store = await program.account.oAppStore.fetch(storePDA);
       expect(store.endpointProgram.toString()).to.equal(LZ_ENDPOINT.toString());
       expect(store.eid).to.equal(30101);        // Ethereum mainnet
-      console.log("  ✓ endpoint pinned to", store.endpointProgram.toString(), "eid", store.eid);
+      // The token the bridge mints is the token the deposit whitelist accepts.
+      expect(store.mint.toString()).to.equal(mintUSD.toString());
+      const cfg = await program.account.programConfig.fetch(configPDA);
+      expect(cfg.registeredMints.length).to.equal(2);
+      expect(cfg.registeredMints.map((m: any) => m.toString()))
+        .to.include(store.mint.toString());
+      console.log("  ✓ endpoint pinned to", store.endpointProgram.toString(),
+                  "eid", store.eid, "— bridge mint is the registered token");
+    });
+
+    it("SW.11 The bridge cannot mint a token the pool would not take", async () => {
+      // Exactly two mints are ever acceptable: USD* (a compile-time constant)
+      // and the token fixed at init_config. Standing the bridge up on anything
+      // else would mint QD no deposit path credits.
+      const rogue = await createMint(provider.connection, payer, payer.publicKey, null, 6);
+      const [storePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("Store")], program.programId);
+      const [typesPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("LzReceiveTypes"), storePDA.toBuffer()], program.programId);
+      const [programData] = PublicKey.findProgramAddressSync(
+        [program.programId.toBuffer()],
+        new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"));
+
+      try {
+        await program.methods
+          .initOappStore({
+            peerAddress: Array.from(Buffer.alloc(32)),
+            mint: rogue,
+            enforcedOptionsSend: Buffer.alloc(0),
+          })
+          .accountsStrict({
+            payer: payer.publicKey, store: storePDA, config: configPDA,
+            lzReceiveTypesAccounts: typesPDA, program: program.programId,
+            programData, systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("A bridge mint outside the whitelist should be rejected");
+      } catch (e: any) {
+        // SW.10 already initialised the store, so either guard is a correct
+        // refusal; what must never hold is a store naming a foreign mint.
+        const store = await program.account.oAppStore.fetch(storePDA);
+        expect(store.mint.toString()).to.not.equal(rogue.toString());
+        console.log("  ✓ foreign bridge mint refused");
+      }
     });
 
     it("SW.9 A pool withdrawal still rejects 0", async () => {

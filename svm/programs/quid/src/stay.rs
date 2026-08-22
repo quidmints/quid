@@ -1512,7 +1512,16 @@ pub struct ProgramConfig {
     /// Controls: bebop_authority, registered_mints, the SOL* settings.
     pub admin: Pubkey,
     pub token_mint: Pubkey,
-    pub registered_mints: [Pubkey; 2], // [quid_mint, USD*]
+    /// Exactly two mints are ever acceptable, and neither is chosen after the
+    /// fact: `USD_STAR` is a compile-time constant, and `token_mint` is fixed
+    /// by `init_config` — which uses `init`, so it runs once — with no path in
+    /// `update_config` to revise either. `init_oapp_store` then requires the
+    /// token LayerZero mints to be that same `token_mint`, so the bridge and
+    /// the deposit whitelist cannot name different assets.
+    ///
+    /// This matters because `handle_in`'s SPL leg does no price lookup: a mint
+    /// that reaches `registered_mints` is credited as dollars at face value.
+    pub registered_mints: [Pubkey; 2], // [token_mint, USD*]
     pub bump: u8,
     /// JAM settlement program authority PDA.
     /// flash_borrow requires flash_authority.key() == this field.

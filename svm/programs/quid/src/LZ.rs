@@ -301,6 +301,14 @@ pub struct InitOAppStore<'info> {
     #[account(init, payer = payer, space = OAppStore::SIZE, seeds = [OAPP_STORE_SEED], bump)]
     pub store: Box<Account<'info, OAppStore>>,
 
+    /// The protocol config, for the one thing it settles here: which token
+    /// this bridge is allowed to mint. `registered_mints` is fixed at
+    /// `init_config` to exactly `[token_mint, USD_STAR]` and nothing can
+    /// change it afterwards, so tying the bridge's mint to `token_mint` is
+    /// what makes "only these two" true rather than merely intended.
+    #[account(seeds = [b"program_config"], bump = config.bump)]
+    pub config: Box<Account<'info, crate::stay::ProgramConfig>>,
+
     #[account(init, payer = payer, space = LzReceiveTypesAccounts::SIZE,
               seeds = [LZ_RECEIVE_TYPES_SEED, &store.key().to_bytes()], bump)]
     pub lz_receive_types_accounts: Box<Account<'info, LzReceiveTypesAccounts>>,
@@ -341,6 +349,13 @@ pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOA
     ctx.accounts.store.endpoint_program = LZ_ENDPOINT_PROGRAM;
     ctx.accounts.store.eid = ETHEREUM_EID;
     ctx.accounts.store.peer_address = params.peer_address;
+    // The token LayerZero mints and the token deposits accept have to be the
+    // same one. They were set from separate inputs with nothing relating them,
+    // so a bridge could have been stood up minting a token the pool would not
+    // take — or, with the mint whitelist keyed on the other value, taking one
+    // the bridge never minted.
+    require_keys_eq!(params.mint, ctx.accounts.config.token_mint,
+                     PithyQuip::InvalidMint);
     ctx.accounts.store.mint = params.mint;
     ctx.accounts.store.enforced_options = EnforcedOptions {
         send: params.enforced_options_send.clone(),
