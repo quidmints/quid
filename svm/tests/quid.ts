@@ -1452,6 +1452,45 @@ describe("QU!D Protocol — Depository Suite", () => {
       console.log("  ✓ Full SOL exit drained", before.depositedLamports.toString(), "lamports");
     });
 
+    it("SW.10 The LayerZero endpoint and origin chain cannot be pointed elsewhere", async () => {
+      // The endpoint is hardcoded: messages are addressed to it and QD is
+      // minted on what it delivers, so a caller supplying their own would be
+      // supplying their own mint authority. `init_oapp_store` takes only the
+      // L1 peer now — the endpoint and eid come from constants.
+      const LZ_ENDPOINT = new PublicKey("76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
+      const [storePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("Store")], program.programId);
+      const [typesPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("LzReceiveTypes"), storePDA.toBuffer()], program.programId);
+      const [programData] = PublicKey.findProgramAddressSync(
+        [program.programId.toBuffer()],
+        new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"));
+
+      const peer = Buffer.alloc(32);            // Basket.sol, left-padded
+      Buffer.from("beef".repeat(10), "hex").copy(peer, 12, 0, 20);
+
+      await program.methods
+        .initOappStore({
+          peerAddress: Array.from(peer),
+          mint: mintUSD,
+          enforcedOptionsSend: Buffer.alloc(0),
+        })
+        .accountsStrict({
+          payer: payer.publicKey,
+          store: storePDA,
+          lzReceiveTypesAccounts: typesPDA,
+          program: program.programId,
+          programData,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const store = await program.account.oAppStore.fetch(storePDA);
+      expect(store.endpointProgram.toString()).to.equal(LZ_ENDPOINT.toString());
+      expect(store.eid).to.equal(30101);        // Ethereum mainnet
+      console.log("  ✓ endpoint pinned to", store.endpointProgram.toString(), "eid", store.eid);
+    });
+
     it("SW.9 A pool withdrawal still rejects 0", async () => {
       // Only the native leg reads 0 as "everything" — an SPL withdrawal of 0
       // is a malformed request, not a full exit.

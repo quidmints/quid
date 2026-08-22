@@ -70,9 +70,22 @@ USDT_PYTH="HT2PLQBcG5EiCcNSaMHAjSgd9F98ecpATbk4Sk5oYuM"
 DAI_PYTH="FmfrxJ7YH8yVxoYpJ9ZDMeb8gUceYXYaSrQiBJ1uSZjN"
 PYUSD_PYTH="9zXQxpYH3kYhtoybmZfUNNCRVuud7fY9jswTg1hLyT8k"
 
+# LayerZero V2 Endpoint, dumped from mainnet with
+#   solana -u m program dump 76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6 \
+#          tests/fixtures/lz_endpoint.so
+# Loaded at its real address so the bridge is exercised against the actual
+# program rather than a stand-in — the same trick as the Pyth feeds below.
+LZ_ENDPOINT="76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6"
+
 # Build account arguments - only add files that exist
 ACCOUNTS=()
 PROGRAMS=()
+
+if [ -f "$FIXTURES/lz_endpoint.so" ]; then
+  PROGRAMS+=("--bpf-program $LZ_ENDPOINT $FIXTURES/lz_endpoint.so")
+else
+  echo "  ⚠ Skipping LayerZero endpoint (fixture not found)"
+fi
 
 # Helper function to add account if fixture exists
 add_if_exists() {

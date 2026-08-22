@@ -2255,15 +2255,14 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "endpoint",
-            "type": "pubkey"
-          },
-          {
-            "name": "eid",
-            "type": "u32"
-          },
-          {
             "name": "peer_address",
+            "docs": [
+              "Basket.sol on Ethereum, left-padded to 32 bytes. The endpoint and the",
+              "endpoint id are deliberately not parameters — they come from",
+              "`LZ_ENDPOINT_PROGRAM` and `ETHEREUM_EID`, so there is no configuration",
+              "under which this OApp talks to the wrong endpoint or accepts from the",
+              "wrong chain."
+            ],
             "type": {
               "array": [
                 "u8",

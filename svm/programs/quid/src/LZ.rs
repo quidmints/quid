@@ -2,6 +2,33 @@
 use anchor_lang::prelude::*;
 use crate::etc::PithyQuip;
 
+/// LayerZero V2 Endpoint program on Solana, and the endpoint ids either side
+/// of the only bridge this program has.
+///
+/// Hardcoded rather than left to config because a wrong endpoint is not a
+/// recoverable misconfiguration: messages are addressed to it, and QD is
+/// minted on what it delivers, so a caller who supplies their own endpoint is
+/// supplying their own mint authority.
+///
+/// From LayerZero's metadata service and checked against mainnet — the program
+/// is live under the upgradeable loader at this address, and the same program
+/// serves testnet. `tests/fixtures/lz_endpoint.so` is a dump of it, loaded
+/// into the local validator at this address the way the Pyth feeds are, so the
+/// bridge is exercised against the real program rather than a stand-in.
+///
+/// `76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6`
+pub const LZ_ENDPOINT_PROGRAM: Pubkey = Pubkey::new_from_array([
+    90, 173, 118, 218, 81, 75, 110, 29, 207, 17, 3, 126,
+    144, 77, 172, 61, 55, 95, 82, 92, 159, 186, 252, 177,
+    149, 7, 183, 137, 7, 216, 193, 139,
+]);
+
+/// Solana mainnet. Ours.
+pub const SOLANA_EID: u32 = 30_168;
+/// Ethereum mainnet, where Basket.sol lives and where the ERC-6909 id a QD
+/// balance was issued under is remembered.
+pub const ETHEREUM_EID: u32 = 30_101;
+
 pub const OAPP_STORE_SEED: &[u8] = b"Store";
 pub const CHAIN_SEED: &[u8] = b"Chain";
 pub const LZ_RECEIVE_TYPES_SEED: &[u8] = b"LzReceiveTypes";
@@ -255,8 +282,11 @@ pub fn lz_receive_types_handler(ctx: Context<LzReceiveTypes>,
     AnchorSerialize,
     AnchorDeserialize)]
 pub struct InitOAppStoreParams {
-    pub endpoint: Pubkey,
-    pub eid: u32,
+    /// Basket.sol on Ethereum, left-padded to 32 bytes. The endpoint and the
+    /// endpoint id are deliberately not parameters — they come from
+    /// `LZ_ENDPOINT_PROGRAM` and `ETHEREUM_EID`, so there is no configuration
+    /// under which this OApp talks to the wrong endpoint or accepts from the
+    /// wrong chain.
     pub peer_address: [u8; 32],
     pub mint: Pubkey,
     pub enforced_options_send: Vec<u8>,
@@ -308,8 +338,8 @@ pub struct InitOAppStore<'info> {
 pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOAppStoreParams) -> Result<()> {
     ctx.accounts.store.admin = ctx.accounts.payer.key();
     ctx.accounts.store.bump = ctx.bumps.store;
-    ctx.accounts.store.endpoint_program = params.endpoint;
-    ctx.accounts.store.eid = params.eid;
+    ctx.accounts.store.endpoint_program = LZ_ENDPOINT_PROGRAM;
+    ctx.accounts.store.eid = ETHEREUM_EID;
     ctx.accounts.store.peer_address = params.peer_address;
     ctx.accounts.store.mint = params.mint;
     ctx.accounts.store.enforced_options = EnforcedOptions {
@@ -322,7 +352,8 @@ pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOA
     {
         let register_params = RegisterOAppParams { delegate: ctx.accounts.store.admin };
         let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[ctx.accounts.store.bump]]];
-        cpi_register_oapp(params.endpoint, ctx.accounts.store.key(), ctx.remaining_accounts, seeds, register_params)?;
+        cpi_register_oapp(LZ_ENDPOINT_PROGRAM, ctx.accounts.store.key(),
+                          ctx.remaining_accounts, seeds, register_params)?;
     }
     Ok(())
 }
@@ -474,6 +505,29 @@ pub fn cpi_register_oapp<'info>(
 #[cfg(test)]
 mod bridge_label {
     use super::*;
+
+    /// The endpoint address is the one value here that cannot be wrong twice.
+    /// It is written as bytes, so this decodes it back to the base58 that
+    /// LayerZero publishes and that `solana program show` resolves on mainnet.
+    #[test]
+    fn endpoint_constant_is_the_published_address() {
+        const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut digits: Vec<u8> = vec![0];
+        for &byte in LZ_ENDPOINT_PROGRAM.as_ref() {
+            let mut carry = byte as usize;
+            for d in digits.iter_mut() {
+                carry += (*d as usize) << 8;
+                *d = (carry % 58) as u8;
+                carry /= 58;
+            }
+            while carry > 0 { digits.push((carry % 58) as u8); carry /= 58; }
+        }
+        let encoded: String = digits.iter().rev()
+            .map(|&d| ALPHABET[d as usize] as char).collect();
+        assert_eq!(encoded, "76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
+        assert_eq!(SOLANA_EID, 30_168);
+        assert_eq!(ETHEREUM_EID, 30_101);
+    }
 
     /// `Basket.sol` mints at whatever ids the composeMsg names, so the id a
     /// balance came in under survives a round trip only if the return payload
