@@ -176,6 +176,60 @@ This is why solvency here is a statement about what the pool can be *valued* at,
 not what it can be *converted* into, and why the two should never be conflated
 in anything the protocol claims.
 
+### Whether to buy at all, and when
+
+Default: **no, not systematically**, because the design already does most of
+the work. The pool is short the *net* of each ticker, so Alice long 100 against
+Bob short 100 leaves it flat however much collateral sits behind either side.
+Securities only matter for the residual, and the residual is exactly what the
+collar and the per-ticker reserve already cover. Hedging a book that nets to
+near zero pays a spread to remove a risk that is not there.
+
+Four things argue against a standing programme, beyond the cost:
+
+- It converts liquid dollars into a less liquid asset, against a protocol whose
+  first promise is redeemability. xStock secondary depth is thinner than the
+  underlying's, and thinnest when it would be needed.
+- Coverage is 80 of 1,063. Hedging the tickers that *can* be hedged, while the
+  other 983 stay open, can leave a worse book than an unhedged one — the
+  measurable risks removed and the rest kept.
+- Basis risk. xStocks trade around the clock and the underlying does not, so a
+  position marked against an equity feed but held as a token drifts from it
+  over every weekend.
+- Minting is closed, so every purchase is secondary-market at whatever depth
+  exists that day.
+
+If a hedge is worth holding, the rule is **persistence, not panic.**
+
+The instinct is to buy when the books are called, which is when prices are
+falling. That is the worst moment on every axis simultaneously — collateral
+worth least, redemption slowest, secondary market thinnest, and the Ethereum
+leg still not atomic. Buying under stress converts a modelled risk into a
+realised loss, and does it at the widest spread available.
+
+A hedge earns its cost when a net position has *persisted*: same direction,
+material size, sustained across a long window. That is a different trigger from
+"today is bad", and it points the other way in time — the position is put on in
+calm conditions, for the few largest concentrations, and by hand long before it
+is worth automating. Nothing in the program decides this; `is_deliverable()`
+answers whether the option exists and stops there.
+
+No concentration surcharge is priced against this, deliberately. `crowding_bps`
+already charges a one-sided book more and offsetting flow less, which is the
+same signal without the extra machinery.
+
+### The return leg is a holder's action
+
+Bridging back is not an operator's privilege and does not need one. The holder
+burns QD on Solana and `Basket.sol` releases the matching QD to them on
+Ethereum: nothing is created or destroyed, the balance changes chains. Gating
+that behind an authority would leave QD-on-Solana with no exit, which is what
+makes the 1:1 the accounting assumes unenforceable — no holder could redeem it
+and no arbitrageur could close a gap, because closing one means moving QD home.
+
+The maturity is the exception, and the only one. It is set by the program, not
+the caller, for the reason below.
+
 ### Known gap: the return leg and the 6909 maturity
 
 QD crosses to Solana and cannot cross back. There is no outbound instruction —
@@ -214,7 +268,8 @@ What must not happen is the obvious version — letting the sender name the id.
 The message is what mints, so a caller who picks an already-vested month
 converts a locked balance into an immediately redeemable one by bridging it
 twice. Until the return leg exists, that risk is theoretical; the moment it
-does, the id has to come from somewhere the caller does not control.
+does, the id has to come from somewhere the caller does not control. This is
+the one part of an otherwise permissionless path that the program must own.
 
 Neither option needs a new instruction. Sending QD home is a withdrawal, so it
 belongs on `handle_out` with the endpoint accounts riding `remaining_accounts`
