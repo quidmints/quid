@@ -182,24 +182,41 @@ QD crosses to Solana and cannot cross back. There is no outbound instruction —
 `wrap_in_oft_format`, `cpi_send` and `cpi_quote` are wired and waiting, which is
 why they carry `#[allow(dead_code)]` rather than being deleted.
 
-Building it needs a decision that is not the program's to make alone.
+Building it needs a decision, and one of the three candidates is already
+settled: **Solana does not track maturity and does not carry more state.**
+
 `Basket.sol::_handleBasketTransfer` mints at whatever ids the returning message
-names, and the id is a maturity: `currentMonth()` is
+names, and the id is a maturity — `currentMonth()` is
 `(block.timestamp - _deployed) / MONTH`, a small integer off a clock. Solana's
 QD is a single fungible mint and records no maturity, so on the way back there
-is nothing to read the id from. Three ways out, and they are not equivalent:
+is nothing to read the id from. What remains:
 
-1. **Ethereum chooses.** The cleanest — the id is derivable there, and Solana
-   never has to be trusted with it. Needs a Solidity change, so it is not on
-   this side of the wire.
-2. **Solana tracks maturity per holder.** Correct, and the most state this
-   program would carry for one feature.
-3. **Return at the least favourable maturity.** No new state: always name the
-   newest month, so a round trip can never shorten the wait. Safe by
-   construction, and unfair to anyone whose QD really was near vesting.
+1. **Ethereum derives it.** The id is computable there, so the message would
+   not need to carry one at all and Solana would never be trusted with it.
+   Cleanest, and a Solidity change, so it is not on this side of the wire.
+2. **Solana derives the same number from the same clock.** `MONTH` is
+   2,420,000 seconds and `_deployed` is fixed the moment `Basket.sol` is live,
+   so both are constants of the sort `USD_STAR` and `LZ_ENDPOINT_PROGRAM`
+   already are — knowledge, not state. Solana computes
+   `(now - deployed) / MONTH` from its own `Clock` and names the month *after*
+   it, which is what `_handleJuryCompensation` already does when it mints at
+   `currentMonth() + 1`.
+
+The `+ 1` is doing real work. Solana's clock and Ethereum's `block.timestamp`
+both track wall time but not each other, and near a month boundary they
+disagree. Naming the next month means skew can only ever place the maturity
+further out, never nearer — a round trip cannot shorten a wait, whichever chain
+is ahead. The cost is that someone whose QD genuinely was near vesting is
+pushed back a month by bridging, which is the right way round for the error to
+fall.
 
 What must not happen is the obvious version — letting the sender name the id.
 The message is what mints, so a caller who picks an already-vested month
 converts a locked balance into an immediately redeemable one by bridging it
 twice. Until the return leg exists, that risk is theoretical; the moment it
 does, the id has to come from somewhere the caller does not control.
+
+Neither option needs a new instruction. Sending QD home is a withdrawal, so it
+belongs on `handle_out` with the endpoint accounts riding `remaining_accounts`
+— exactly how the Kestrel round trip was folded in rather than given
+instructions of its own.
