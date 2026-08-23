@@ -114,7 +114,7 @@ pub mod quid {
         // previous shape took a ChainConfig through remaining_accounts and had
         // to prove ownership, discriminator and liveness by hand before it
         // could trust a single field.
-        require!(ctx.accounts.store.eid == params.src_eid,
+        require!(params.src_eid == LZ::ETHEREUM_EID,
                  PithyQuip::InvalidParameters);
         require!(ctx.accounts.store.peer_address == params.sender,
                  PithyQuip::InvalidParameters);
@@ -139,9 +139,7 @@ pub mod quid {
             OAPP_STORE_SEED,
             &[ctx.accounts.store.bump],
         ]];
-        cpi_clear(
-            ctx.accounts.store.endpoint_program,
-            ctx.accounts.store.key(),
+        cpi_clear(LZ::LZ_ENDPOINT_PROGRAM,
             &clear_accounts, seeds, clear_params )?;
 
         LZ::handle_oft_receive(&ctx.accounts.store.to_account_info(),

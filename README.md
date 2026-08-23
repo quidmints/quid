@@ -296,6 +296,26 @@ belongs on `handle_out` with the endpoint accounts riding `remaining_accounts`
 — exactly how the Kestrel round trip was folded in rather than given
 instructions of its own.
 
+### The bridge is not proven, and cannot be proven here
+
+Both halves are written, both compile, and the pieces that can be checked in
+isolation are: the payload is exactly the 40-byte header, the burn rounds to
+whole shared-decimal units, the peer and origin chain are verified on receive,
+and `cpi_clear` runs before any mint so a message the endpoint never delivered
+cannot mint anything.
+
+None of that is evidence the bridge works. A local validator can load the real
+endpoint program — it does — but not the message libraries, DVN attestations
+and executor configuration that make a send routable or a receive verifiable.
+Nothing here has ever carried a message end to end.
+
+Proving it needs a real crossing: the program deployed to Solana devnet against
+endpoint id 40168, `Basket.sol` on a matching testnet, DVNs configured on both
+sides, and a QD round trip observed to land. Until that has been done, treat
+the return leg as untested code that compiles, not as a working bridge, and do
+not let the fact that everything else in this repository is covered by tests
+suggest otherwise.
+
 ## Whose credit you hold
 
 Nobody puts real securities on chain. Every venue issues a liability against
@@ -333,6 +353,27 @@ to compromise. Adding one for convenience is the door that must stay shut.
 **Here** it is a pool that is over-collateralised, on chain, and short only the
 net of each ticker. No permanent delegate over a position, no pause authority,
 no chain operator between an order and the book.
+
+### Minting is not something the program can do
+
+There is no on-chain issuance to call. AAPLx's mint authority is
+`7pt9tkctJPK7PPNQJ77GKg8ZffSF6QxoMiCFYHxrtaCj`, owned by the System Program —
+a plain wallet, not a PDA, and not executable. So Backed mints by signing off
+chain, and their three documented flows are consistent with that: sweeping
+addresses and API keys for the market flow, RFQ, and in-kind. Onboarding buys a
+whitelisted wallet and API credentials, not a program to CPI into.
+
+That leaves two routes for acquiring the residual hedge, and they trade against
+each other. On-chain through a DEX, which the program can do by itself with no
+operator, at whatever secondary depth exists — thinnest exactly when it would
+be needed. Or through Backed's primary market, which prices better at size but
+requires an operator holding a whitelisted key and executing off chain.
+
+The second is worth naming precisely rather than dismissing: an operator key in
+the settlement path is the *shape* of what took Ostium down. It is materially
+different — an execution key cannot fabricate a price the way a compromised
+oracle signer can — but it is the same category of trust this design has
+otherwise kept out, and it should be adopted knowingly if at all.
 
 ### What primary-market access does and does not buy
 

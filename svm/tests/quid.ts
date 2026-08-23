@@ -1565,7 +1565,6 @@ describe("QU!D Protocol — Depository Suite", () => {
       // minted on what it delivers, so a caller supplying their own would be
       // supplying their own mint authority. `init_oapp_store` takes only the
       // L1 peer now — the endpoint and eid come from constants.
-      const LZ_ENDPOINT = new PublicKey("76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
       const [storePDA] = PublicKey.findProgramAddressSync(
         [Buffer.from("Store")], program.programId);
       const [typesPDA] = PublicKey.findProgramAddressSync(
@@ -1595,16 +1594,18 @@ describe("QU!D Protocol — Depository Suite", () => {
         .rpc();
 
       const store = await program.account.oAppStore.fetch(storePDA);
-      expect(store.endpointProgram.toString()).to.equal(LZ_ENDPOINT.toString());
-      expect(store.eid).to.equal(30101);        // Ethereum mainnet
+      // The endpoint and the origin chain are not stored at all — they are
+      // constants in the program, so there is no record that could disagree
+      // with the code. What the store does hold is the peer and the mint.
+      expect(store.peerAddress).to.deep.equal(Array.from(peer));
       // The token the bridge mints is the token the deposit whitelist accepts.
       expect(store.mint.toString()).to.equal(mintUSD.toString());
       const cfg = await program.account.programConfig.fetch(configPDA);
       expect(cfg.registeredMints.length).to.equal(2);
       expect(cfg.registeredMints.map((m: any) => m.toString()))
         .to.include(store.mint.toString());
-      console.log("  ✓ endpoint pinned to", store.endpointProgram.toString(),
-                  "eid", store.eid, "— bridge mint is the registered token");
+      console.log("  ✓ peer recorded; endpoint and origin chain are constants,",
+                  "and the bridge mint is the registered token");
     });
 
     it("SW.11 The bridge cannot mint a token the pool would not take", async () => {

@@ -61,10 +61,10 @@ pub const SD_TO_LOCAL: u64 = 1_000;
 #[account]
 pub struct OAppStore {
     pub admin: Pubkey, pub bump: u8,
-    pub endpoint_program: Pubkey,
-    /// Endpoint id of the L1 we accept from.
-    pub eid: u32,
-    /// Basket.sol, left-padded to 32 bytes.
+    /// Basket.sol, left-padded to 32 bytes. The only address here that is not
+    /// a constant: the endpoint is `LZ_ENDPOINT_PROGRAM` and the chain we
+    /// accept from is `ETHEREUM_EID`, so storing either would only create a
+    /// way for the record and the code to disagree.
     pub peer_address: [u8; 32],
     /// QD mint on this chain.
     pub mint: Pubkey,
@@ -72,7 +72,7 @@ pub struct OAppStore {
 }
 
 impl OAppStore {
-    pub const SIZE: usize = 8 + 32 + 1 + 32 + 4 + 32 + 32
+    pub const SIZE: usize = 8 + 32 + 1 + 32 + 32
         + EnforcedOptions::MAX_SIZE;
 }
 
@@ -153,7 +153,7 @@ pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
 
     let store = &ctx.accounts.store;
     let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[store.bump]]];
-    cpi_send(LZ_ENDPOINT_PROGRAM, store.key(), ctx.remaining_accounts, seeds,
+    cpi_send(LZ_ENDPOINT_PROGRAM, ctx.remaining_accounts, seeds,
         SendParams {
             dst_eid: ETHEREUM_EID,
             // The destination OApp is Basket.sol; the end recipient rides in
@@ -165,7 +165,7 @@ pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
         })?;
 
     emit!(QDBridgeSent { sender: ctx.accounts.signer.key(),
-                         recipient: to, amount_sd, burned: burn_amount });
+                         recipient: to, amount_sd });
     Ok(())
 }
 
@@ -173,8 +173,8 @@ pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
 pub struct QDBridgeSent {
     pub sender: Pubkey,
     pub recipient: [u8; 20],
+    /// What was burned is this times `SD_TO_LOCAL`, so only one is recorded.
     pub amount_sd: u64,
-    pub burned: u64,
 }
 
 /// Encode an outbound OFT payload: `to[32] ‖ amountSD[8]`, and nothing else.
@@ -276,14 +276,14 @@ pub struct LzReceive<'info> {
 
     /// CHECK: LayerZero endpoint account
     #[account(seeds = [b"OApp", store.key().as_ref()],
-    bump, seeds::program = store.endpoint_program)]
+    bump, seeds::program = LZ_ENDPOINT_PROGRAM)]
     pub oapp_registry: AccountInfo<'info>,
 
     /// CHECK: LayerZero nonce account
     #[account(seeds = [b"Nonce",
         store.key().as_ref(),
         &params.src_eid.to_be_bytes(), &params.sender[..]],
-        bump, seeds::program = store.endpoint_program
+        bump, seeds::program = LZ_ENDPOINT_PROGRAM
     )]
     pub nonce: AccountInfo<'info>,
 
@@ -293,13 +293,13 @@ pub struct LzReceive<'info> {
         store.key().as_ref(),
         &params.src_eid.to_be_bytes(),
         &params.sender[..], &params.nonce.to_be_bytes()],
-        bump, seeds::program = store.endpoint_program
+        bump, seeds::program = LZ_ENDPOINT_PROGRAM
     )]
     pub payload_hash: AccountInfo<'info>,
 
     /// CHECK: LayerZero endpoint settings
     #[account(mut, seeds = [b"Endpoint"],
-    bump, seeds::program = store.endpoint_program)]
+    bump, seeds::program = LZ_ENDPOINT_PROGRAM)]
     pub endpoint: AccountInfo<'info>,
 
     /// CHECK: the shared endpoint, pinned. The CPI below is addressed using
@@ -336,8 +336,7 @@ pub fn lz_receive_types_handler(ctx: Context<LzReceiveTypes>,
     require!(params.message.len() == OFT_BRIDGE_MSG_LEN,
              PithyQuip::InvalidMessageFormat);
 
-    require!(params.src_eid == ctx.accounts.store.eid,
-             PithyQuip::InvalidParameters);
+    require!(params.src_eid == ETHEREUM_EID, PithyQuip::InvalidParameters);
     let mint = ctx.accounts.store.mint;
     let token_program = *ctx.accounts.mint.owner;
 
@@ -424,8 +423,6 @@ pub struct InitOAppStore<'info> {
 pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOAppStoreParams) -> Result<()> {
     ctx.accounts.store.admin = ctx.accounts.payer.key();
     ctx.accounts.store.bump = ctx.bumps.store;
-    ctx.accounts.store.endpoint_program = LZ_ENDPOINT_PROGRAM;
-    ctx.accounts.store.eid = ETHEREUM_EID;
     ctx.accounts.store.peer_address = params.peer_address;
     // The token LayerZero mints and the token deposits accept have to be the
     // same one. They were set from separate inputs with nothing relating them,
@@ -445,7 +442,7 @@ pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOA
     {
         let register_params = RegisterOAppParams { delegate: ctx.accounts.store.admin };
         let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[ctx.accounts.store.bump]]];
-        cpi_register_oapp(LZ_ENDPOINT_PROGRAM, ctx.accounts.store.key(),
+        cpi_register_oapp(LZ_ENDPOINT_PROGRAM,
                           ctx.remaining_accounts, seeds, register_params)?;
     }
     Ok(())
@@ -502,27 +499,11 @@ pub struct LzAccount {
     pub is_writable: bool,
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
-pub struct QuoteParams {
-    pub sender: Pubkey,
-    pub dst_eid: u32,
-    pub receiver: [u8; 32],
-    pub message: Vec<u8>,
-    pub options: Vec<u8>,
-    pub pay_in_lz_token: bool,
-}
-
-#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
-pub struct MessagingFee {
-    pub native_fee: u64,
-    pub lz_token_fee: u64,
-}
-
 /// Outbound endpoint CPI shims. Unused while the OApp is receive-only; they
 /// are the other half of the QD bridge (burn on Solana → release on L1) and
 /// are kept wired so that leg is an instruction, not a re-implementation.
 fn cpi_send<'info>(
-    endpoint_program: Pubkey, _oapp: Pubkey,
+    endpoint_program: Pubkey,
     remaining_accounts: &[AccountInfo<'info>],
     signer_seeds: &[&[&[u8]]], params: SendParams) -> Result<()> {
     let mut ix_data = vec![102, 251, 20, 187, 65, 75, 12, 69];
@@ -539,32 +520,9 @@ fn cpi_send<'info>(
     Ok(())
 }
 
-/// Ask the endpoint what a send will cost. Not called by `bridge_home`, and
-/// deliberately: the endpoint checks the fee it is paid, so quoting on-chain
-/// would spend compute to re-derive a number the caller already had to know to
-/// fund the transaction. Clients quote here by simulation before sending,
-/// which is the same path LayerZero's own examples take.
-#[allow(dead_code)]
-fn cpi_quote<'info>(endpoint_program: Pubkey,
-    accounts: &[AccountInfo<'info>], params: QuoteParams) -> Result<MessagingFee> {
-    let mut ix_data = vec![53, 91, 145, 11, 230, 75, 175, 90];
-    ix_data.extend_from_slice(&params.try_to_vec()?);
-    let ix = anchor_lang::solana_program::instruction::Instruction {
-        program_id: endpoint_program, accounts: accounts.iter().map(
-        |acc| anchor_lang::solana_program::instruction::AccountMeta {
-                            pubkey: *acc.key, is_signer: acc.is_signer,
-                is_writable: acc.is_writable }).collect(), data: ix_data };
-
-    anchor_lang::solana_program::program::invoke(&ix, accounts)?;
-    let (program_id, return_data) = anchor_lang::solana_program::program::get_return_data()
-                                                        .ok_or(PithyQuip::NoReturnData)?;
-
-    require!(program_id == endpoint_program, PithyQuip::InvalidReturnData);
-    MessagingFee::try_from_slice(&return_data).map_err(|_| PithyQuip::InvalidReturnData.into())
-}
 
 pub fn cpi_clear<'info>(
-    endpoint_program: Pubkey, _oapp: Pubkey, accounts: &[AccountInfo<'info>],
+    endpoint_program: Pubkey, accounts: &[AccountInfo<'info>],
     signer_seeds: &[&[&[u8]]], params: ClearParams) -> Result<()> {
     let mut ix_data = vec![250, 39, 28, 213, 123, 163, 133, 5];
 
@@ -582,7 +540,7 @@ pub fn cpi_clear<'info>(
 }
 
 pub fn cpi_register_oapp<'info>(
-    endpoint_program: Pubkey, _oapp: Pubkey, accounts: &[AccountInfo<'info>],
+    endpoint_program: Pubkey, accounts: &[AccountInfo<'info>],
     signer_seeds: &[&[&[u8]]], params: RegisterOAppParams) -> Result<()> {
     let mut ix_data = vec![129, 89, 71, 68, 11, 82, 210, 125];
     ix_data.extend_from_slice(&params.try_to_vec()?);

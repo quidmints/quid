@@ -162,20 +162,8 @@ pub enum PithyQuip {
     #[msg("Unauthorized")]
     Unauthorized,
 
-    #[msg("who thee QD")]
-    InvalidAccountOwner,
-
     #[msg("Insufficient accounts provided")]
     InsufficientAccounts,
-
-    #[msg("Invalid return data from cross-program call")]
-    InvalidReturnData,
-
-    #[msg("No return data from cross-program call")]
-    NoReturnData,
-
-    #[msg("Trading is frozen (resolution pending)")]
-    TradingFrozen,
 
     #[msg("Oracle price confidence too wide - price uncertain")]
     PriceUncertain,
