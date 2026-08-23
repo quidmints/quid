@@ -237,8 +237,26 @@ contract Basket is OFT, // LZ
         uint amountReceivedLD = _toLD(amountSD);
         bytes memory composeMsg = _message.composeMsg();
         address to = _message.sendTo().bytes32ToAddress();
+
+        // No composeMsg means exactly that: tokens and nothing else, which is
+        // what a QD return from any chain is. Everything the mint needs is
+        // already in the header — `to` and `amountReceivedLD` — and the
+        // maturity is derived here rather than sent, so there is no field for
+        // a returning holder to name. That is what stops one picking an
+        // already-vested month and shortening their own lock by bridging
+        // twice. The type bytes below exist for the court messages, which are
+        // the exceptions; a plain transfer needs no type at all.
+        if (composeMsg.length == 0) {
+            if (_origin.srcEid != SOLANA_EID 
+             && _origin.srcEid != BASE_EID
+             && _origin.srcEid != ARBI_EID
+             && _origin.srcEid != POLY_EID) revert WrongChain();
+            _mint(to, currentMonth() + 1, amountReceivedLD);
+            emit OFTReceived(_guid, _origin.srcEid, to, amountReceivedLD);
+            return;
+        }
+
         uint8 msgType = MessageCodec.getMessageType(composeMsg);
-        
         if (msgType == MessageCodec.RESOLUTION_REQUEST) {
             if (_origin.srcEid != SOLANA_EID) revert WrongChain();
             Court(court).receiveResolutionRequest(composeMsg);
@@ -249,20 +267,7 @@ contract Basket is OFT, // LZ
             _handleJuryCompensation(_guid, _origin.srcEid, 
                             composeMsg, amountReceivedLD);
         } 
-        else if (msgType == MessageCodec.TRANSFER) {
-            if (_origin.srcEid != SOLANA_EID 
-             && _origin.srcEid != BASE_EID
-             && _origin.srcEid != ARBI_EID
-             && _origin.srcEid != POLY_EID) revert WrongChain();
-            // Everything this needs is already in the OFT header: `to` and
-            // `amountReceivedLD`. The composeMsg carries only the type byte,
-            // so there is nothing to decode and nothing the sender can choose.
-            // The maturity is derived here rather than sent, which is what
-            // keeps a returning holder from naming an already-vested month and
-            // shortening their own lock by bridging twice.
-            _mint(to, currentMonth() + 1, amountReceivedLD);
-            emit OFTReceived(_guid, _origin.srcEid, to, amountReceivedLD);
-        } else revert BadType();
+        else revert BadType();
     }
 
     function _handleJuryCompensation(bytes32 _guid,

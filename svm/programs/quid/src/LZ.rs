@@ -49,12 +49,6 @@ pub const QD_LOCAL_DECIMALS: u8 = 9;
 /// Multiply amountSD by this to get local token units.
 pub const SD_TO_LOCAL: u64 = 1_000;
 
-/// `MessageCodec.TRANSFER` on the Ethereum side — the whole composeMsg for a
-/// QD return. Everything else the mint needs is already in the OFT header:
-/// the recipient is `sendTo` and the size is `amountSD`. The maturity is
-/// derived on arrival rather than sent, so there is no field here for a
-/// returning holder to choose, and nothing for this chain to remember.
-pub const MSG_TYPE_TRANSFER: u8 = 8;
 
 /// The OApp, and its single counterparty.
 ///
@@ -165,7 +159,7 @@ pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
             // The destination OApp is Basket.sol; the end recipient rides in
             // the message's own `sendTo` field, set just above.
             receiver: store.peer_address,
-            message: wrap_in_oft_format(vec![MSG_TYPE_TRANSFER], recipient, amount_sd),
+            message: wrap_in_oft_format(recipient, amount_sd),
             options: store.enforced_options.get_enforced_options(&None),
             native_fee, lz_token_fee: 0,
         })?;
@@ -183,24 +177,18 @@ pub struct QDBridgeSent {
     pub burned: u64,
 }
 
-/// Encode an outbound OFT payload: `to[32] ‖ amountSD[8] ‖ composeMsg`.
+/// Encode an outbound OFT payload: `to[32] ‖ amountSD[8]`, and nothing else.
 ///
-/// The `compose_msg` is what carries the ERC-6909 ids home. `Basket.sol`'s
-/// `_handleBasketTransfer` decodes it as `abi.encode(uint[] ids, uint[]
-/// amounts)` and mints at exactly those ids, so a QD balance that arrived
-/// under one id returns under the same one only if this payload names it.
-/// Solana never interprets an id — it is an opaque label here, and the whole
-/// job is to hand it back unaltered.
-///
-/// `amount_sd` used to be hardcoded to zero, which would have failed L1's
-/// `require(_handleBasketTransfer(...) == amountReceivedLD)` on the first
-/// real send.
-pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32],
-    amount_sd: u64) -> Vec<u8> {
-    let mut message = Vec::with_capacity(OFT_BRIDGE_MSG_LEN + compose_msg.len());
+/// A QD return is a plain token transfer, so it carries no compose message —
+/// the absence is the meaning. `Basket.sol` reads the recipient and the size
+/// straight from this header and derives the maturity itself, so there is
+/// nothing left to encode: no ids, no amounts, no message type. An earlier
+/// shape sent `abi.encode(uint[] ids, uint[] amounts)` behind a type byte,
+/// which duplicated both header fields and could not be decoded anyway.
+pub fn wrap_in_oft_format(send_to: [u8; 32], amount_sd: u64) -> Vec<u8> {
+    let mut message = Vec::with_capacity(OFT_BRIDGE_MSG_LEN);
     message.extend_from_slice(&send_to);
     message.extend_from_slice(&amount_sd.to_be_bytes());
-    message.extend(compose_msg);
     message
 }
 
@@ -634,41 +622,20 @@ mod bridge_label {
         assert_eq!(ETHEREUM_EID, 30_101);
     }
 
-    /// `Basket.sol` mints at whatever ids the composeMsg names, so the id a
-    /// balance came in under survives a round trip only if the return payload
-    /// carries it. These pin the two halves of that: the header is fixed-width
-    /// and the label rides behind it, and the amount field is real.
     #[test]
-    fn outbound_payload_carries_the_label_and_a_real_amount() {
-        let to = [7u8; 32];
-        // abi.encode(uint[] ids, uint[] amounts) — opaque to us, and that is
-        // the point: it is handed back exactly as it must arrive at L1.
-        let label = vec![0xAB, 0xCD, 0xEF];
-        let msg = wrap_in_oft_format(label.clone(), to, 1_234_567);
-
-        assert_eq!(&msg[..32], &to, "recipient occupies the first word");
-        assert_eq!(u64::from_be_bytes(msg[32..40].try_into().unwrap()), 1_234_567,
-                   "amount must be the real figure — L1 requires it to match");
-        assert_eq!(&msg[OFT_BRIDGE_MSG_LEN..], &label[..],
-                   "the id label must survive encoding byte for byte");
-    }
-
-    #[test]
-    fn outbound_payload_is_header_plus_one_type_byte() {
-        // Everything the mint needs is already in the header, so the
-        // composeMsg carries only the type. Nothing about the maturity, the
-        // amount or the recipient is duplicated into it — which is what makes
-        // it impossible for a sender to name a maturity at all.
+    fn outbound_payload_is_the_header_and_nothing_else() {
+        // The empty composeMsg is the whole design: Basket.sol treats "no
+        // message" as a plain transfer, reads recipient and size from the
+        // header, and derives the maturity. Anything encoded here would be a
+        // duplicate of the header or a field a sender could choose.
         let mut recipient = [0u8; 32];
         recipient[12..].copy_from_slice(&[0xAB; 20]);
-        let msg = wrap_in_oft_format(vec![MSG_TYPE_TRANSFER], recipient, 1_234_567);
+        let msg = wrap_in_oft_format(recipient, 1_234_567);
 
-        assert_eq!(msg.len(), OFT_BRIDGE_MSG_LEN + 1, "header plus one byte");
+        assert_eq!(msg.len(), OFT_BRIDGE_MSG_LEN, "header only, no composeMsg");
         assert_eq!(&msg[..32], &recipient, "recipient occupies the first word");
         assert_eq!(u64::from_be_bytes(msg[32..40].try_into().unwrap()), 1_234_567,
                    "the amount is the header's, and Ethereum mints exactly it");
-        assert_eq!(msg[OFT_BRIDGE_MSG_LEN], MSG_TYPE_TRANSFER,
-                   "Basket.sol dispatches on this byte");
     }
 
     #[test]

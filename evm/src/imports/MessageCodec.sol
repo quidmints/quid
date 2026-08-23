@@ -10,7 +10,8 @@ library MessageCodec { // always plead the 5th...
     // outa sight, so, how do you get to what's
     // insight? do you get what's inside, out?
     uint8 public constant JURY_COMPENSATION = 7;
-    uint8 public constant TRANSFER = 8; 
+    // No TRANSFER type: a plain token transfer is the absence of a compose
+    // message, not a kind of one.
 
     error InvalidMessageType();
     error InvalidMessageLength();
