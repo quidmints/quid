@@ -2,6 +2,10 @@
 [profile.default]
 src = "src"
 out = "out"
+# The deploy/config scripts live in `scripts`, not foundry's default
+# `script`. Naming it here is what makes `forge build` compile them — without
+# it `LZconfig.s.sol` sat broken for months and nothing said so.
+script = "scripts"
 
 libs = ["lib"]
 ffi = true

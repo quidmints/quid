@@ -2,26 +2,28 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Script.sol";
-import {ILayerZeroEndpointV2} from "./imports/oapp/interfaces/ILayerZeroEndpointV2.sol";
+import {ILayerZeroEndpointV2} from "../src/imports/oapp/interfaces/ILayerZeroEndpointV2.sol";
+import {SetConfigParam} from "../src/imports/oapp/interfaces/IMessageLibManager.sol";
 import {Basket} from "../src/Basket.sol";
 
 contract LZconfig is Script {
     // LZ endpoint (same address all EVMs)
     address constant LZ_ENDPOINT = 0x1a44076050125825900e736c501f859c50fE728c;
 
-    // Fill these before running
-    address constant BASKET       = 0x...; // deployed Basket
-    address constant HOOK         = 0x...; // Link
-    address constant COURT        = 0x...; // Court
-    address constant JURY         = 0x...; // Jury
+    // Deploy-time addresses, read from the environment rather than pasted in:
+    // a placeholder that does not compile is a script nobody can run, and one
+    // that does compile is worse.
+    address BASKET;   // deployed Basket
+    address HOOK;     // Link
+    address COURT;    // Court
+    address JURY;     // Jury
 
-    // Solana peer — 32-byte program ID as bytes32
-    bytes32 constant SOL_PEER     = bytes32(0x...);
+    // Solana peer — the OApp Store PDA, 32 bytes, not the program id.
+    bytes32 SOL_PEER;
 
     // L2s — parallel arrays
     uint32[]  l2Eids;
     bytes32[] l2Peers;
-    address[] l2BasketAddrs;
 
     // Ethereum Mainnet (EID 30101)
     // SendUln302
@@ -38,11 +40,21 @@ contract LZconfig is Script {
 
     // Google Cloud DVN
     address constant DVN_B =
-        0x8fafae7dd957044088b3d0f67359c327c6200d18;
+        0x8FafAE7Dd957044088b3d0F67359C327c6200d18;
     uint32 constant SOL_EID = 30168;
+
+    /// Block confirmations a DVN waits for before attesting. Explicit rather
+    /// than 0: zero means "whatever the library default is", which is a value
+    /// somebody else can change.
+    uint64 constant CONFIRMATIONS = 15;
 
     function run() external {
         uint256 pk = vm.envUint("DEPLOYER_PK");
+        BASKET   = vm.envAddress("BASKET");
+        HOOK     = vm.envAddress("HOOK");
+        COURT    = vm.envAddress("COURT");
+        JURY     = vm.envAddress("JURY");
+        SOL_PEER = vm.envBytes32("SOL_PEER");
         vm.startBroadcast(pk);
 
         Basket basket = Basket(payable(BASKET));
@@ -54,47 +66,57 @@ contract LZconfig is Script {
         // ── 2. Register Solana peer ────────────────────────────────────
         basket.setPeer(SOL_EID, SOL_PEER);
 
-        // ── 3. Register all L2 baskets + their peers in one pass ───────
+        // ── 3. Register every peer ─────────────────────────────────────
         _populateL2Arrays();
         for (uint i; i < l2Eids.length; i++) {
             basket.setPeer(l2Eids[i], l2Peers[i]);
-            basket.registerL2Basket(l2BasketAddrs[i]);
         }
 
-        // ── 4. DVN config — send direction (EVM → Solana) ──────────────
+        // ── 4. Bind the message libraries for each pathway ─────────────
+        // Without this the pathway runs on the endpoint's defaults, and a
+        // config set on a library that was never selected changes nothing.
+        // This is the step whose absence leaves an OApp on 1-of-1 while
+        // looking configured.
+        endpoint.setSendLibrary(BASKET, SOL_EID, SEND_LIB);
+        endpoint.setReceiveLibrary(BASKET, SOL_EID, RECEIVE_LIB, 0);
+
+        // ── 5. DVN config — send direction (EVM → Solana) ──────────────
         bytes memory ulnCfg = _encodeUlnConfig();
 
-        ILayerZeroEndpointV2.SetConfigParam[] memory sendCfg =
-            new ILayerZeroEndpointV2.SetConfigParam[](1);
-        sendCfg[0] = ILayerZeroEndpointV2.SetConfigParam({
+        SetConfigParam[] memory sendCfg =
+            new SetConfigParam[](1);
+        sendCfg[0] = SetConfigParam({
             eid:        SOL_EID,
             configType: 2,        // ULN_CONFIG_TYPE
             config:     ulnCfg
         });
         endpoint.setConfig(BASKET, SEND_LIB, sendCfg);
 
-        // ── 5. DVN config — receive direction (Solana → EVM) ───────────
-        ILayerZeroEndpointV2.SetConfigParam[] memory recvCfg =
-            new ILayerZeroEndpointV2.SetConfigParam[](1);
-        recvCfg[0] = ILayerZeroEndpointV2.SetConfigParam({
+        // ── 6. DVN config — receive direction (Solana → EVM) ───────────
+        SetConfigParam[] memory recvCfg =
+            new SetConfigParam[](1);
+        recvCfg[0] = SetConfigParam({
             eid:        SOL_EID,
             configType: 2,
             config:     ulnCfg
         });
         endpoint.setConfig(BASKET, RECEIVE_LIB, recvCfg);
 
-        // ── 6. Repeat DVN config for each L2 eid ───────────────────────
+        // ── 7. Same libraries and same DVN set for every L2 ────────────
         for (uint i; i < l2Eids.length; i++) {
-            ILayerZeroEndpointV2.SetConfigParam[] memory l2Send =
-                new ILayerZeroEndpointV2.SetConfigParam[](1);
-            l2Send[0] = ILayerZeroEndpointV2.SetConfigParam({
+            endpoint.setSendLibrary(BASKET, l2Eids[i], SEND_LIB);
+            endpoint.setReceiveLibrary(BASKET, l2Eids[i], RECEIVE_LIB, 0);
+
+            SetConfigParam[] memory l2Cfg =
+                new SetConfigParam[](1);
+            l2Cfg[0] = SetConfigParam({
                 eid: l2Eids[i], configType: 2, config: ulnCfg
             });
-            endpoint.setConfig(BASKET, SEND_LIB, l2Send);
-            endpoint.setConfig(BASKET, RECEIVE_LIB, l2Send);
+            endpoint.setConfig(BASKET, SEND_LIB, l2Cfg);
+            endpoint.setConfig(BASKET, RECEIVE_LIB, l2Cfg);
         }
 
-        // ── 7. Lock — no further owner calls possible after this ────────
+        // ── 8. Lock — no further owner calls possible after this ────────
         basket.renounceOwnership();
 
         vm.stopBroadcast();
@@ -107,7 +129,7 @@ contract LZconfig is Script {
         address[] memory optional = new address[](0);
 
         return abi.encode(
-            uint64(0),   // confirmations — 0 = use library default
+            CONFIRMATIONS,
             uint8(2),    // requiredDVNCount
             uint8(0),    // optionalDVNCount
             uint8(0),    // optionalDVNThreshold
@@ -118,8 +140,9 @@ contract LZconfig is Script {
 
     function _populateL2Arrays() internal {
         // e.g. Base, Arbitrum, Optimism
-        l2Eids        = [30184,    30110,    30111];
-        l2Peers       = [bytes32(0x...), bytes32(0x...), bytes32(0x...)];
-        l2BasketAddrs = [0x...,    0x...,    0x...];
+        l2Eids  = [30184, 30110, 30109];   // Base, Arbitrum, Polygon
+        l2Peers = [vm.envBytes32("BASE_PEER"),
+                   vm.envBytes32("ARBI_PEER"),
+                   vm.envBytes32("POLY_PEER")];
     }
 }
