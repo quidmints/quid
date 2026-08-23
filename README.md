@@ -125,12 +125,23 @@ protocol cannot meet from the Ethereum side, however solvent it is.
 Nobody, today, and the protocol is not obliged to anyone. Two reasons to keep
 the capability anyway:
 
-The first is regulatory optionality. Cash-settled exposure to a single equity,
-offered to someone who is not an eligible contract participant, is the shape
-Title VII of Dodd-Frank calls a security-based swap — and those must be
-registered and exchange-traded to reach retail. Being *able* to settle in the
-security is what distinguishes the position from that shape. It is a defence
-worth having before it is needed, not a box currently ticked.
+The first is regulatory, and it is narrower than it first appears. The SEC's
+2026 guidance on tokenized securities splits third-party tokens in two:
+*custodial*, where the holder gets a security entitlement — an indirect
+interest in real shares — and *synthetic*, covering linked securities and
+security-based swaps, where the holder gets the economic return and no
+ownership interest at all. A synthetic position on a single equity, sold to
+someone who is not an eligible contract participant, is not merely a
+registration problem: a third party **may not offer or sell** it to that person.
+
+What the guidance does *not* say is that buying the share fixes this. The
+classification turns on what the holder receives, not on what the issuer
+happens to hold, so a pool that owns AAPLx against its net still owes its users
+a synthetic return unless they are given an entitlement to it. Delivery is a
+precondition for ever offering the custodial form, and it answers the specific
+objection the SEC raises against synthetics — that the holder carries the third
+party's bankruptcy risk on top of the market's. It is not a reclassification,
+and treating it as one would be the expensive kind of wrong.
 
 The second is economic, and it is the stronger one. Gains paid to borrowers in
 `stay.rs` come out of the same dollars that back depositors. Holding the actual
@@ -164,3 +175,31 @@ share is thinnest, and the reason to want the share is that prices are moving.
 This is why solvency here is a statement about what the pool can be *valued* at,
 not what it can be *converted* into, and why the two should never be conflated
 in anything the protocol claims.
+
+### Known gap: the return leg and the 6909 maturity
+
+QD crosses to Solana and cannot cross back. There is no outbound instruction —
+`wrap_in_oft_format`, `cpi_send` and `cpi_quote` are wired and waiting, which is
+why they carry `#[allow(dead_code)]` rather than being deleted.
+
+Building it needs a decision that is not the program's to make alone.
+`Basket.sol::_handleBasketTransfer` mints at whatever ids the returning message
+names, and the id is a maturity: `currentMonth()` is
+`(block.timestamp - _deployed) / MONTH`, a small integer off a clock. Solana's
+QD is a single fungible mint and records no maturity, so on the way back there
+is nothing to read the id from. Three ways out, and they are not equivalent:
+
+1. **Ethereum chooses.** The cleanest — the id is derivable there, and Solana
+   never has to be trusted with it. Needs a Solidity change, so it is not on
+   this side of the wire.
+2. **Solana tracks maturity per holder.** Correct, and the most state this
+   program would carry for one feature.
+3. **Return at the least favourable maturity.** No new state: always name the
+   newest month, so a round trip can never shorten the wait. Safe by
+   construction, and unfair to anyone whose QD really was near vesting.
+
+What must not happen is the obvious version — letting the sender name the id.
+The message is what mints, so a caller who picks an already-vested month
+converts a locked balance into an immediately redeemable one by bridging it
+twice. Until the return leg exists, that risk is theoretical; the moment it
+does, the id has to come from somewhere the caller does not control.
