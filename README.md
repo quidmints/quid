@@ -357,9 +357,27 @@ intermediated.
 
 ### What is not claimed
 
-Price discovery. Marking against Pyth contributes none of it, and no perpetual
-venue does — perps transfer and lever risk rather than find price. The pitch is
-not that this is where a price gets made.
+Price discovery, and the distinction is sharper than "no perp venue does it".
+
+A tokenised structure transmits flow to the real market at the *primary* boundary:
+an authorised participant subscribes, and if the issuer hedges by buying the
+share, a real order reaches the real book. Backed say they purchase the
+underlying through regulated brokers at issuance, so their creations do carry
+through. Robinhood's Stock Tokens are tokenised debt issued by Robinhood Assets
+(Jersey) Limited giving "economic exposure to underlying securities but not any
+legal or beneficial rights", and the backing mechanism is not disclosed — so
+whether a subscription becomes a share purchase is the issuer's hedging policy
+rather than an entitlement the holder can point at.
+
+Either way, only the primary boundary transmits. On-chain secondary trading of
+a stock token no more moves the underlying than secondary ETF volume does; the
+creation and redemption baskets are the only channel, and with a $100,000
+minimum mint those are thin relative to what trades on top of them.
+
+A synthetic book has no such boundary at all. Nothing here reaches the
+underlying market, ever, and that is a real difference from a tokenised
+structure rather than a technicality both share. It is worth being plain about,
+because the compensating claim below only stands if this one is conceded.
 
 What is left after that is worth more than it sounds. Eighty of the 1,063
 tickers priced here have a token on Solana; the other 983 — every FX pair,
@@ -368,8 +386,26 @@ and float do not justify it. Being synthetic is not a compromise on that tail,
 it is the only way it exists at all. A venue that can only offer what it can
 custody cannot reach it.
 
-And the netting is why the buffer is small rather than awkward. A vault that
-faces gross exposure needs a loss absorber sized to it. Alice long 100 against
-Bob short 100 leaves this pool flat regardless of the collateral behind either
-side, so it is short the residual and reserves against that. The smaller buffer
-is a consequence of the design, not a saving taken out of it.
+The difference from Ostium is not netting — they net too, and a buffer sized
+to gross exposure was never the reason theirs exists. Their Liquidity Buffer is
+first in line to settle every trade and absorbs losses in full before any reach
+the vault, which puts LP capital in the *senior* position behind a junior
+tranche. It exists because a trade executes without an immediate counterparty,
+leaving an open-interest imbalance the buffer carries as delta, and it doubles
+as working capital for settlement — which is why trades that increase skew are
+charged a higher base fee. That is a two-tier capital structure, deliberately.
+
+Here there is one tier and the junior position is *per position*: a trader's
+own pledged collateral is the first loss, so it falls on whoever took the risk
+rather than on a pooled layer somebody else funded. The collar and the
+per-ticker reserve then sit against the residual.
+
+Neither is strictly better and the trade should be stated honestly. Attribution
+is cleaner here, and there is no buffer to fund, refill or manage. But there is
+also no second layer: once a position's collateral is exhausted the loss
+reaches depositors directly, where Ostium's design interposes a tranche first.
+That is exactly why the unwind had to learn depth as well as elapsed time — in
+a gap, the per-position first loss is the *only* thing between a trader's
+deficit and everyone else's principal, so it has to be collected before it is
+outrun. And a tranche is no guarantee: theirs was in place when 23.75M USDC
+left the vault, and the liquidity providers absorbed all of it anyway.
