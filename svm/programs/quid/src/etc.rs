@@ -1616,6 +1616,117 @@ pub fn get_account(ticker: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// Backed Finance xStocks on Solana — the tokenised share of each underlying,
+/// keyed by the ticker this program already trades.
+///
+/// This is the delivery set. Everything else in the ticker table is priced and
+/// tradeable but has no token on this chain, so the pool's net exposure to it
+/// can only ever be carried, never handed over. Netting against a real share
+/// is possible exactly here.
+///
+/// Hardcoded for the same reason `USD_STAR` and `LZ_ENDPOINT_PROGRAM` are:
+/// delivering against a wrong mint is delivering something worthless, and the
+/// name "AAPLx" is not scarce — a token-list lookup returns several, only one
+/// of which is Backed's. Every address below was resolved from Jupiter's token
+/// service and confirmed live on mainnet; all 80 are Token-2022 mints, which
+/// is why the program's token handling has to stay interface-generic rather
+/// than assuming the legacy SPL program.
+pub static XSTOCK_MINTS: phf::Map<&'static str, &'static str> = phf_map! {
+    "AAPL" => "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp",
+    "ABBV" => "XswbinNKyPmzTa5CskMbCPvMW6G5CMnZXZEeQSSQoie",
+    "ABT" => "XsHtf5RpxsQ7jeJ9ivNewouZKJHbPxhPoEy6yYvULr7",
+    "ACN" => "Xs5UJzmCRQ8DWZjskExdSQDnbE6iLkRu2jjrRAB1JSU",
+    "AMAT" => "XsQZdaWUAGC4R3fgD2N1fupKvJfJq6YM51ccnsLUWFA",
+    "AMD" => "XsXcJ6GZ9kVnjqGsjBnktRcuwMBmvKWh8S93RefZ1rF",
+    "AMZN" => "Xs3eBt7uRfJX8QUs4suhyU8p2M6DoUDrJyWBa8LLZsg",
+    "ANET" => "XsrsM2RgtYxXqxmy4iWgxQJUkkHG1U5wzi74sVNUW8m",
+    "APP" => "XsPdAVBi8Zc1xvv53k4JcMrQaEDTgkGqKYeh7AYgPHV",
+    "ASML" => "XshuHQ6o6SVpUNawvnnTMxsZ4tacZsNgVCLorv7TkFq",
+    "AVGO" => "XsgSaSvNSqLTtFuyWPBhK9196Xb9Bbdyjj4fH3cPJGo",
+    "AZN" => "Xs3ZFkPYT2BN7qBMqf1j1bfTeTm1rFzEFSsQ1z3wAKU",
+    "BAC" => "XswsQk4duEQmCbGzfqUUWYmi7pV7xpJ9eEmLHXCaEQP",
+    "BALL" => "Xsy9RdWC26fp8c84BB2SD4eE74vG1478YKjxAwjRRQY",
+    "BMNR" => "XsrBCwaH8c46xiqXBChzobgufRKxQxAWUWbndgBNzFn",
+    "BTBT" => "XsPLBFy59Q3hY59KLAJur8QyvziMF4xUxGTxXqXE7cT",
+    "CEG" => "Xssu2cDLdZXZYrq17frTVrb3meumRCAzEf7pXyxoWVN",
+    "CMCSA" => "XsvKCaNsxg2GN8jjUmq71qukMJr7Q1c5R2Mk9P8kcS8",
+    "COIN" => "Xs7ZdzSHLU9ftNJsii5fCeJhoRWSC32SQGzGQtePxNu",
+    "CRCL" => "XsueG8BtpquVJX9LVLLEGuViXUungE6WmK5YZ3p3bd1",
+    "CRWD" => "Xs7xXqkcK7K8urEqGg52SECi79dRp2cEKKuYjUePYDw",
+    "CSCO" => "Xsr3pdLQyXvDJBFgpR5nexCEZwXvigb8wbPYp4YoNFf",
+    "CVX" => "XsNNMt7WTNA2sV3jrb1NNfNgapxRF5i4i6GcnTRRHts",
+    "DFDV" => "Xs2yquAgsHByNzx68WJC55WHjHBvG9JsMB7CWjTLyPy",
+    "GLD" => "Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re",
+    "GME" => "Xsf9mBktVB9BSU5kf4nHxPq5hCBJ2j2ui3ecFGxPRGc",
+    "GOOGL" => "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN",
+    "GS" => "XsgaUyp4jd1fNBCxgtTKkW64xnnhQcvgaxzsbAq5ZD1",
+    "HD" => "XszjVtyhowGjSC5odCqBpW1CtXXwXjYokymrk7fGKD3",
+    "HON" => "XsRbLZthfABAPAfumWNEJhPyiKDW6TvDVeAeW7oKqA2",
+    "HOOD" => "XsvNBAYkrDRNhA7wPHQfX3ZUXZyZLdnCQDfHZ56bzpg",
+    "IBM" => "XspwhyYPdWVM8XBHZnpS9hgyag9MKjLRyE3tVfmCbSr",
+    "IJR" => "XsyZcb97BzETAqi9BoP2C9D196MiMNBisGMVNje2Thz",
+    "INTC" => "XshPgPdXFRWB8tP1j82rebb2Q9rPgGX37RuqzohmArM",
+    "IWM" => "XsbELVbLGBkn7xfMfyYuUipKGt1iRUc2B7pYRvFTFu3",
+    "JNJ" => "XsGVi5eo1Dh2zUpic4qACcjuWGjNv8GCt3dm5XcX6Dn",
+    "JPM" => "XsMAqkcKsUewDrzVkait4e5u4y8REgtyS7jWgCpLV2C",
+    "KLAC" => "Xsw2uU1i8tHjbgstUbtt3m6kg7BS7AgG5aj8z7ddmmN",
+    "KO" => "XsaBXg8dU5cPM6ehmVctMkVqoiRG2ZjMo1cyBJ3AykQ",
+    "LIN" => "XsSr8anD1hkvNMu8XQiVcmiaTP7XGvYu7Q58LdmtE8Z",
+    "LLY" => "Xsnuv4omNoHozR6EEW5mXkw8Nrny5rB3jVfLqi6gKMH",
+    "MA" => "XsApJFV9MAktqnAc6jqzsHVujxkGm9xcSUffaBoYLKC",
+    "MCD" => "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2",
+    "MDT" => "XsDgw22qRLTv5Uwuzn6T63cW69exG41T6gwQhEK22u2",
+    "META" => "Xsa62P5mvPszXL1krVUnU5ar38bBSVcWAB6fmPCo5Zu",
+    "MRK" => "XsnQnU7AdbRZYe2akqqpibDdXjkieGFfSkbkjX1Sd1X",
+    "MRVL" => "XsuxRGDzbLjnJ72v74b7p9VY6N66uYgTCyfwwRjVCJA",
+    "MSFT" => "XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX",
+    "MSTR" => "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",
+    "MU" => "XsQLZycSZ7QnBBdBXQaTbQdiUcbRqjNJgyBGAMzhHav",
+    "NFLX" => "XsEH7wWfJJu2ZT3UCFeVfALnVA6CP5ur7Ee11KmzVpL",
+    "NVDA" => "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh",
+    "NVO" => "XsfAzPzYrYjd4Dpa9BU3cusBsvWfVB9gBcyGC87S57n",
+    "ORCL" => "XsjFwUPiLofddX5cWFHW35GCbXcSu1BCUGfxoQAQjeL",
+    "PEP" => "Xsv99frTRUeornyvCfvhnDesQDWuvns1M852Pez91vF",
+    "PFE" => "XsAtbqkAP1HJxy7hFDeq7ok6yM43DQ9mQ1Rh861X8rw",
+    "PG" => "XsYdjDjNUygZ7yGKfQaB6TxLh2gC6RRjzLtLAGJrhzV",
+    "PLTR" => "XsoBhf2ufR8fTyNSjqfU71DYGaE6Z3SUGAidpzriAA4",
+    "PM" => "Xsba6tUnSjDae2VcopDB6FGGDaxRrewFCDa5hKn5vT3",
+    "QQQ" => "Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ",
+    "RBLX" => "Xss5RAku5EH6UViFdvW7ss9xQjwQLsrs2opPMhb3k43",
+    "RIOT" => "Xs31mE5EiqjSHEaiX9QDKCN6NvSGCqpJ6f1FNq2wri5",
+    "SBET" => "XsEoih2x6nZuUjFwzGoba6MFmtzCkzW2c4YAm6baQbq",
+    "SGOV" => "XsYD72ntjj7ZwoFDZCDmN2gamTcLpnywqvG7PQN5vCN",
+    "SNDK" => "Xswbpc8UqU6e1j9QZEWCjBMjyvz4twqD7PCy6j2e7jj",
+    "SPY" => "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",
+    "STRC" => "Xs78JED6PFZxWc2wCEPspZW9kL3Se5J7L5TChKgsidH",
+    "TMO" => "Xs8drBWy3Sd5QY3aifG9kt9KFs2K3PGZmx7jWrsrk57",
+    "TQQQ" => "XsjQP3iMAaQ3kQScQKthQpx9ALRbjKAjQtHg6TFomoc",
+    "TSLA" => "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB",
+    "TSM" => "XsafvsGtzFqqHgTnA3aPC83EAMkacU5mcGtcSayhpVV",
+    "UBER" => "XsAsZLF4MmsvS1sDxRMrUz7REjHfwbC9UAMXSRBqgEB",
+    "UNH" => "XszvaiXGPwvk2nwb3o9C1CX4K6zH8sez11E6uyup6fe",
+    "V" => "XsqgsbXwWogGJsNcVZ3TyVouy2MbTkfCFhCGGGcQZ2p",
+    "VT" => "XsEdDDTcVGJU6nvdRdVnj53eKTrsCkvtrVfXGmUK68V",
+    "VTI" => "XsssYEQjzxBCFgvYFFNuhJFBeHNdLWYeUSP8F45cDr9",
+    "VUG" => "XsNVBwVGqtDqmA2Waoiux5mfykH8nepLK74z3ZoQWK2",
+    "WMT" => "Xs151QeqTCiuKtinzfRATnUESM2xTU6V9Wy8Vy538ci",
+    "XLE" => "Xs54CrhmpVp6uxZXwgSTegrRH2kShh88XFPzgf4BExu",
+    "XOM" => "XsaHND8sHyfMfsWPj6kSdd5VwvCayZvjYgKmmcNL5qh",
+};
+
+/// The mint that settles this ticker, if one exists on Solana.
+pub fn deliverable_mint(ticker: &str) -> Option<&'static str> {
+    XSTOCK_MINTS.get(ticker).copied()
+}
+
+/// Whether the pool's net exposure to this ticker could be netted against a
+/// real share rather than carried. Deliberately not a gate on opening a
+/// position: a synthetic book is the product, and most of the ticker universe
+/// has no token. It is the input to that decision, not the decision.
+pub fn is_deliverable(ticker: &str) -> bool {
+    XSTOCK_MINTS.contains_key(ticker)
+}
+
 pub static FX_USD_HEX_MAP: phf::Map<&'static str, &'static str> = phf_map! {
     "AED" => "0x3bbf6718b6094fc9cc2f047fc280f40c6dc865859b3a4a80846064df1eff0c12",
     "AFN" => "0x5bff6251f6231b9a9ef9ab940b18bd753d48e9b7ddf3214e44d9c67f7980d79f",
@@ -4025,5 +4136,46 @@ mod hazard_tests {
         let a = actuary(200, 750, 0, 0, 1_000);   // tail barely over the collar
         let at_barrier = hazard_rate_bps(20, 700, 100, &a, 1_000_000, 900_000);
         assert!(at_barrier > 0, "thin LGD still has to price above zero");
+    }
+}
+
+#[cfg(test)]
+mod delivery_set {
+    use super::*;
+
+    /// The delivery set only means anything if every ticker in it is one this
+    /// program can actually price and trade. A mint keyed under a symbol with
+    /// no feed is worse than absent: it reads as deliverable and cannot be
+    /// valued. This keeps the two tables from drifting apart silently.
+    #[test]
+    fn every_deliverable_ticker_is_one_we_price() {
+        for ticker in XSTOCK_MINTS.keys() {
+            assert!(get_hex(ticker).is_some(),
+                    "{ticker} has an xStock mint but no price feed");
+            assert!(get_account(ticker).is_some(),
+                    "{ticker} has an xStock mint but no Pyth account");
+        }
+    }
+
+    /// Every address is a real Solana mint: parseable as a 32-byte key, and
+    /// carrying Backed's `Xs` vanity prefix. Catches a truncated or mistyped
+    /// entry, which would otherwise only surface as a failed delivery.
+    #[test]
+    fn every_mint_is_a_well_formed_backed_address() {
+        use std::str::FromStr;
+        for (ticker, mint) in XSTOCK_MINTS.entries() {
+            assert!(mint.starts_with("Xs"), "{ticker}: {mint} is not a Backed mint");
+            Pubkey::from_str(mint)
+                .unwrap_or_else(|e| panic!("{ticker}: {mint} is not a valid key ({e})"));
+        }
+    }
+
+    /// The shape of the book, stated so a change to either table is visible.
+    #[test]
+    fn delivery_covers_a_minority_of_what_we_trade() {
+        assert_eq!(XSTOCK_MINTS.len(), 80);
+        assert!(deliverable_mint("AAPL").is_some() && is_deliverable("TSLA"));
+        // Priced and tradeable, no token on this chain — the common case.
+        assert!(!is_deliverable("SOL") && get_hex("SOL").is_some());
     }
 }

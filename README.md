@@ -79,3 +79,88 @@ cd ..
 npm run build  
 npm run start  
 ```
+
+## Physical delivery, and why it is optional
+
+The book is synthetic. `stay.rs` prices exposure, nets it per ticker, and
+reserves against the residual — the pool is short the *net* of each ticker, not
+the gross, because a long and a short of the same size leave it flat. Nothing
+in the program holds a share.
+
+"Calling the books" means taking that net and standing behind it with the real
+security. `etc.rs` carries the delivery set for exactly this: `XSTOCK_MINTS`
+maps a ticker to the Backed Finance xStock that settles it on Solana, and
+`is_deliverable()` answers whether a net position *could* be handed over rather
+than carried. The addresses are hardcoded and mainnet-verified, for the same
+reason `USD_STAR` and `LZ_ENDPOINT_PROGRAM` are: the symbol "AAPLx" is not
+scarce, a token-list lookup returns several, and delivering against the wrong
+one is delivering nothing. All 80 are Token-2022 mints, which is why the token
+handling stays interface-generic instead of assuming the legacy program.
+
+**Coverage is a minority, by construction.** 80 of the 1,063 tickers this
+program prices have a token on Solana. The other 983 — every FX pair, every
+rate, most equities — can be traded and can never be delivered. That is not a
+gap to close; it is the shape of the product. The delivery set is an input to
+a decision, not a gate on opening a position.
+
+### The two legs, and the one that is not atomic
+
+Buying a share to deliver means redeeming collateral first, and the collateral
+sits on two chains:
+
+- **Solana.** Perena USD* unwraps to its constituent dollars, swaps to whichever
+  the venue wants, and buys the xStock. One transaction, and flash-loanable
+  through the JAM path already wired in `entra.rs`.
+- **Ethereum.** QD travels by LayerZero and redeems against `Basket.sol` for
+  stables there. This is **not** atomic and cannot be made so. Message delivery
+  is DVN verification plus executor, minutes at best, and no Solana transaction
+  can contain the outcome.
+
+So half the balance sheet can be mobilised inside a block and half cannot. Any
+delivery obligation with a deadline shorter than a bridge round trip is one the
+protocol cannot meet from the Ethereum side, however solvent it is.
+
+### Who requires this
+
+Nobody, today, and the protocol is not obliged to anyone. Two reasons to keep
+the capability anyway:
+
+The first is regulatory optionality. Cash-settled exposure to a single equity,
+offered to someone who is not an eligible contract participant, is the shape
+Title VII of Dodd-Frank calls a security-based swap — and those must be
+registered and exchange-traded to reach retail. Being *able* to settle in the
+security is what distinguishes the position from that shape. It is a defence
+worth having before it is needed, not a box currently ticked.
+
+The second is economic, and it is the stronger one. Gains paid to borrowers in
+`stay.rs` come out of the same dollars that back depositors. Holding the actual
+security against a net position means the payout is funded by the security
+appreciating, not by diluting the people who never took the trade.
+
+**Minting is not open to us.** xStocks enter circulation through Backed's
+primary market, which requires issuer KYC/AML onboarding, a whitelisted
+address, qualified-professional-investor status, and a $100,000 minimum. Kraken
+is a distribution venue, not an issuer — "minting with Kraken" is not a
+mechanism. Absent becoming an authorised participant, delivery means buying on
+the secondary market at whatever depth exists, which is thinner than the
+underlying and thinnest when it matters.
+
+### Wrong-way risk: the books get called at the worst moment
+
+The trigger for wanting real securities is a market that is falling, and that
+is precisely when the collateral behind them is worth least. The sequence:
+
+ETH falls. Holders pull QD out of `Basket.sol` in exchange for ETH and redeem
+for stables, so the stables leave first and the pool is left holding a
+disproportionate share of the asset that is dropping. The AMM does not rebalance
+to 50/50 on its own — that requires an arbitrageur willing to take the falling
+side, which is the trade nobody wants in a crash, so the imbalance can persist
+well past the moment it matters. Meanwhile the QD still outstanding is
+concentrated on Solana, backed by that skewed pool.
+
+Every term moves the wrong way together: the collateral is worth less, the
+redemption that would mobilise it is slowest, the secondary market for the
+share is thinnest, and the reason to want the share is that prices are moving.
+This is why solvency here is a statement about what the pool can be *valued* at,
+not what it can be *converted* into, and why the two should never be conflated
+in anything the protocol claims.
