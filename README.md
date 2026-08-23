@@ -230,11 +230,31 @@ and no arbitrageur could close a gap, because closing one means moving QD home.
 The maturity is the exception, and the only one. It is set by the program, not
 the caller, for the reason below.
 
-### Known gap: the return leg and the 6909 maturity
+### Known gap: the return leg is blocked on the Ethereum side
 
 QD crosses to Solana and cannot cross back. There is no outbound instruction —
 `wrap_in_oft_format`, `cpi_send` and `cpi_quote` are wired and waiting, which is
 why they carry `#[allow(dead_code)]` rather than being deleted.
+
+Writing one now would be wasted, because no message it could produce would be
+accepted. `Basket.sol::lzReceive` reads the message type from the first byte of
+the composeMsg — `TRANSFER` is 8 — and then hands **the same bytes**, from byte
+zero, to `_handleBasketTransfer`, which does
+`abi.decode(msg, (uint[], uint[]))`. Those cannot both hold.
+`abi.encode` of two dynamic arrays begins with a 32-byte offset, so byte zero is
+`0x00` and the dispatch falls through to `revert BadType()`. Prepend the `0x08`
+the dispatch wants and the first word becomes an astronomical offset, so the
+decode reverts instead. There is no encoding that satisfies both readers.
+
+Consistent with that, nothing anywhere sends one: no contract on Base, Arbitrum
+or Polygon builds a TRANSFER composeMsg either, so the branch has never been
+reached from any chain. It is unfinished on Ethereum, not merely unused.
+
+Two ways out, both Solidity and so both outside this package: slice the type
+byte before decoding, or drop the type byte for TRANSFER and dispatch on
+`srcEid` instead. Until one of them lands, the Solana half has nothing to
+target — which is also why the maturity question below stays open rather than
+being settled in code.
 
 Building it needs a decision, and one of the three candidates is already
 settled: **Solana does not track maturity and does not carry more state.**
