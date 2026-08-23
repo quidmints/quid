@@ -254,8 +254,14 @@ contract Basket is OFT, // LZ
              && _origin.srcEid != BASE_EID
              && _origin.srcEid != ARBI_EID
              && _origin.srcEid != POLY_EID) revert WrongChain();
-            require(_handleBasketTransfer(composeMsg, 
-                                        to) == amountReceivedLD);
+            // Everything this needs is already in the OFT header: `to` and
+            // `amountReceivedLD`. The composeMsg carries only the type byte,
+            // so there is nothing to decode and nothing the sender can choose.
+            // The maturity is derived here rather than sent, which is what
+            // keeps a returning holder from naming an already-vested month and
+            // shortening their own lock by bridging twice.
+            _mint(to, currentMonth() + 1, amountReceivedLD);
+            emit OFTReceived(_guid, _origin.srcEid, to, amountReceivedLD);
         } else revert BadType();
     }
 
@@ -297,22 +303,6 @@ contract Basket is OFT, // LZ
         } return receipt.guid;
     }
 
-    function _handleBasketTransfer(
-      bytes memory msg, address to)
-      internal returns (uint total) {
-      (uint[] memory ids,
-       uint[] memory amounts) = abi.decode(msg,
-                              (uint[], uint[]));
-
-       if (ids.length != amounts.length
-        || ids.length == 0) revert MismatchedArrays();
-        uint rate = this.decimalConversionRate();
-        for (uint i = 0; i < ids.length; ++i) {
-            uint scaled = amounts[i] * rate;
-            _mint(to, ids[i], scaled);
-            total += scaled;
-        }
-    }
 
     function turn(address from, uint value) external
         onlyUs returns (uint sent, uint seedBurned) {

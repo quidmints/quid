@@ -1,5 +1,6 @@
 
 use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{self, Burn, Mint, TokenAccount, TokenInterface};
 use crate::etc::PithyQuip;
 
 /// LayerZero V2 Endpoint program on Solana, and the endpoint ids either side
@@ -47,6 +48,13 @@ pub const OFT_SHARED_DECIMALS: u8 = 6;
 pub const QD_LOCAL_DECIMALS: u8 = 9;
 /// Multiply amountSD by this to get local token units.
 pub const SD_TO_LOCAL: u64 = 1_000;
+
+/// `MessageCodec.TRANSFER` on the Ethereum side — the whole composeMsg for a
+/// QD return. Everything else the mint needs is already in the OFT header:
+/// the recipient is `sendTo` and the size is `amountSD`. The maturity is
+/// derived on arrival rather than sent, so there is no field here for a
+/// returning holder to choose, and nothing for this chain to remember.
+pub const MSG_TYPE_TRANSFER: u8 = 8;
 
 /// The OApp, and its single counterparty.
 ///
@@ -96,6 +104,85 @@ impl EnforcedOptions {
     }
 }
 
+/// Send QD home. The mirror of `handle_oft_receive`: that mints against
+/// supply locked on L1, this burns and tells L1 to release.
+///
+/// Permissionless by design — a holder bridging their own balance creates and
+/// destroys nothing, it changes chains. Gating it would leave QD on this side
+/// with no exit, and the par it is credited at unenforceable, since closing a
+/// gap means moving QD home.
+#[derive(Accounts)]
+pub struct BridgeHome<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// Holds the peer and the enforced options, and signs the endpoint CPI:
+    /// the endpoint only accepts a send from the OApp that owns the peer.
+    #[account(seeds = [OAPP_STORE_SEED], bump = store.bump)]
+    pub store: Box<Account<'info, OAppStore>>,
+
+    #[account(mut, address = store.mint @ PithyQuip::InvalidMint)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+
+    #[account(mut,
+        constraint = from.mint == store.mint @ PithyQuip::InvalidMint,
+        constraint = from.owner == signer.key() @ PithyQuip::Unauthorized)]
+    pub from: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+
+    /// CHECK: pinned to the shared endpoint, as everywhere else.
+    #[account(address = LZ_ENDPOINT_PROGRAM @ PithyQuip::InvalidSettlementProgram)]
+    pub endpoint_program: AccountInfo<'info>,
+}
+
+pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
+    amount: u64, to: [u8; 20], native_fee: u64) -> Result<()> {
+    // Only whole shared-decimal units survive the wire, so anything finer
+    // would be burned here and never arrive. Round the burn down to what the
+    // message can actually carry rather than silently keeping the remainder.
+    let amount_sd = amount / SD_TO_LOCAL;
+    require!(amount_sd > 0, PithyQuip::InvalidAmount);
+    let burn_amount = amount_sd.saturating_mul(SD_TO_LOCAL);
+
+    token_interface::burn(CpiContext::new(
+        ctx.accounts.token_program.to_account_info(),
+        Burn {
+            mint: ctx.accounts.mint.to_account_info(),
+            from: ctx.accounts.from.to_account_info(),
+            authority: ctx.accounts.signer.to_account_info(),
+        }), burn_amount)?;
+
+    // An Ethereum address, left-padded the way `bytes32ToAddress` reads it.
+    let mut recipient = [0u8; 32];
+    recipient[12..].copy_from_slice(&to);
+
+    let store = &ctx.accounts.store;
+    let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[store.bump]]];
+    cpi_send(LZ_ENDPOINT_PROGRAM, store.key(), ctx.remaining_accounts, seeds,
+        SendParams {
+            dst_eid: ETHEREUM_EID,
+            // The destination OApp is Basket.sol; the end recipient rides in
+            // the message's own `sendTo` field, set just above.
+            receiver: store.peer_address,
+            message: wrap_in_oft_format(vec![MSG_TYPE_TRANSFER], recipient, amount_sd),
+            options: store.enforced_options.get_enforced_options(&None),
+            native_fee, lz_token_fee: 0,
+        })?;
+
+    emit!(QDBridgeSent { sender: ctx.accounts.signer.key(),
+                         recipient: to, amount_sd, burned: burn_amount });
+    Ok(())
+}
+
+#[event]
+pub struct QDBridgeSent {
+    pub sender: Pubkey,
+    pub recipient: [u8; 20],
+    pub amount_sd: u64,
+    pub burned: u64,
+}
+
 /// Encode an outbound OFT payload: `to[32] ‖ amountSD[8] ‖ composeMsg`.
 ///
 /// The `compose_msg` is what carries the ERC-6909 ids home. `Basket.sol`'s
@@ -108,7 +195,6 @@ impl EnforcedOptions {
 /// `amount_sd` used to be hardcoded to zero, which would have failed L1's
 /// `require(_handleBasketTransfer(...) == amountReceivedLD)` on the first
 /// real send.
-#[allow(dead_code)]
 pub fn wrap_in_oft_format(compose_msg: Vec<u8>, send_to: [u8; 32],
     amount_sd: u64) -> Vec<u8> {
     let mut message = Vec::with_capacity(OFT_BRIDGE_MSG_LEN + compose_msg.len());
@@ -443,7 +529,6 @@ pub struct MessagingFee {
 /// Outbound endpoint CPI shims. Unused while the OApp is receive-only; they
 /// are the other half of the QD bridge (burn on Solana → release on L1) and
 /// are kept wired so that leg is an instruction, not a re-implementation.
-#[allow(dead_code)]
 fn cpi_send<'info>(
     endpoint_program: Pubkey, _oapp: Pubkey,
     remaining_accounts: &[AccountInfo<'info>],
@@ -462,6 +547,11 @@ fn cpi_send<'info>(
     Ok(())
 }
 
+/// Ask the endpoint what a send will cost. Not called by `bridge_home`, and
+/// deliberately: the endpoint checks the fee it is paid, so quoting on-chain
+/// would spend compute to re-derive a number the caller already had to know to
+/// fund the transaction. Clients quote here by simulation before sending,
+/// which is the same path LayerZero's own examples take.
 #[allow(dead_code)]
 fn cpi_quote<'info>(endpoint_program: Pubkey,
     accounts: &[AccountInfo<'info>], params: QuoteParams) -> Result<MessagingFee> {
@@ -561,6 +651,36 @@ mod bridge_label {
                    "amount must be the real figure — L1 requires it to match");
         assert_eq!(&msg[OFT_BRIDGE_MSG_LEN..], &label[..],
                    "the id label must survive encoding byte for byte");
+    }
+
+    #[test]
+    fn outbound_payload_is_header_plus_one_type_byte() {
+        // Everything the mint needs is already in the header, so the
+        // composeMsg carries only the type. Nothing about the maturity, the
+        // amount or the recipient is duplicated into it — which is what makes
+        // it impossible for a sender to name a maturity at all.
+        let mut recipient = [0u8; 32];
+        recipient[12..].copy_from_slice(&[0xAB; 20]);
+        let msg = wrap_in_oft_format(vec![MSG_TYPE_TRANSFER], recipient, 1_234_567);
+
+        assert_eq!(msg.len(), OFT_BRIDGE_MSG_LEN + 1, "header plus one byte");
+        assert_eq!(&msg[..32], &recipient, "recipient occupies the first word");
+        assert_eq!(u64::from_be_bytes(msg[32..40].try_into().unwrap()), 1_234_567,
+                   "the amount is the header's, and Ethereum mints exactly it");
+        assert_eq!(msg[OFT_BRIDGE_MSG_LEN], MSG_TYPE_TRANSFER,
+                   "Basket.sol dispatches on this byte");
+    }
+
+    #[test]
+    fn dust_below_a_shared_unit_cannot_be_burned() {
+        // The wire carries whole shared-decimal units. Burning finer than that
+        // would destroy QD the message could never carry.
+        assert_eq!(SD_TO_LOCAL, 1_000);
+        let below = SD_TO_LOCAL - 1;
+        assert_eq!(below / SD_TO_LOCAL, 0, "sub-unit amounts must be refused");
+        let ragged = 2 * SD_TO_LOCAL + 7;
+        assert_eq!((ragged / SD_TO_LOCAL) * SD_TO_LOCAL, 2 * SD_TO_LOCAL,
+                   "the burn rounds down to what can actually arrive");
     }
 
     #[test]

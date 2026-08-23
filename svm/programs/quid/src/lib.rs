@@ -152,6 +152,18 @@ pub mod quid {
 
     /// LZ receive types handler — tells LayerZero which accounts
     /// to include for a given incoming message.
+    /// Send QD home: burn here, release on Ethereum. The mirror of
+    /// `lz_receive`, and permissionless for the same reason it is — a holder
+    /// moving their own balance between chains creates nothing.
+    ///
+    /// `to` is an Ethereum address. The maturity is not a parameter: it is
+    /// derived on arrival, so a returning holder cannot name an already-vested
+    /// month and shorten their own lock by bridging twice.
+    pub fn bridge_home<'info>(ctx: Context<'_, '_, 'info, 'info, BridgeHome<'info>>,
+        amount: u64, to: [u8; 20], native_fee: u64) -> Result<()> {
+        LZ::bridge_home(ctx, amount, to, native_fee)
+    }
+
     pub fn lz_receive_types(ctx: Context<LzReceiveTypes>,
         params: LzReceiveParams) -> Result<Vec<LzAccount>> {
         lz_receive_types_handler(ctx, &params)
