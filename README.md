@@ -295,3 +295,81 @@ Neither option needs a new instruction. Sending QD home is a withdrawal, so it
 belongs on `handle_out` with the endpoint accounts riding `remaining_accounts`
 — exactly how the Kestrel round trip was folded in rather than given
 instructions of its own.
+
+## Whose credit you hold
+
+Nobody puts real securities on chain. Every venue issues a liability against
+shares it custodies, and the only question a holder actually faces is whose
+balance sheet stands behind the position.
+
+**Backed xStocks** are a claim on `Backed Assets (JE) Limited`, a Jersey SPV
+registered with the JFSC. The token is freely transferable — read the mint's
+Token-2022 extensions and `TransferHook` is unset while `DefaultAccountState`
+is unfrozen, so there is no mechanism by which holder-level permissions could
+be enforced after issuance. Two other extensions are set, and they are the
+point: `PermanentDelegate`, which lets the issuer move or burn any holder's
+balance, and `Pausable`, which lets them halt every transfer. Freely tradeable
+and entirely at the issuer's discretion are not in tension; they are the same
+design.
+
+**Robinhood Stock Tokens** are tokenized *debt* securities. No voting rights,
+no shareholder rights, no ownership claim on the underlying, issued on a chain
+Robinhood operates for compliance and order routing. A licensed broker holding
+the actual shares still hands the holder a liability.
+
+**Ostium** is the OLP vault's solvency, plus an off-chain price signer. In July
+2026 that signer's key was compromised and used to submit a fabricated price
+report that validated cleanly, manufacturing profits paid straight out of the
+vault: 23.75M USDC drained, the vault down roughly 72% from 32.7M, and the
+liquidity providers absorbed all of it. Trading resumed eight days later on a
+migrated environment; LP recovery was still undisclosed at the post-mortem.
+
+Their synthetics thesis was never tested. What failed was a single key that
+could mint P&L from nothing — which is the one lesson this repository should
+take from them and has: prices are read on chain from Pyth, bounded by
+staleness and by TWAP deviation, and there is no operator-signed feed anywhere
+to compromise. Adding one for convenience is the door that must stay shut.
+
+**Here** it is a pool that is over-collateralised, on chain, and short only the
+net of each ticker. No permanent delegate over a position, no pause authority,
+no chain operator between an order and the book.
+
+### What primary-market access does and does not buy
+
+The issuer's gate is on the counterparty in front of it: onboarding with KYC
+and AML, after which specific wallets are whitelisted, and only whitelisted
+wallets may mint or redeem. That is an entity-level check. The beneficial owner
+behind a whitelisted wallet is not enumerated, and — given the absent transfer
+hook — could not be policed even if the terms asked for it. Minting is
+$100,000 minimum; redemption 5,000 USD, rejectable on adverse findings, with
+the issuer able to terminate a product on 30 business days' notice at a value
+it determines.
+
+So onboarding lets this protocol mint **as principal**, for its own book. It
+does not make it a conduit. The moment customer assets are taken in and fiat
+handed back, the intermediary is us, and that is a licensing question about
+this protocol rather than a permission granted by Backed — their willingness to
+face us is not a discharge of our own obligations, and their right to reject
+redemptions on adverse findings is exactly them managing exposure to what we
+pass through. Mint as principal and sell into the secondary market, the way an
+ETF authorised participant does, and no individual's redemption is ever
+intermediated.
+
+### What is not claimed
+
+Price discovery. Marking against Pyth contributes none of it, and no perpetual
+venue does — perps transfer and lever risk rather than find price. The pitch is
+not that this is where a price gets made.
+
+What is left after that is worth more than it sounds. Eighty of the 1,063
+tickers priced here have a token on Solana; the other 983 — every FX pair,
+every rate, some nine hundred equities — will never have one, because custody
+and float do not justify it. Being synthetic is not a compromise on that tail,
+it is the only way it exists at all. A venue that can only offer what it can
+custody cannot reach it.
+
+And the netting is why the buffer is small rather than awkward. A vault that
+faces gross exposure needs a loss absorber sized to it. Alice long 100 against
+Bob short 100 leaves this pool flat regardless of the collateral behind either
+side, so it is short the residual and reserves against that. The smaller buffer
+is a consequence of the design, not a saving taken out of it.
