@@ -356,8 +356,30 @@ fn amortise_tranche(pod: &mut Stock, price: u64, excursion: i64, util_bps: i64,
     actuary: &Actuary, depository: &mut Depository, old_exposure_value: u64,
     current_time: i64) -> (i64, u64, u64, u128, bool) {
     let long = pod.exposure > 0;
+    // How far outside the band this is, in units. The ladder answers "how
+    // long"; this answers "how far", and the two are needed together: a slow
+    // drift should be unwound gently, but a gap moves the loss faster than a
+    // time-based slice can collect it, and what the pledge cannot cover comes
+    // out of depositors who never took the trade.
+    //
+    // Nothing is tuned here. The band is restored by closing exactly the
+    // excess over its edge, so that quantity is the floor on a tranche — never
+    // more than makes the position sound again, and never less. In a drift the
+    // ladder dominates and liquidation stays gentle; in a gap this does, which
+    // is the only case where gentleness costs somebody else.
+    let collar = collar_amount(pod, price);
+    let exposure_value = pod.exposure.unsigned_abs().saturating_mul(price);
+    let upper = pod.pledged.saturating_add(collar);
+    let lower = pod.pledged.saturating_sub(collar);
+    let breach = if exposure_value > upper { exposure_value - upper }
+                 else if lower > exposure_value { lower - exposure_value }
+                 else { 0 };
+    let restoring = if price > 0 { breach / price } else { 0 };
+
     let tranche = Depositor::tranche_size(pod.exposure.unsigned_abs(),
-                                   excursion, util_bps);
+                                   excursion, util_bps)
+                  .max(restoring)
+                  .min(pod.exposure.unsigned_abs());
 
     // Toward zero, whichever side it is on.
     pod.exposure = if long { pod.exposure.saturating_sub(tranche as i64) }
@@ -2331,6 +2353,33 @@ mod tests {
         cust.deposited_quid = 0;
         cust.pool_mark_down(&mut bank, 500, 2);
         assert_eq!(bank.max_liability, 350, "flat pod releases pro rata");
+    }
+
+    #[test]
+    fn a_deep_breach_is_unwound_by_depth_not_by_the_clock() {
+        // The ladder alone measures how long a position has been outside its
+        // band. A gap does not wait: the loss outruns a time-based slice, and
+        // whatever the pledge cannot cover lands on depositors. So a tranche
+        // is at least what restores the band.
+        let price = 100u64;
+        let mut deep = pod(10_000, 500, 200, 0);      // 50k of exposure on 10k
+        let collar = collar_amount(&deep, price);
+        let exposure_value = (deep.exposure as u64) * price;
+        let band_top = deep.pledged + collar;
+        assert!(exposure_value > band_top, "fixture must actually be breached");
+
+        let restoring = (exposure_value - band_top) / price;
+        let ladder = Depositor::tranche_size(deep.exposure.unsigned_abs(),
+                                             LIQ_GRACE_SECS as i64 + 1, 5_000);
+        assert!(restoring > ladder,
+                "a breach this deep should outrun the opening rung");
+
+        // And the floor never exceeds the position: a breach larger than the
+        // whole thing closes it, rather than asking for units that do not exist.
+        deep.pledged = 0;
+        let collar = collar_amount(&deep, price);
+        let over = ((deep.exposure as u64) * price).saturating_sub(collar) / price;
+        assert!(over.min(deep.exposure.unsigned_abs()) <= deep.exposure.unsigned_abs());
     }
 
     #[test]

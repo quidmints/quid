@@ -302,7 +302,11 @@ pub struct LzReceive<'info> {
     bump, seeds::program = store.endpoint_program)]
     pub endpoint: AccountInfo<'info>,
 
-    /// CHECK: LayerZero endpoint program
+    /// CHECK: the shared endpoint, pinned. The CPI below is addressed using
+    /// `store.endpoint_program`, so this account is not what authorises it —
+    /// constraining it anyway keeps a caller from presenting one program here
+    /// and having the seeds above resolved against another.
+    #[account(address = LZ_ENDPOINT_PROGRAM @ PithyQuip::InvalidSettlementProgram)]
     pub endpoint_program: AccountInfo<'info>,
 }
 

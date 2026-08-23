@@ -983,7 +983,13 @@
           "writable": true
         },
         {
-          "name": "endpoint_program"
+          "name": "endpoint_program",
+          "docs": [
+            "`store.endpoint_program`, so this account is not what authorises it —",
+            "constraining it anyway keeps a caller from presenting one program here",
+            "and having the seeds above resolved against another."
+          ],
+          "address": "76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6"
         }
       ],
       "args": [
