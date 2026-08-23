@@ -408,6 +408,10 @@ pub struct SetKestrel<'info> {
 
     #[account(mut, seeds = [b"program_config"], bump = config.bump)]
     pub config: Box<Account<'info, ProgramConfig>>,
+
+    /// Read only, and only to answer one question: is anything still parked?
+    #[account(seeds = [b"depository"], bump)]
+    pub bank: Box<Account<'info, Depository>>,
 }
 
 /// Point SOL* parking at the issuer. `kestrel_program = Pubkey::default()`
@@ -431,6 +435,12 @@ pub fn set_kestrel(ctx: Context<SetKestrel>, kestrel_program: Pubkey,
     // Enabling requires both halves; disabling clears both.
     if kestrel_program != Pubkey::default() {
         require!(sol_star_mint != Pubkey::default(), PithyQuip::InvalidParameters);
+    } else {
+        // Switching the issuer off while the pool still holds its token would
+        // strand that balance: every unwind is addressed to the program named
+        // here, so clearing it removes the only route back to lamports. Wind
+        // the position down first, then disable.
+        require!(ctx.accounts.bank.sol_star_shares == 0, PithyQuip::FlashLoanActive);
     }
     let config = &mut ctx.accounts.config;
     config.kestrel_program = kestrel_program;

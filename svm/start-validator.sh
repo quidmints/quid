@@ -81,6 +81,22 @@ LZ_ENDPOINT="76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6"
 ACCOUNTS=()
 PROGRAMS=()
 
+# Kestrel `long_yield_carry`, the SOL* issuer. Program plus the three live
+# accounts a mint/burn touches: the SOL market Token PDA, its wSOL collateral
+# vault, and the SOL* mint itself. Same approach as the Pyth feeds — real
+# program, real state, so the CPI is exercised rather than mocked.
+KESTREL="LYC8YiiSzQfPpxUW2tpxfuPKGZwywAJhXKUfDP2B66f"
+SOL_STAR_MINT="FDhu9642aPYNnbTnSoHdAsR9tgSxftPDPjEVdbD58nP2"
+KESTREL_TOKEN="6MSD4oSiJq8y5hmryCuMykyTjNXbhha6HSAtrT1EFKQe"
+KESTREL_VAULT="DHxRiKmKZn8eEUsqJrwSpHcmMthLXEbsLfYDZMHBKP9B"
+WSOL_MINT="So11111111111111111111111111111111111111112"
+
+if [ -f "$FIXTURES/kestrel.so" ]; then
+  PROGRAMS+=("--bpf-program $KESTREL $FIXTURES/kestrel.so")
+else
+  echo "  ⚠ Skipping Kestrel (fixture not found)"
+fi
+
 if [ -f "$FIXTURES/lz_endpoint.so" ]; then
   PROGRAMS+=("--bpf-program $LZ_ENDPOINT $FIXTURES/lz_endpoint.so")
 else
@@ -112,6 +128,13 @@ add_if_exists "$USDC_PYTH" "$FIXTURES/${USDC_PYTH}.json"
 add_if_exists "$USDT_PYTH" "$FIXTURES/${USDT_PYTH}.json"
 add_if_exists "$DAI_PYTH" "$FIXTURES/${DAI_PYTH}.json"
 add_if_exists "$PYUSD_PYTH" "$FIXTURES/${PYUSD_PYTH}.json"
+
+# Kestrel's live state: the SOL market Token PDA, its wSOL collateral vault,
+# and the SOL* mint. These have to come after add_if_exists is defined.
+add_if_exists "$SOL_STAR_MINT" "$FIXTURES/${SOL_STAR_MINT}.json"
+add_if_exists "$KESTREL_TOKEN" "$FIXTURES/${KESTREL_TOKEN}.json"
+add_if_exists "$KESTREL_VAULT" "$FIXTURES/${KESTREL_VAULT}.json"
+add_if_exists "$WSOL_MINT"     "$FIXTURES/${WSOL_MINT}.json"
 
 # Always load Pyth receiver program
 add_if_exists "$PYTH_RECEIVER" "$FIXTURES/${PYTH_RECEIVER}.json"

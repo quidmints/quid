@@ -1099,6 +1099,31 @@
               }
             ]
           }
+        },
+        {
+          "name": "bank",
+          "docs": [
+            "Read only, and only to answer one question: is anything still parked?"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [

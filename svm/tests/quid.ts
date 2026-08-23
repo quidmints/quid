@@ -1,14 +1,14 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import {
-  PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL,
+  PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createMint, createAccount,
   mintTo, getAccount,
-  getAssociatedTokenAddress,
+  getAssociatedTokenAddress, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { Quid } from "../target/types/quid";
 import { expect } from "chai";
@@ -186,6 +186,25 @@ describe("QU!D Protocol — Depository Suite", () => {
   function deriveSolRisk(): PublicKey {
     // Matches Rust: seeds = [b"risk", "SOL".as_bytes()]
     return deriveTickerRisk("SOL");
+  }
+
+  // Kestrel's SOL* round trip. Addresses are mainnet's, loaded into the
+  // validator from dumps by start-validator.sh.
+  const KESTREL  = new PublicKey("LYC8YiiSzQfPpxUW2tpxfuPKGZwywAJhXKUfDP2B66f");
+  const SOL_STAR = new PublicKey("FDhu9642aPYNnbTnSoHdAsR9tgSxftPDPjEVdbD58nP2");
+  const K_TOKEN  = new PublicKey("6MSD4oSiJq8y5hmryCuMykyTjNXbhha6HSAtrT1EFKQe");
+  const K_VAULT  = new PublicKey("DHxRiKmKZn8eEUsqJrwSpHcmMthLXEbsLfYDZMHBKP9B");
+  const WSOL     = new PublicKey("So11111111111111111111111111111111111111112");
+
+  /// The accounts SolStarLegs::from_remaining expects, in its order, to sit
+  /// after the price feed in remaining_accounts.
+  function solStarLegs() {
+    const solPool = deriveSolPool();
+    return [K_TOKEN, K_VAULT, WSOL, SOL_STAR,
+            getAssociatedTokenAddressSync(WSOL, solPool, true),
+            getAssociatedTokenAddressSync(SOL_STAR, solPool, true),
+            KESTREL, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID]
+      .map(pubkey => ({ pubkey, isSigner: false, isWritable: true }));
   }
 
   async function sleep(ms: number): Promise<void> {
@@ -1363,6 +1382,94 @@ describe("QU!D Protocol — Depository Suite", () => {
       console.log("  ✓ SOL* parking disabled by default");
     });
 
+    it("SW.5b SOL* park and unpark round-trip against the live Kestrel program",
+       async function () {
+      // Kestrel's `long_yield_carry` is loaded into the validator from a
+      // mainnet dump, together with the real SOL market Token PDA, its wSOL
+      // collateral vault and the SOL* mint — so this exercises the actual CPI
+      // rather than a stand-in. Skips cleanly if the fixture is absent.
+      if (!(await provider.connection.getAccountInfo(KESTREL))) {
+        console.log("  ⚠ Kestrel fixture absent — skipping");
+        this.skip();
+      }
+
+      // Enable parking: 20% stays hot (the floor), 5% deadband, no hold, so a
+      // single deposit clears the band and a withdrawal can unwind at once.
+      await program.methods
+        .setKestrel(KESTREL, SOL_STAR, 2000, 500, 500, new BN(0))
+        .accountsStrict({ admin: payer.publicKey, config: configPDA, bank: bankPDA })
+        .rpc();
+
+      const solPool = deriveSolPool();
+      const legs = solStarLegs();
+      const budget = [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })];
+
+      const before = await program.account.depository.fetch(bankPDA);
+
+      await program.methods
+        .deposit(new BN(3 * LAMPORTS_PER_SOL), "SOL")
+        .accountsStrict({
+          signer: payer.publicKey, mint: mintUSD, config: configPDA,
+          bank: bankPDA, programVault: vaultPDA, depositor: depositorPDA,
+          tickerRisk: deriveSolRisk(), quid: null, solPool,
+          tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts([...pyth.getAccountMetas(["SOL"]), ...legs])
+        .preInstructions(budget)
+        .rpc();
+
+      const parked = await program.account.depository.fetch(bankPDA);
+      expect(parked.solStarShares.toNumber())
+        .to.be.greaterThan(before.solStarShares.toNumber(),
+                           "the deposit should have parked its excess as SOL*");
+      // Parked lamports are credited net of the haircut, never above cost.
+      expect(parked.solStarCreditedLamports.toNumber())
+        .to.be.at.most(parked.solStarCostLamports.toNumber());
+      console.log("  ✓ parked", parked.solStarCostLamports.toNumber(),
+                  "lamports →", parked.solStarShares.toNumber(), "SOL*");
+
+      // Now take more than the hot buffer holds, forcing an unwind.
+      const hot = parked.solLamports.toNumber();
+      await program.methods
+        .withdraw(new BN(hot + LAMPORTS_PER_SOL), "SOL", false)
+        .accountsStrict({
+          signer: payer.publicKey, mint: mintUSD, config: configPDA,
+          bank: bankPDA, bankTokenAccount: vaultPDA,
+          customerAccount: depositorPDA, customerTokenAccount: userTokenAccount,
+          solPool, tickerRisk: deriveSolRisk(),
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts([...pyth.getAccountMetas(["SOL"]), ...legs])
+        .preInstructions(budget)
+        .rpc();
+
+      const after = await program.account.depository.fetch(bankPDA);
+      expect(after.solStarShares.toNumber())
+        .to.be.lessThan(parked.solStarShares.toNumber(),
+                        "the withdrawal should have burned SOL* to pay out");
+      console.log("  ✓ unparked, ", after.solStarShares.toNumber(), "SOL* left");
+
+      // Switching the issuer off while SOL* is still held would strand it —
+      // every unwind is addressed to the program named in config, so clearing
+      // it removes the only route back to lamports. The program refuses.
+      expect(after.solStarShares.toNumber()).to.be.greaterThan(0);
+      try {
+        await program.methods
+          .setKestrel(PublicKey.default, PublicKey.default, 2000, 500, 1000,
+                      new BN(21 * 86400))
+          .accountsStrict({ admin: payer.publicKey, config: configPDA, bank: bankPDA })
+          .rpc();
+        expect.fail("Disabling Kestrel with SOL* outstanding should be refused");
+      } catch (e: any) {
+        expect(e.toString()).to.match(/FlashLoanActive|custom program error/);
+        console.log("  ✓ cannot switch off the issuer while its token is held");
+      }
+      // Kestrel stays enabled for the rest of the suite; unwinding must remain
+      // possible in that state, which is what SW.8 goes on to exercise.
+    });
+
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
       for (const [amount, ticker, why] of [
         [new BN(0), "", "zero amount"],
@@ -1444,7 +1551,8 @@ describe("QU!D Protocol — Depository Suite", () => {
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
-        .remainingAccounts(pyth.getAccountMetas(["SOL"]))
+        .remainingAccounts([...pyth.getAccountMetas(["SOL"]), ...solStarLegs()])
+        .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
         .rpc();
 
       const after = await program.account.depositor.fetch(depositorPDA);

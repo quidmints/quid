@@ -1848,7 +1848,10 @@ impl<'info> SolStarLegs<'info> {
             pool_bump,
         };
 
-        require!(config.kestrel_program != Pubkey::default(), PithyQuip::Unauthorized);
+        // Only the address is checked here, not that parking is switched on.
+        // Unwinding must stay possible in states where parking is not: the
+        // instruction this replaced kept its unpark path alive for exactly
+        // that reason, and `park_idle_sol` is where the enabled check belongs.
         require!(*legs.kestrel_program.key == config.kestrel_program,
                  PithyQuip::InvalidSettlementProgram);
         require!(*legs.sol_star_mint.key == config.sol_star_mint, PithyQuip::InvalidMint);
@@ -2036,6 +2039,8 @@ pub fn collar_adjusted_usd(lamports: u64, price: u64, actuary: &Actuary) -> u64 
 pub fn park_idle_sol<'info>(bank: &mut Depository, config: &ProgramConfig,
     legs: &SolStarLegs<'info>, payer: &AccountInfo<'info>, sol_price: u64,
     actuary: &Actuary, now: i64) -> Result<u64> {
+    // Parking is the direction that can be switched off; unparking is not.
+    require!(config.kestrel_program != Pubkey::default(), PithyQuip::Unauthorized);
     let floor = required_buffer(bank, config.sol_buffer_bps);
     let band = park_band(bank, config.sol_park_band_bps);
     // Both halves of the deadband: act only when the hot side is a full band
