@@ -239,10 +239,11 @@ describe("QU!D Protocol — Depository Suite", () => {
     const bank = await program.account.depository.fetch(bankPDA);
     const all = await program.account.depositor.all();
 
-    let sumQuid = 0, sumDrawn = 0;
+    let sumQuid = 0, sumDrawn = 0, sumPledged = 0;
     for (const d of all) {
       sumQuid  += d.account.depositedQuid.toNumber();
       sumDrawn += d.account.drawn.toNumber();
+      for (const p of d.account.balances) sumPledged += p.pledged.toNumber();
     }
     const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(b, 1);
 
@@ -251,6 +252,23 @@ describe("QU!D Protocol — Depository Suite", () => {
       `${bank.totalDeposits.toNumber()}`);
     expect(rel(sumDrawn, bank.totalDrawn.toNumber())).to.be.lessThan(1e-6,
       `${label}: Σ drawn ${sumDrawn} vs total_drawn ${bank.totalDrawn.toNumber()}`);
+
+    // Full conservation. Pledged collateral left the pool's total when it was
+    // committed to a position and has to be accounted for somewhere, so the
+    // complete statement is: what the vault holds covers every claim on it —
+    // deposits, earnings, and collateral still committed.
+    const vault = await getAccount(provider.connection, vaultPDA);
+    const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
+    const owed = bank.totalDeposits.toNumber() + bank.yieldPool.toNumber() + sumPledged;
+    // Integer arithmetic leaves a residue: the partial take-profit path
+    // rounds `pledged_reduce` and lets `T_delta` absorb the difference. A
+    // relative bound catches a real leak while tolerating that; anything
+    // structural shows up orders of magnitude above it, as the 14% share bug
+    // and the flattened deposit clock both did.
+    expect((owed - held) / Math.max(held, 1)).to.be.lessThan(1e-9,
+      `${label}: deposits ${bank.totalDeposits.toNumber()} + earnings ` +
+      `${bank.yieldPool.toNumber()} + pledged ${sumPledged} = ${owed} ` +
+      `exceeds ${held} held by ${owed - held}`);
   }
 
   async function sleep(ms: number): Promise<void> {
@@ -1458,12 +1476,20 @@ describe("QU!D Protocol — Depository Suite", () => {
         .accountsStrict({ admin: payer.publicKey, config: configPDA, bank: bankPDA })
         .rpc();
 
+      // Kestrel keeps its own cached price inside its Token PDA and rejects
+      // one it considers stale. That age is set by *their* crank on mainnet,
+      // so a fixture can arrive already past their bound however recently we
+      // dumped it. Their refusal is an upstream data condition, not a result
+      // about this program, so it skips rather than fails.
+      const stale = (e: any) => String(e).includes("PriceIsStale");
+
       const solPool = deriveSolPool();
       const legs = solStarLegs();
       const budget = [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })];
 
       const before = await program.account.depository.fetch(bankPDA);
 
+      try {
       await program.methods
         .deposit(new BN(3 * LAMPORTS_PER_SOL), "SOL")
         .accountsStrict({
@@ -1475,6 +1501,12 @@ describe("QU!D Protocol — Depository Suite", () => {
         .remainingAccounts([...pyth.getAccountMetas(["SOL"]), ...legs])
         .preInstructions(budget)
         .rpc();
+      } catch (e: any) {
+        if (!stale(e)) throw e;
+        console.log("  ⚠ Kestrel's cached price is past their own freshness",
+                    "bound — re-run `yarn refresh:kestrel` closer to a run");
+        this.skip();
+      }
 
       const parked = await program.account.depository.fetch(bankPDA);
       expect(parked.solStarShares.toNumber())
@@ -1620,9 +1652,15 @@ describe("QU!D Protocol — Depository Suite", () => {
         q += d.account.depositedQuid.toNumber();
         dr += d.account.drawn.toNumber();
       }
+      let pl = 0;
+      for (const d of all) for (const p of d.account.balances) pl += p.pledged.toNumber();
+      const vault = await getAccount(provider.connection, vaultPDA);
       console.log("  ✓ deposits", q, "/", bank.totalDeposits.toNumber(),
-                  "· drawn", dr, "/", bank.totalDrawn.toNumber(),
-                  "·", all.length, "depositors");
+                  "· drawn", dr, "/", bank.totalDrawn.toNumber());
+      console.log("    conservation: deposits", bank.totalDeposits.toNumber(),
+                  "+ earnings", bank.yieldPool.toNumber(),
+                  "+ pledged", pl, "vs held",
+                  Number(vault.amount) + bank.solUsdContrib.toNumber());
     });
 
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
