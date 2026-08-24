@@ -326,9 +326,12 @@ impl LiabilityUpdate {
         // written before this field existed from over-releasing.
         let old_collar_dollars = old_exposure.saturating_mul(old_collar_bps as u64) / 10_000;
 
+        // As above: an unpledged position is not unlevered, and reading it so
+        // would size the reserve against it as if it were the safest thing in
+        // the book.
         let new_leverage = if new_pledged > 0 { ((new_exposure as u128 * 100) /
                                                    new_pledged as u128).min(i64::MAX as u128) as i64
-        } else { 100 };
+        } else if new_exposure > 0 { i64::MAX } else { 100 };
 
         let new_collar = collar_bps(new_leverage, actuary);
         let new_collar_dollars = collar_notional(new_exposure, new_pledged)
@@ -881,10 +884,14 @@ let new_total = bank.total_deposits.saturating_sub(usd);
 
         let old_exposure_value = pod.value_at(price);
 
+        // Same rule as the gates below, and it matters more here: `collar_bps`
+        // widens the band as leverage falls, so reading an unpledged position
+        // as 1x handed the riskiest position in the book the most room before
+        // anyone could touch it. Unbounded leverage yields the tightest band.
         let leverage = if pod.pledged > 0 {
             ((old_exposure_value as u128 * 100) /
             pod.pledged as u128).min(i64::MAX as u128) as i64
-        } else { 100 };
+        } else if old_exposure_value > 0 { i64::MAX } else { 100 };
 
         let collar = collar_bps(leverage, actuary);
         let collar_amt = collar_notional(old_exposure_value, pod.pledged)
@@ -1068,9 +1075,14 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                 }
             } else { // Adding exposure
                 let new_exp = (pod.exposure as u64).saturating_mul(price);
+                // Zero pledge is not one-times leverage, it is exposure
+                // against nothing. Defaulting to 100 let a pod whose pledge
+                // had been consumed — by premiums, or by withdrawing it —
+                // pass this check and keep adding, which is the one thing the
+                // check exists to stop.
                 let post_lev = if pod.pledged > 0 {
                     ((new_exp as u128 * 100) / pod.pledged as u128).min(i64::MAX as u128) as i64
-                } else { 100 };
+                } else if new_exp > 0 { i64::MAX } else { 100 };
 
                 require!(post_lev <= max_lev, PithyQuip::Undercollateralised);
                 let delta = pod.pledged.saturating_add(collar_amt);
@@ -1232,9 +1244,10 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                     ((new_exp as u128 * 100) / 
                     pod.pledged as u128).min(
                         i64::MAX as u128) as i64
-                } 
-                else { 100 };
-                
+                }
+                // Same reasoning as the long side: no pledge is not 1x.
+                else if new_exp > 0 { i64::MAX } else { 100 };
+
                 require!(post_lev <= max_lev, 
                 PithyQuip::Undercollateralised);
 
@@ -2393,6 +2406,32 @@ mod tests {
         cust.deposited_quid = 0;
         cust.pool_mark_down(&mut bank, 500, 2);
         assert_eq!(bank.max_liability, 350, "flat pod releases pro rata");
+    }
+
+    #[test]
+    fn no_pledge_is_not_one_times_leverage() {
+        // Every leverage computation guarded its division with `else { 100 }`,
+        // so a position whose pledge had been consumed — by premiums, or by
+        // withdrawing it — read as 1x. The gates let it keep adding exposure,
+        // and `collar_bps`, which widens the band as leverage falls, handed it
+        // the most room in the book.
+        let price = 100u64;
+        let mut spent = pod(0, 500, 200, 0);        // exposure, nothing behind it
+        assert_eq!(spent.pledged, 0);
+        assert!(spent.value_at(price) > 0);
+
+        // The band for unbounded leverage is the tightest available, not the
+        // widest — which is what reading it as 1x produced.
+        let a = crate::etc::Actuary::default();
+        let unpledged = collar_bps(i64::MAX, &a);
+        let unlevered = collar_bps(100, &a);
+        assert!(unpledged <= unlevered,
+                "an unpledged position must not get a wider band than a flat one");
+
+        // And a flat pod with no pledge is genuinely unlevered, so it keeps
+        // the ordinary treatment.
+        spent.exposure = 0;
+        assert_eq!(spent.value_at(price), 0);
     }
 
     #[test]
