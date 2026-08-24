@@ -850,7 +850,30 @@ impl Actuary {
         }
         let old = self.last_price;
         let dt = max(1, slot - self.last_price_slot);
-        let change = (price - old).abs() * BPS / max(1, old);
+        // In i128: `(price - old).abs() * BPS` overflows i64 as soon as the
+        // move is large against a small base — a recovery from near-zero is
+        // enough — and this runs on every deposit, withdrawal, liquidation and
+        // sweep, so the panic would take the ticker with it.
+        // |Δp| / max(p₀, p₁) rather than |Δp| / p₀.
+        //
+        // The simple return is the wrong measure and the overflow was the
+        // symptom. It is unbounded above and bounded below by −100%, so a
+        // price recovering from near zero produces an arbitrarily large
+        // "move", and a doubling registers twice as violent as the halving
+        // that undoes it. Every consumer downstream — the volatility EMAs, the
+        // exceedance accumulators, the tail fit — inherited both problems.
+        //
+        // Dividing by the larger of the two prices fixes both at the source
+        // and needs no clamp, because |p₁ − p₀| ≤ max(p₀, p₁) is arithmetic
+        // rather than policy: the result cannot leave [0, BPS]. It is
+        // symmetric the way a log return is — a doubling and a halving both
+        // register 5000bps — and agrees with the simple return to first order
+        // for the small moves that dominate, so the calibration beneath it
+        // still means what it meant. It is a monotone function of |ln(p₁/p₀)|,
+        // so the ordering the tail fit depends on is preserved exactly, with
+        // no transcendental to evaluate on chain.
+        let change = ((price - old).abs() as i128 * BPS as i128
+            / max(1, max(old, price)) as i128) as i64;
         let vol_floor = self.vol_floor();
 
         // === Qualified observation: only count moves above noise threshold ===
@@ -938,8 +961,12 @@ impl Actuary {
         self.velocity = max(0, self.velocity - dt / 500 * 10);
 
         let twap_alpha = max(5, min(20, 200 / (10 + dt)));
-        self.twap_price = self.twap_price * (100 - twap_alpha) /
-                            100 + price * twap_alpha / 100;
+        // Same reason as `change` above: both terms are a price times a
+        // percentage, which overflows i64 at prices this arithmetic is
+        // otherwise happy to accept.
+        self.twap_price = ((self.twap_price as i128 * (100 - twap_alpha) as i128 / 100)
+            + (price as i128 * twap_alpha as i128 / 100))
+            .min(i64::MAX as i128) as i64;
 
         self.last_price = price;
         self.last_price_slot = slot;
@@ -4142,5 +4169,117 @@ mod delivery_set {
         assert!(deliverable_mint("AAPL").is_some() && is_deliverable("TSLA"));
         // Priced and tradeable, no token on this chain — the common case.
         assert!(!is_deliverable("SOL") && get_hex("SOL").is_some());
+    }
+}
+
+#[cfg(test)]
+mod market_stress {
+    use super::*;
+
+    /// Deterministic LCG. No `rand`, no clock: a failure here has to be
+    /// reproducible from the seed alone or it is not worth reporting.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 11
+        }
+        fn in_range(&mut self, lo: i64, hi: i64) -> i64 {
+            if hi <= lo { return lo; }
+            lo + (self.next() % ((hi - lo) as u64)) as i64
+        }
+    }
+
+    /// Everything the risk engine returns, checked for staying inside its own
+    /// stated range. Overflow is checked by the profile (`overflow-checks`),
+    /// so a wrapping multiply anywhere in here fails the test rather than
+    /// quietly producing a number.
+    fn assert_sane(a: &Actuary, slot: i64, path: &str, step: usize) {
+        let ctx = || format!("{path} at step {step}");
+
+        for lev in [100i64, 200, 500, 1_000, 5_000, 100_000, i64::MAX] {
+            let c = collar_bps(lev, a);
+            assert!(c > 0 && c <= MAX_COLLAR_BPS, "{}: collar {c} out of range", ctx());
+        }
+        for conc in [0i64, 1_000, 5_000, 10_000] {
+            let ml = max_leverage_pct(a, slot, conc);
+            assert!(ml >= 100, "{}: max leverage {ml} below 1x", ctx());
+            assert!(ml <= 100_000, "{}: max leverage {ml} implausible", ctx());
+
+            for lev in [100i64, 1_000, 10_000] {
+                let r = rate_bps(conc, lev, a);
+                assert!(r >= MIN_FEE_BPS && r <= 50_000, "{}: rate {r}", ctx());
+            }
+        }
+        for d in [0i64, 50, 100, 500, 5_000, 50_000] {
+            let t = a.tail_prob_bps(d);
+            assert!((0..=10_000).contains(&t), "{}: tail {t} at {d}bps", ctx());
+            let h = hazard_bps(d, a);
+            assert!((0..=10_000).contains(&h), "{}: hazard {h} at {d}bps", ctx());
+        }
+        // A shortfall is an average beyond a quantile, so it cannot sit below it.
+        for p in [100i64, 500, 1_000, 5_000] {
+            let q = a.quantile_bps(p);
+            let es = a.expected_shortfall_bps(p);
+            assert!(es >= q, "{}: shortfall {es} below quantile {q} at p={p}", ctx());
+        }
+        // Reserving against a net position is monotone in that position.
+        let small = ticker_reserve_dollars(1_000_000, a);
+        let large = ticker_reserve_dollars(100_000_000, a);
+        assert!(large >= small, "{}: reserve fell as the net grew", ctx());
+    }
+
+    fn run(path: &str, seed: u64, steps: usize, mut next: impl FnMut(&mut Lcg, i64, usize) -> i64) {
+        let mut rng = Lcg(seed);
+        let mut a = Actuary::default();
+        let mut price = 1_000_000i64;
+        a.update_price(price, 0);
+        for step in 1..=steps {
+            price = next(&mut rng, price, step).max(1);
+            a.update_price(price, step as i64);
+            assert_sane(&a, step as i64, path, step);
+        }
+    }
+
+    #[test]
+    fn a_crash_does_not_break_the_engine() {
+        // Down 30% a step, ten steps: far past anything the tail was fitted on.
+        run("crash", 1, 10, |_, p, _| p * 70 / 100);
+    }
+
+    #[test]
+    fn a_melt_up_does_not_break_the_engine() {
+        run("melt-up", 2, 10, |_, p, _| p.saturating_mul(3));
+    }
+
+    #[test]
+    fn violent_oscillation_does_not_break_the_engine() {
+        // Alternating halving and doubling — maximal realised vol.
+        run("whipsaw", 3, 40, |_, p, s| if s % 2 == 0 { p * 2 } else { p / 2 });
+    }
+
+    #[test]
+    fn a_dead_market_does_not_break_the_engine() {
+        // No movement at all, which is where a vol floor has to hold the line.
+        run("flat", 4, 60, |_, p, _| p);
+    }
+
+    #[test]
+    fn random_walks_do_not_break_the_engine() {
+        for seed in 1..=16u64 {
+            run("walk", seed, 120, |r, p, _| {
+                let bps = r.in_range(-4_000, 4_000);
+                p + (p / 10_000) * bps
+            });
+        }
+    }
+
+    #[test]
+    fn extremes_of_price_do_not_break_the_engine() {
+        // Both ends of what a u64 price can express, so a multiply that would
+        // overflow shows up as a panic rather than a wrapped number.
+        run("tiny", 5, 30, |r, _, _| r.in_range(1, 4));
+        run("huge", 6, 30, |r, _, _| r.in_range(i64::MAX / 8, i64::MAX / 4));
+        run("span", 7, 40, |r, _, s| if s % 2 == 0 { 1 } else { r.in_range(1, i64::MAX / 4) });
     }
 }
