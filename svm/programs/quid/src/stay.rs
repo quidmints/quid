@@ -60,6 +60,17 @@ pub struct Stock {
 }
 
 impl Stock {
+    /// What this position is worth at `price`.
+    ///
+    /// Written out nine times in two spellings: a `u64` saturating multiply,
+    /// and a `u128` multiply clamped back to `u64`. They return the same
+    /// number — `saturating_mul` already stops at `u64::MAX` — so the wide
+    /// form only bought an i128 division's worth of compute on paths that run
+    /// per position, per call.
+    fn value_at(&self, price: u64) -> u64 {
+        self.exposure.unsigned_abs().saturating_mul(price)
+    }
+
     /// Excursion length, starting the clock on first sight of a breach.
     fn excursion(&mut self, now: i64) -> i64 {
         if self.breached_at == 0 { self.breached_at = now; }
@@ -365,7 +376,7 @@ fn amortise_tranche(pod: &mut Stock, price: u64, excursion: i64, util_bps: i64,
     // ladder dominates and liquidation stays gentle; in a gap this does, which
     // is the only case where gentleness costs somebody else.
     let collar = collar_amount(pod, price);
-    let exposure_value = pod.exposure.unsigned_abs().saturating_mul(price);
+    let exposure_value =pod.value_at(price);
     let upper = pod.pledged.saturating_add(collar);
     let lower = pod.pledged.saturating_sub(collar);
     let breach = if exposure_value > upper { exposure_value - upper }
@@ -387,8 +398,7 @@ fn amortise_tranche(pod: &mut Stock, price: u64, excursion: i64, util_bps: i64,
     if pod.exposure == 0 { pod.breached_at = 0; }
     pod.updated = current_time;
 
-    let new_exp = (pod.exposure.unsigned_abs() as u128)
-        .saturating_mul(price as u128).min(u64::MAX as u128) as u64;
+    let new_exp = pod.value_at(price);
 
     LiabilityUpdate::compute(old_exposure_value, pod.collar_bps,
                              new_exp, pod.pledged, actuary)
@@ -473,8 +483,7 @@ fn settle_partial_close(pod: &mut Stock, depository: &mut Depository,
     pod.cost_basis = pod.cost_basis.saturating_sub(cost_basis_released);
     pod.updated = current_time;
 
-    let new_exp = (pod.exposure.unsigned_abs() as u128)
-        .saturating_mul(price as u128).min(u64::MAX as u128) as u64;
+    let new_exp = pod.value_at(price);
 
     let lelu = LiabilityUpdate::compute(old_exposure_value, pod.collar_bps,
                                         new_exp, pod.pledged, actuary);
@@ -499,7 +508,7 @@ fn settle_partial_close(pod: &mut Stock, depository: &mut Depository,
 /// fresh deposit that has not yet been through `repo()`.
 fn collar_amount(pod: &Stock, price: u64) -> u64 {
     let notional = collar_notional(
-        (pod.exposure.unsigned_abs()).saturating_mul(price), pod.pledged);
+        pod.value_at(price), pod.pledged);
     if pod.collar_bps > 0 {
         notional.saturating_mul(pod.collar_bps as u64) / 10_000
     } else {
@@ -830,9 +839,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
             .ok_or(PithyQuip::DepositFirst)?;
         let pod = &mut self.balances[pod_index];
 
-        let old_exposure_value = (pod.exposure.unsigned_abs() as u128)
-            .saturating_mul(price as u128)
-            .min(u64::MAX as u128) as u64;
+        let old_exposure_value = pod.value_at(price);
 
         let leverage = if pod.pledged > 0 {
             ((old_exposure_value as u128 * 100) /
@@ -957,9 +964,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                                          .saturating_sub(accrued_interest);
 
                     pod.pledged = 0; pod.updated = current_time;
-                    let new_exp = (pod.exposure.unsigned_abs() as u128)
-                                         .saturating_mul(price as u128)
-                                        .min(u64::MAX as u128) as u64;
+                    let new_exp = pod.value_at(price);
 
                     let lelu = LiabilityUpdate::compute(old_exposure_value,
                             pod.collar_bps, new_exp, pod.pledged, actuary);
@@ -1048,9 +1053,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                              ((room.saturating_sub(new_exp)) as f64 / price as f64) as i64);
                     }
                 } pod.updated = current_time;
-                let final_exp = (pod.exposure.unsigned_abs() as u128)
-                                        .saturating_mul(price as u128)
-                                        .min(u64::MAX as u128) as u64;
+                let final_exp = pod.value_at(price);
 
                 let lelu = LiabilityUpdate::compute(old_exposure_value,
                         pod.collar_bps, final_exp, pod.pledged, actuary);
@@ -1238,9 +1241,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
             // order to maximise potential profit?  maybe they know a big
             // drop is ahead, and they want to minimise the chance they
             // might be liquidated; either way we want to maximise control
-            let final_exp = (pod.exposure.unsigned_abs() as u128)
-                                    .saturating_mul(price as u128)
-                                    .min(u64::MAX as u128) as u64;
+            let final_exp = pod.value_at(price);
 
             let lelu = LiabilityUpdate::compute(old_exposure_value,
                     pod.collar_bps, final_exp, pod.pledged, actuary);
@@ -1289,7 +1290,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                     // pledged - X% will be worth more
                     // than exposure, as (theoretically)
                     // by that point it's liquidated...
-                    let exposure_value = (pod.exposure.unsigned_abs()).saturating_mul(price);
+                    let exposure_value = pod.value_at(price);
                     let pledged_minus_collar = pod.pledged.saturating_sub(collar_amt);
                     exposure_value.saturating_sub(pledged_minus_collar)
                 }
@@ -1311,7 +1312,11 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                 if pod.exposure == 0 { pod.updated = current_time; }
             }   amount = deducting as i64; // < remainder (out & clutch)
         } else { // remove or add dollars to one specific position...
-            let padded = Self::pad_ticker(ticker.unwrap());
+            // Reachable with no ticker and a positive amount, where `unwrap`
+            // aborted the transaction instead of returning. A panic is not a
+            // rejection: it costs the caller the fee, tells them nothing, and
+            // cannot be handled by anything above it.
+            let padded = Self::pad_ticker(ticker.ok_or(PithyQuip::UnknownSymbol)?);
             if let Some(pod) = self.balances.iter_mut().find(
                                  |pod| pod.ticker == padded) {
                 let price = prices.and_then(|p| p.first())
@@ -1320,7 +1325,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                 if pod.exposure != 0 && price == 0 {
                     return Err(PithyQuip::NoPrice.into());
                 }
-                let exposure = (pod.exposure.unsigned_abs()).saturating_mul(price);
+                let exposure = pod.value_at(price);
                 // Same band repo() will judge it by — otherwise a position
                 // could withdraw itself into a state repo() liquidates.
                 let collar_amt = collar_amount(pod, price);
