@@ -1801,14 +1801,23 @@ pub fn credited_lamports(bank: &Depository) -> u64 {
 /// Move bank-level SOL credit in either direction. Parking haircuts it down;
 /// unparking restores it and books realised carry.
 pub fn adjust_sol_credit(bank: &mut Depository, usd: i64) {
+    // Against earnings, not principal. A parking haircut or a realised carry
+    // changes what the pool is worth without changing what anybody deposited,
+    // so putting it in `total_deposits` broke the identity that total is the
+    // sum of the parts — and left the difference belonging to nobody.
+    // Earnings are exactly the right home: a gain is shared by tenure, a loss
+    // comes off the shared surplus before it can reach anyone's stake.
     if usd >= 0 {
         let v = usd as u64;
         bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_add(v);
-        bank.total_deposits = bank.total_deposits.saturating_add(v);
+        bank.yield_pool = bank.yield_pool.saturating_add(v);
     } else {
         let v = usd.unsigned_abs();
         bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_sub(v);
-        bank.total_deposits = bank.total_deposits.saturating_sub(v);
+        // Only once the surplus is gone does a loss touch principal.
+        let from_yield = v.min(bank.yield_pool);
+        bank.yield_pool -= from_yield;
+        bank.total_deposits = bank.total_deposits.saturating_sub(v - from_yield);
     }
 }
 
@@ -2261,15 +2270,25 @@ mod tests {
     }
 
     #[test]
-    fn credit_adjustment_is_symmetric_and_saturating() {
+    fn credit_adjustment_lands_on_earnings_before_principal() {
         let mut b = bank(0, 0, 0);
         b.total_deposits = 1_000; b.sol_usd_contrib = 1_000;
+
+        // With no surplus, a loss has nowhere to go but principal.
         adjust_sol_credit(&mut b, -400);
-        assert_eq!((b.total_deposits, b.sol_usd_contrib), (600, 600));
+        assert_eq!((b.total_deposits, b.yield_pool, b.sol_usd_contrib), (600, 0, 600));
+
+        // A gain is the pool's, not any depositor's: principal is unchanged.
         adjust_sol_credit(&mut b, 150);
-        assert_eq!((b.total_deposits, b.sol_usd_contrib), (750, 750));
+        assert_eq!((b.total_deposits, b.yield_pool, b.sol_usd_contrib), (600, 150, 750));
+
+        // The next loss comes off that surplus first, and only then principal.
+        adjust_sol_credit(&mut b, -200);
+        assert_eq!((b.total_deposits, b.yield_pool, b.sol_usd_contrib), (550, 0, 550));
+
+        // And it saturates rather than wrapping.
         adjust_sol_credit(&mut b, -10_000);
-        assert_eq!((b.total_deposits, b.sol_usd_contrib), (0, 0));
+        assert_eq!((b.total_deposits, b.yield_pool, b.sol_usd_contrib), (0, 0, 0));
     }
 
     fn pod(pledged: u64, exposure: i64, collar_bps: u16, collar_dollars: u64) -> Stock {

@@ -147,9 +147,27 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
 
         let remainder = customer.renege(None, -delta as i64,
                           Some(&prices), right_now)? as i64;
-        customer.deposited_quid += (delta - remainder) as u64;
 
-        Banks.total_deposits -= remainder as u64;
+        // `renege` pulled `delta - remainder` out of this depositor's other
+        // positions; `remainder` is what it could not reach. The recovered
+        // part moves from `pledged`, which the pool does not count, into
+        // `deposited_quid`, which it does — so the pool's total has to rise
+        // with it. It was falling by `remainder` instead, which is neither
+        // side of that move: the two ledgers drifted by `delta` every time
+        // this branch fired.
+        let recovered = (delta - remainder) as u64;
+        customer.deposited_quid += recovered;
+        Banks.total_deposits += recovered;
+
+        // What could not be recovered is a shortfall the pool absorbs. Take
+        // it from earnings first, and only from principal once those are
+        // exhausted — losses should land on what was made before what was
+        // deposited.
+        let shortfall = remainder as u64;
+        let from_yield = shortfall.min(Banks.yield_pool);
+        Banks.yield_pool -= from_yield;
+        Banks.total_deposits = Banks.total_deposits
+            .saturating_sub(shortfall - from_yield);
         risk.actuary.record_activity(prior_exposure, delta,
             slot, delta, Banks.total_deposits as i64);
         reconcile_ticker_reserve(risk, Banks);
@@ -168,7 +186,13 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
         liquidator_dep.deposit_seconds += (liquidator_dep.deposited_quid as u128)
                                                        * (liq_time_delta as u128);
         liquidator_dep.last_updated = right_now;
-    }   liquidator_dep.deposited_quid += interest;
+    }   // The commission came out of the borrower's pledge, which the pool
+        // does not count, and lands in a depositor balance, which it does. So
+        // the pool's total has to rise with it — crediting one side only made
+        // the sum of balances exceed the total they are measured against.
+        liquidator_dep.deposited_quid += interest;
+        ctx.accounts.bank.total_deposits =
+            ctx.accounts.bank.total_deposits.saturating_add(interest);
     Ok(())
 }
 
@@ -880,6 +904,10 @@ pub fn handle_sweep<'info>(ctx: Context<'_, '_, 'info, 'info, Sweep<'info>>,
     }
     cranker_acct.deposited_quid = cranker_acct.deposited_quid
         .saturating_add(commission);
+    // Same move as the liquidator's cut: pledge is not in the total, a
+    // depositor balance is, so the total rises with it.
+    ctx.accounts.bank.total_deposits =
+        ctx.accounts.bank.total_deposits.saturating_add(commission);
 
     emit!(Swept { ticker, touched, commission, at: now });
     Ok(())
