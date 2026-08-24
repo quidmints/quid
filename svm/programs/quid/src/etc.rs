@@ -811,28 +811,6 @@ impl Actuary {
         (is_adding, is_reducing_imbalance)
     }
 
-    /// Marginal risk contribution.
-    ///
-    /// Returns: (net_change, total_change)
-    /// - net_change > 0 = concentrating imbalance
-    /// - net_change < 0 = hedging imbalance
-    /// - total_change > 0 = adding counterparty risk
-    /// - total_change < 0 = reducing counterparty risk
-    ///
-    pub fn marginal_risk(&self, exposure: i64, amount: i64, lev: i64) -> (i64, i64) {
-        let (is_adding, _) = self.classify(exposure, amount);
-        let trade_size = amount.abs() * lev / 100;
-
-        // Net imbalance change
-        let current = self.get_net();
-        let projected = current + amount * lev / 100;
-        let net_change = projected.abs() - current.abs();
-
-        // Total exposure change (positive if adding, negative if reducing)
-        let total_change = if is_adding { trade_size } else { -trade_size };
-
-        (net_change, total_change)
-    }
 
     /// Update on oracle price change
     /// call ONCE per slot, BEFORE any trades.

@@ -195,9 +195,6 @@ impl Depository {
         true
     }
 
-    pub fn update_liability(&mut self, old: u64, new: u64) {
-        self.max_liability = self.max_liability.saturating_sub(old).saturating_add(new);
-    }
 
     /// Check if pool has capacity for additional collar exposure.
     ///
@@ -1785,11 +1782,6 @@ pub fn park_band(bank: &Depository, band_bps: u16) -> u64 {
     ((sol_total_lamports(bank) as u128).saturating_mul(band_bps as u128) / 10_000) as u64
 }
 
-/// Lamports the hot buffer is short of its floor. Non-zero means depositors
-/// cannot be paid at full size, so unparking is a repair, not a choice.
-pub fn buffer_deficit(bank: &Depository, buffer_bps: u16) -> u64 {
-    required_buffer(bank, buffer_bps).saturating_sub(bank.sol_lamports)
-}
 
 /// Lamports the pool credits as depositor collateral: hot at face plus the
 /// parked tranche net of its haircut.
