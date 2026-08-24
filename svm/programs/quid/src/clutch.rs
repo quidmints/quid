@@ -115,7 +115,7 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
     adjusted_price, right_now, slot, &risk.actuary, Banks)?;
     require!(delta != 0, PithyQuip::NotUndercollateralised);
 
-    Banks.total_deposits += interest;
+    Banks.yield_pool += interest;
     interest = (delta.abs() as u64 / 250) as u64;
     let pos = customer.balances.iter().find(|p|
         std::str::from_utf8(&p.ticker).unwrap()
@@ -134,7 +134,7 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
         // ^ pay liquidator's commission...
          // Take profit on behalf of all the
          // depositors, at the expense of one
-        Banks.total_deposits += delta as u64;
+        Banks.yield_pool += delta as u64;
         risk.actuary.record_activity(prior_exposure, -delta,
             slot, delta, Banks.total_deposits as i64);
         reconcile_ticker_reserve(risk, Banks);
@@ -278,20 +278,40 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
         if amount.abs() > 0 { // if there's a remainder (returned by renege), or otherwise:
             time_delta = right_now - customer.last_updated;
             customer.deposit_seconds += (time_delta as u128) * (customer.deposited_quid as u128);
-            let raw_max = customer.deposit_seconds.saturating_mul(Banks.total_deposits as u128)
-                .checked_div(Banks.total_deposit_seconds).unwrap_or(0).min(u64::MAX as u128) as u64;
+            // Principal comes back at par; only the earnings are weighted by
+            // tenure. Weighting the whole pool by tenure is what let a long
+            // depositor's claim exceed what they put in, with the difference
+            // coming out of later depositors' principal, and what made the
+            // shares fail to sum to the pool at all.
+            //
+            // Time-weighting still does the job it was there for: someone who
+            // arrives just before a large liquidation has almost no
+            // deposit-seconds, so their share of that windfall is almost
+            // nothing, however large it is. They get their principal back and
+            // no more, which is exactly what a just-in-time depositor should
+            // get. What they can no longer do is arrive late and be paid out
+            // of somebody else's stake.
+            let earned = if Banks.total_deposit_seconds > 0 && Banks.yield_pool > 0 {
+                customer.deposit_seconds
+                    .saturating_mul(Banks.yield_pool as u128)
+                    .checked_div(Banks.total_deposit_seconds)
+                    .unwrap_or(0).min(Banks.yield_pool as u128) as u64
+            } else { 0 };
 
             // Borrowers pay supra to the pool proportional to their share of total drawn;
             // a pure depositor (drawn=0) gets full pro-rata yield, a borrower gets it
             // discounted by their fraction of pool risk — closing the circular subsidy
             // where funding payments flow into the pool and then back to the payer.
+            // Applied to the earnings alone now: a borrower's own principal was
+            // never a subsidy to discount.
             let utilisation_discount = if Banks.total_drawn > 0 {
                 let borrow_frac = (customer.drawn as u128 * 10_000
                               / Banks.total_drawn as u128).min(10_000) as u64;
 
                 10_000u64.saturating_sub(borrow_frac)
             } else { 10_000 };
-            let max_value = raw_max.saturating_mul(utilisation_discount) / 10_000;
+            let earned = earned.saturating_mul(utilisation_discount) / 10_000;
+            let max_value = customer.deposited_quid.saturating_add(earned);
 
             // Withheld: the pool cannot pay out what it is holding against
             // open exposure. `max_liability` is the reserve against every
@@ -310,7 +330,13 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
             // number, it just had to bind.
             let value = max_value.min(amount.abs() as u64)
                                  .min(Banks.withdrawable());
-            amt += value; Banks.total_deposits -= value;
+            amt += value;
+            // Spend principal first, then earnings, so the two ledgers each
+            // fall by what actually left them.
+            let from_principal = value.min(customer.deposited_quid);
+            Banks.total_deposits -= from_principal;
+            Banks.yield_pool = Banks.yield_pool
+                .saturating_sub(value.saturating_sub(from_principal));
 
             let old_deposited = customer.deposited_quid;
             customer.deposited_quid -= customer.deposited_quid.min(value);
@@ -817,12 +843,12 @@ pub fn handle_sweep<'info>(ctx: Context<'_, '_, 'info, 'info, Sweep<'info>>,
         match customer.repo(t, 0, price, now, slot, &risk.actuary, bank) {
             Ok((delta, interest)) if delta != 0 => {
                 let cut = (delta.unsigned_abs()) / 250;
-                bank.total_deposits = bank.total_deposits.saturating_add(interest);
+                bank.yield_pool = bank.yield_pool.saturating_add(interest);
                 if delta < 0 {
                     // Profit taken on behalf of every depositor, at the
                     // expense of this one — less the cranker's cut.
                     let credited = delta.unsigned_abs().saturating_sub(cut);
-                    bank.total_deposits = bank.total_deposits.saturating_add(credited);
+                    bank.yield_pool = bank.yield_pool.saturating_add(credited);
                     risk.actuary.record_activity(0, -(credited as i64), slot,
                         credited as i64, bank.total_deposits as i64);
                     reconcile_ticker_reserve(risk, bank);
@@ -832,7 +858,7 @@ pub fn handle_sweep<'info>(ctx: Context<'_, '_, 'info, 'info, Sweep<'info>>,
                     // across the book, so it takes only what is already liquid.
                     let take = (delta as u64).min(customer.deposited_quid);
                     customer.deposited_quid -= take;
-                    bank.total_deposits = bank.total_deposits.saturating_add(take);
+                    bank.yield_pool = bank.yield_pool.saturating_add(take);
                 }
                 commission = commission.saturating_add(cut);
                 touched += 1;

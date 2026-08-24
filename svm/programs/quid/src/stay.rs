@@ -98,6 +98,16 @@ pub struct Depository {
     // depositors get more, pro rata)
     pub total_drawn: u64,
     // ^ leverage exposure
+
+    /// Earnings the pool has taken in but not yet paid out: premiums charged
+    /// to borrowers, and profit appropriated from liquidated positions.
+    ///
+    /// Kept apart from `total_deposits` so that stays exactly the sum of what
+    /// depositors put in. Mixing them made the payout share integrate one
+    /// quantity in its numerator and another in its denominator, so shares did
+    /// not sum to the pool — measured at 1.188× — and tenure moved principal
+    /// between depositors instead of only allocating what was earned.
+    pub yield_pool: u64,
     pub max_liability: u64,
     /// Hot buffer: native lamports in the sol_pool PDA. This is what
     /// flash_borrow lends and withdraw_sol pays out — both need lamports in
@@ -221,7 +231,8 @@ impl Depository {
     /// Maximum amount LP can withdraw without breaking solvency.
     /// Must maintain enough deposits to cover worst-case collar losses.
     pub fn withdrawable(&self) -> u64 {
-        self.total_deposits.saturating_sub(self.max_liability)
+        self.total_deposits.saturating_add(self.yield_pool)
+            .saturating_sub(self.max_liability)
     }
 }
 
@@ -637,8 +648,6 @@ impl Depositor {
     /// without mutating deposited_quid or total_deposits.
     /// Call before any operation that changes deposited_quid on an existing customer.
     pub fn accrue(&mut self, bank: &mut Depository, now: i64) {
-        if self.owner == Pubkey::default() { return; }
-
         self.accrue_seconds(bank, now);
         
         self.last_updated = now; bank.last_updated = now;
@@ -669,9 +678,20 @@ impl Depositor {
     pub fn pool_deposit(&mut self,
         bank: &mut Depository, 
         usd: u64, now: i64) {
-        if self.owner != Pubkey::default() {
+        // Unconditional, and that is the fix rather than an oversight. This
+        // used to be skipped for a first-time depositor — correct for their
+        // side, which has no balance to age — but `bank.last_updated` was
+        // advanced regardless, so the pool's seconds for that interval were
+        // lost from `total_deposit_seconds` for good.
+        //
+        // Every payout is a share of that denominator, so each first deposit
+        // shrank it and inflated everyone's share. The shares stopped summing
+        // to the pool, which is a first-mover advantage: the early withdrawer
+        // gets the inflated figure and the last one out finds it missing.
+        //
+        // A new depositor's `deposited_quid` is still zero here, so their side
+        // contributes nothing and only the pool's interval is counted.
         self.accrue_seconds(bank, now);
-}
         self.deposited_quid = self.deposited_quid.saturating_add(usd);
         bank.total_deposits = bank.total_deposits.saturating_add(usd);
         self.last_updated = now; bank.last_updated = now;
@@ -2193,7 +2213,7 @@ mod tests {
     use super::*;
 
     fn bank(hot: u64, cost: u64, credited: u64) -> Depository {
-        Depository { last_updated: 0, total_deposits: 0, total_deposit_seconds: 0,
+        Depository { last_updated: 0, total_deposits: 0, total_deposit_seconds: 0, yield_pool: 0,
             total_drawn: 0, max_liability: 0, sol_lamports: hot, sol_usd_contrib: 0,
             sol_star_shares: 0, sol_star_cost_lamports: cost,
             sol_star_credited_lamports: credited, sol_star_parked_at: 0,

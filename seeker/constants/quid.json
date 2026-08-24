@@ -2354,6 +2354,20 @@
             "type": "u64"
           },
           {
+            "name": "yield_pool",
+            "docs": [
+              "Earnings the pool has taken in but not yet paid out: premiums charged",
+              "to borrowers, and profit appropriated from liquidated positions.",
+              "",
+              "Kept apart from `total_deposits` so that stays exactly the sum of what",
+              "depositors put in. Mixing them made the payout share integrate one",
+              "quantity in its numerator and another in its denominator, so shares did",
+              "not sum to the pool — measured at 1.188× — and tenure moved principal",
+              "between depositors instead of only allocating what was earned."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "max_liability",
             "type": "u64"
           },

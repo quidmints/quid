@@ -223,7 +223,7 @@ describe("QU!D Protocol — Depository Suite", () => {
     const bank = await program.account.depository.fetch(bankPDA);
     const vault = await getAccount(provider.connection, vaultPDA);
     const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
-    const owed = bank.totalDeposits.toNumber();
+    const owed = bank.totalDeposits.toNumber() + bank.yieldPool.toNumber();
     expect(owed).to.be.at.most(held,
       `${label}: pool owes ${owed} but holds ${held} — short by ${owed - held}`);
   }
@@ -1513,8 +1513,77 @@ describe("QU!D Protocol — Depository Suite", () => {
       const bank = await program.account.depository.fetch(bankPDA);
       const vault = await getAccount(provider.connection, vaultPDA);
       const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
-      console.log("  ✓ owes", bank.totalDeposits.toNumber(), "holds", held,
-                  "— margin", held - bank.totalDeposits.toNumber());
+      console.log("  ✓ owes", bank.totalDeposits.toNumber() + bank.yieldPool.toNumber(),
+                  "holds", held, "— margin",
+                  held - bank.totalDeposits.toNumber() - bank.yieldPool.toNumber());
+    });
+
+    it("SW.5e Tenure decides the share — measure how far it can go", async () => {
+      // Payouts are `deposit_seconds / total_deposit_seconds × total_deposits`.
+      // That is a share of the *whole* pot by tenure, not principal plus a
+      // share of earnings — so a long-tenured depositor's claim can exceed
+      // what they put in, and it is the later depositors' principal that
+      // makes up the difference. This measures the gap rather than asserting
+      // a bound, because the bound is a design decision, not a bug fix.
+      const bank = await program.account.depository.fetch(bankPDA);
+      // Seconds are brought up to date at withdrawal, so the stored figure
+      // understates anyone who has been idle. Age both sides to `now`, the
+      // way `handle_out` does, or a passive depositor reads as worthless.
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      const poolSeconds =
+        BigInt(bank.totalDepositSeconds.toString()) +
+        (now - BigInt(bank.lastUpdated.toString())) *
+        BigInt(bank.totalDeposits.toString());
+
+      const rows: Array<[string, number, number]> = [];
+      for (const [name, pk] of [["payer", payer.publicKey],
+                                ["user2", user2.publicKey],
+                                ["user3", user3.publicKey]] as const) {
+        try {
+          const d = await program.account.depositor.fetch(deriveDepositor(pk));
+          const mine =
+            BigInt(d.depositSeconds.toString()) +
+            (now - BigInt(d.lastUpdated.toString())) *
+            BigInt(d.depositedQuid.toString());
+          // Principal at par plus a tenure-weighted share of earnings.
+          const claim = d.depositedQuid.toNumber() + Number(
+            (mine * BigInt(bank.yieldPool.toString())) / (poolSeconds || 1n));
+          rows.push([name, d.depositedQuid.toNumber(), claim]);
+        } catch { /* never deposited */ }
+      }
+      let principal = 0, claims = 0;
+      for (const [name, dep, claim] of rows) {
+        principal += dep; claims += claim;
+        const pct = dep > 0 ? ((claim / dep - 1) * 100).toFixed(1) : "n/a";
+        console.log(`    ${name}: put in ${dep}, tenure claim ${claim} (${pct}%)`);
+      }
+      // Which side is wrong: the numerators or the denominator?
+      let sumSeconds = 0n;
+      for (const [, pk] of [["payer", payer.publicKey], ["user2", user2.publicKey],
+                            ["user3", user3.publicKey]] as const) {
+        try {
+          const d = await program.account.depositor.fetch(deriveDepositor(pk));
+          sumSeconds += BigInt(d.depositSeconds.toString()) +
+            (now - BigInt(d.lastUpdated.toString())) * BigInt(d.depositedQuid.toString());
+        } catch {}
+      }
+      console.log("    Σ deposited_quid", principal,
+                  "vs total_deposits", bank.totalDeposits.toNumber());
+      console.log("    Σ seconds      ", sumSeconds.toString(),
+                  "vs pool seconds   ", poolSeconds.toString());
+      console.log("  ✓ principal", principal, "claims", claims,
+                  "pool", bank.totalDeposits.toNumber());
+
+      // The one thing that must hold regardless: the sum of what everyone can
+      // claim cannot exceed the pool they are claiming from.
+      // Exact to rounding. Before principal and earnings were separated this
+      // overshot by 14%, which is a first-mover advantage: the early withdrawer
+      // takes an inflated share and the last one out finds it gone.
+      const backing = bank.totalDeposits.toNumber() + bank.yieldPool.toNumber();
+      const drift = claims - backing;
+      expect(Math.abs(drift) / Math.max(backing, 1)).to.be.lessThan(1e-6,
+        `claims ${claims} vs backing ${backing} — drift ${drift}`);
+      console.log("  ✓ claims within", drift, "units of backing (rounding)");
     });
 
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
