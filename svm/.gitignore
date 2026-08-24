@@ -1,0 +1,23 @@
+# Build output
+/target
+.anchor
+test-ledger
+seeker/android/.gradle
+seeker/android/build
+seeker/android/app/build
+seeker/.expo
+dist
+
+# Dependencies
+node_modules
+
+# Key material — never commit.
+# `keypair.json` is the secret key for program QDgHUZjtccRjKZ63MBvW8uzKR7qcqjpRfGhNSEGfDu9;
+# anyone holding it can redeploy over the program at that address.
+keypair.json
+*-keypair.json
+*.pem
+.env
+.env.*
+
+.DS_Store

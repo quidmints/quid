@@ -1,0 +1,30 @@
+{
+  "name": "quid-tests",
+  "scripts": {
+    "refresh": "node tests/refresh_fixtures.mjs",
+    "test": "ANCHOR_PROVIDER_URL=${ANCHOR_PROVIDER_URL:-http://127.0.0.1:8899} ANCHOR_WALLET=${ANCHOR_WALLET:-$HOME/.config/solana/id.json} node --import tsx ./node_modules/mocha/bin/mocha.js -t 1000000 tests/quid.ts tests/seeker-parity.ts",
+    "refresh:kestrel": "M=https://api.mainnet-beta.solana.com; F=tests/fixtures; for a in FDhu9642aPYNnbTnSoHdAsR9tgSxftPDPjEVdbD58nP2 6MSD4oSiJq8y5hmryCuMykyTjNXbhha6HSAtrT1EFKQe DHxRiKmKZn8eEUsqJrwSpHcmMthLXEbsLfYDZMHBKP9B So11111111111111111111111111111111111111112; do solana --url $M account $a --output json-compact -o $F/$a.json >/dev/null && echo \"  refreshed $a\"; done",
+    "refresh:all": "yarn refresh && yarn refresh:kestrel"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@pythnetwork/price-service-client": "^1.9.0",
+    "@pythnetwork/pyth-solana-receiver": "^0.8.0",
+    "@solana/spl-token": "0.4.8",
+    "@solana/web3.js": "1.94.0",
+    "bn.js": "^5.2.1",
+    "rpc-websockets": "7.11.0"
+  },
+  "devDependencies": {
+    "@layerzerolabs/lz-solana-sdk-v2": "^3.0.168",
+    "@types/bn.js": "^5.1.5",
+    "@types/chai": "^4.3.16",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.10",
+    "chai": "^4.4.1",
+    "got": "^11.8.6",
+    "mocha": "^10.7.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.3"
+  }
+}
