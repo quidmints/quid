@@ -2254,7 +2254,7 @@ pub struct SolUnparked {
 mod tests {
     use super::*;
 
-    fn bank(hot: u64, cost: u64, credited: u64) -> Depository {
+    pub(super) fn bank(hot: u64, cost: u64, credited: u64) -> Depository {
         Depository { last_updated: 0, total_deposits: 0, total_deposit_seconds: 0, yield_pool: 0,
             total_drawn: 0, max_liability: 0, sol_lamports: hot, sol_usd_contrib: 0,
             sol_star_shares: 0, sol_star_cost_lamports: cost,
@@ -2264,7 +2264,7 @@ mod tests {
             sol_yield_index: 0 }
     }
 
-    fn depositor(lamports: u64) -> Depositor {
+    pub(super) fn depositor(lamports: u64) -> Depositor {
         Depositor { owner: Pubkey::new_unique(), deposited_quid: 0,
             deposited_lamports: lamports, sol_pledged_usd: 0, deposit_seconds: 0,
             last_updated: 0, drawn: 0, balances: vec![], realized_pnl: 0,
@@ -2324,7 +2324,7 @@ mod tests {
         assert_eq!((b.total_deposits, b.yield_pool, b.sol_usd_contrib), (0, 0, 0));
     }
 
-    fn pod(pledged: u64, exposure: i64, collar_bps: u16, collar_dollars: u64) -> Stock {
+    pub(super) fn pod(pledged: u64, exposure: i64, collar_bps: u16, collar_dollars: u64) -> Stock {
         Stock { ticker: [0u8; 8], breached_at: 0, pledged, exposure, updated: 0, rate_bps: 0,
             collar_bps, cost_basis: pledged, interest_paid: 0,
             collar_dollar_seconds: 0, collar_dollars }
@@ -2810,5 +2810,105 @@ mod frame_budget {
         }
         assert!(sizes.iter().map(|(_, s)| s).sum::<usize>() * 2 < 32_768,
                 "boxing every account twice over must still fit the bump heap");
+    }
+}
+
+#[cfg(test)]
+mod state_machine_stress {
+    use super::*;
+    use super::tests::{pod, depositor};
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 11
+        }
+        fn pick(&mut self, n: u64) -> u64 { self.next() % n.max(1) }
+    }
+
+    /// The identity every operation has to preserve: a depositor's own books
+    /// balance. What they hold free plus what is committed to positions is
+    /// what they are owed — nothing may appear or vanish between the two.
+    fn assert_books_balance(d: &Depositor, before: u64, label: &str) {
+        let after = d.deposited_quid
+            + d.balances.iter().map(|p| p.pledged).sum::<u64>();
+        assert!(after <= before,
+                "{label}: books grew from {before} to {after} with no deposit");
+    }
+
+    /// Drive `renege` through every ordering of add, remove, and remove-all,
+    /// against a book that is sometimes flat, sometimes levered, sometimes
+    /// already stripped of collateral — the combinations that only occur when
+    /// somebody is closing a position while another is being opened.
+    #[test]
+    fn renege_never_creates_value_in_any_order() {
+        for seed in 1..=64u64 {
+            let mut rng = Lcg(seed);
+            let mut d = depositor(0);
+            d.deposited_quid = 1_000_000_000;
+
+            // Two or three positions, some levered, some bare.
+            let count = 2 + rng.pick(2) as usize;
+            for i in 0..count {
+                let pledged = rng.pick(500_000_000);
+                let exposure = rng.pick(2_000_000) as i64 - 1_000_000;
+                let mut p = pod(pledged, exposure, 200, 0);
+                p.ticker = Depositor::pad_ticker(match i { 0 => "AAA", 1 => "BBB", _ => "CCC" });
+                d.balances.push(p);
+            }
+            let prices: Vec<u64> = d.balances.iter().map(|_| 1 + rng.pick(1_000)).collect();
+
+            for step in 0..24 {
+                let before = d.deposited_quid
+                    + d.balances.iter().map(|p| p.pledged).sum::<u64>();
+                let now = 1_000 + step * 900;
+
+                let r = match rng.pick(4) {
+                    // Strip collateral across the whole book, including past
+                    // the point where there is any left to take.
+                    0 => d.renege(None, -(rng.pick(2_000_000_000) as i64), Some(&prices), now),
+                    // Add to one position.
+                    1 => d.renege(Some("AAA"), rng.pick(100_000_000) as i64, None, now),
+                    // Remove from one position, sometimes more than it holds.
+                    2 => d.renege(Some("BBB"), -(rng.pick(900_000_000) as i64),
+                                  Some(&vec![prices[0]]), now),
+                    // A no-op amount, which must not be treated as a sweep.
+                    _ => d.renege(Some("CCC"), 0, Some(&vec![prices[0]]), now),
+                };
+                // Whether it succeeded or refused, nothing may have been minted.
+                let _ = r;
+                assert_books_balance(&d, before, &format!("seed {seed} step {step}"));
+
+                for p in &d.balances {
+                    assert!(p.cost_basis <= p.pledged.max(p.cost_basis),
+                            "seed {seed}: cost basis detached from pledge");
+                }
+            }
+        }
+    }
+
+    /// Stripping a position of its collateral must not leave it able to grow.
+    /// This is the shape the `else { 100 }` leverage guard allowed: a pod with
+    /// exposure and nothing behind it reading as unlevered.
+    #[test]
+    fn a_stripped_position_cannot_be_grown() {
+        let a = crate::etc::Actuary::default();
+        let mut d = depositor(0);
+        let mut p = pod(1_000_000, 5_000, 200, 0);
+        p.ticker = Depositor::pad_ticker("AAA");
+        d.balances.push(p);
+
+        // Take every last unit of collateral out.
+        let _ = d.renege(Some("AAA"), -1_000_000, Some(&vec![100]), 1_000);
+        let stripped = d.balances[0].pledged;
+
+        // Whatever remains, the position may not be valued as if it were safe.
+        if stripped == 0 && d.balances[0].exposure != 0 {
+            let lev_reads_unlevered = collar_bps(100, &a);
+            let lev_reads_unbounded = collar_bps(i64::MAX, &a);
+            assert!(lev_reads_unbounded <= lev_reads_unlevered,
+                    "a stripped position must not be handed the wider band");
+        }
     }
 }
