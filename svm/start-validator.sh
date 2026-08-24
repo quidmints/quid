@@ -148,6 +148,33 @@ if [ -n "$PAYER_PUBKEY" ]; then
   ACCOUNTS+=("--account $PAYER_PUBKEY $FIXTURES/payer.json")
 fi
 
+# USD* — the second registered mint, and a compile-time constant in the
+# program, so it has to exist at exactly that address to be exercised at all.
+# Its real authority is Perena's, which we do not hold, so the fixture is an
+# SPL mint at the right address with the local payer as authority: enough to
+# mint test balances and prove the two-vault pro-rata payout, without
+# pretending to be the real token.
+USD_STAR="star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM"
+if [ -n "$PAYER_PUBKEY" ]; then
+  node -e '
+    const [addr, auth] = process.argv.slice(1);
+    const bs58 = (s) => { const A="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      let n=0n; for (const c of s) n = n*58n + BigInt(A.indexOf(c));
+      const b=[]; while(n>0n){ b.unshift(Number(n & 255n)); n >>= 8n; }
+      while(b.length<32) b.unshift(0); return Buffer.from(b); };
+    const d = Buffer.alloc(82);
+    d.writeUInt32LE(1, 0);                 // mint authority present
+    bs58(auth).copy(d, 4);                 // ... and it is the payer
+    d.writeUInt8(6, 44);                   // decimals, as USD* has
+    d.writeUInt8(1, 45);                   // initialized
+    process.stdout.write(JSON.stringify({ pubkey: addr, account: {
+      lamports: 1461600, data: [d.toString("base64"), "base64"],
+      owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      executable: false, rentEpoch: 0 }}));
+  ' "$USD_STAR" "$PAYER_PUBKEY" > "$FIXTURES/usd_star.json"
+  ACCOUNTS+=("--account $USD_STAR $FIXTURES/usd_star.json")
+fi
+
 echo ""
 echo "Starting validator with ${#ACCOUNTS[@]} fixture accounts, ${#PROGRAMS[@]} extra programs..."
 echo ""

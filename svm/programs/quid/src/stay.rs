@@ -76,6 +76,24 @@ impl Stock {
         if self.breached_at == 0 { self.breached_at = now; }
         (now - self.breached_at).max(0)
     }
+
+    /// Charge one grace period against the excursion for a tranche taken.
+    ///
+    /// The gate is `excursion > LIQ_GRACE_SECS`, and `breached_at` was set
+    /// once and left alone, so a position an hour outside its band satisfied
+    /// it on every call for ever after. A liquidator could call in a loop and
+    /// unwind the whole position in one slot, taking a commission on each
+    /// rung — the seven-day ladder climbed in seconds, which is precisely what
+    /// the gradual unwind exists to prevent.
+    ///
+    /// So the excursion is a budget rather than a threshold: time accrues it,
+    /// each tranche spends one period of it. A neglected position still
+    /// accumulates, so a liquidator returning after a day may take the rungs
+    /// that went unclaimed — catching up is meant to be possible, unwinding
+    /// everything at once is not.
+    fn spend_grace(&mut self) {
+        self.breached_at = self.breached_at.saturating_add(LIQ_GRACE_SECS as i64);
+    }
 }
 
 impl Space for Stock {
@@ -399,6 +417,8 @@ fn amortise_tranche(pod: &mut Stock, price: u64, excursion: i64, util_bps: i64,
                                    excursion, util_bps)
                   .max(restoring)
                   .min(pod.exposure.unsigned_abs());
+
+    pod.spend_grace();
 
     // Toward zero, whichever side it is on.
     pod.exposure = if long { pod.exposure.saturating_sub(tranche as i64) }
@@ -2373,6 +2393,37 @@ mod tests {
         cust.deposited_quid = 0;
         cust.pool_mark_down(&mut bank, 500, 2);
         assert_eq!(bank.max_liability, 350, "flat pod releases pro rata");
+    }
+
+    #[test]
+    fn a_liquidator_cannot_climb_the_whole_ladder_at_once() {
+        // The gate is `excursion > LIQ_GRACE_SECS`. With `breached_at` set once
+        // and never moved, a position an hour past its band satisfied that on
+        // every call for ever after, so the rungs could all be taken in one
+        // slot — each paying a commission. Time now buys grace and each
+        // tranche spends it.
+        let g = LIQ_GRACE_SECS as i64;
+        let mut p = pod(20_000_000, 500, 200, 0);
+        p.breached_at = 1_000;
+        let now = 1_000 + g + 1;                    // just past the first rung
+
+        assert!(p.excursion(now) > g, "the first tranche is due");
+        p.spend_grace();
+        assert!(p.excursion(now) <= g,
+                "a second tranche in the same slot must not be due");
+
+        // Waiting earns the next rung, and only the next one.
+        assert!(p.excursion(now + g) > g, "an hour later it is due again");
+        p.spend_grace();
+        assert!(p.excursion(now + g) <= g, "and only one at a time");
+
+        // Neglect accrues: a liquidator returning after a day may take the
+        // rungs that went unclaimed, which is the intended catch-up.
+        let neglected = now + 24 * g;
+        let mut taken = 0;
+        while p.excursion(neglected) > g { p.spend_grace(); taken += 1; }
+        assert!(taken > 20 && taken < 30,
+                "about a day's worth of rungs, not the whole position: {taken}");
     }
 
     #[test]

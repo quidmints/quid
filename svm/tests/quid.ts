@@ -257,8 +257,19 @@ describe("QU!D Protocol — Depository Suite", () => {
     // committed to a position and has to be accounted for somewhere, so the
     // complete statement is: what the vault holds covers every claim on it —
     // deposits, earnings, and collateral still committed.
-    const vault = await getAccount(provider.connection, vaultPDA);
-    const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
+    // Every registered mint has its own vault, and a claim is asset-agnostic:
+    // `transfer_from_vaults` pays it pro rata across all of them. So the
+    // backing is the sum of the vaults, not whichever one the test happened to
+    // create first — counting one understated it by exactly the other's
+    // balance the moment USD* was deposited.
+    const cfg = await program.account.programConfig.fetch(configPDA);
+    let held = bank.solUsdContrib.toNumber();
+    for (const mint of cfg.registeredMints) {
+      const [v] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vault"), mint.toBuffer()], program.programId);
+      try { held += Number((await getAccount(provider.connection, v)).amount); }
+      catch { /* vault not created for this mint yet */ }
+    }
     const owed = bank.totalDeposits.toNumber() + bank.yieldPool.toNumber() + sumPledged;
     // Integer arithmetic leaves a residue: the partial take-profit path
     // rounds `pledged_reduce` and lets `T_delta` absorb the difference. A
@@ -1262,6 +1273,71 @@ describe("QU!D Protocol — Depository Suite", () => {
       }
     });
 
+    it("FL.4b USD* deposit, flash borrow and repay — the second mint",
+       async () => {
+      // The other registered mint, a compile-time constant in the program,
+      // and the asset that makes `transfer_from_vaults` a pro-rata split
+      // rather than a single-vault transfer. Nothing had exercised it.
+      const USD_STAR = new PublicKey("star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM");
+      if (!(await provider.connection.getAccountInfo(USD_STAR))) {
+        console.log("  \u26a0 USD* fixture absent \u2014 skipping"); return;
+      }
+      const [starVault, starBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vault"), USD_STAR.toBuffer()], program.programId);
+
+      const payerStar = await createAccount(provider.connection, payer,
+                                            USD_STAR, payer.publicKey);
+      await mintTo(provider.connection, payer, USD_STAR, payerStar,
+                   payer, 50_000 * 10 ** 6);
+
+      // Depositing is what creates the vault, so this covers the second-mint
+      // deposit path as well as seeding something to lend.
+      await program.methods
+        .deposit(new BN(10_000 * 10 ** 6), "")
+        .accountsStrict({
+          signer: payer.publicKey, mint: USD_STAR, config: configPDA,
+          bank: bankPDA, programVault: starVault, depositor: depositorPDA,
+          tickerRisk: null, quid: payerStar, solPool: null,
+          tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+      console.log("  \u2713 USD* accepted as a deposit; vault created");
+
+      const LOAN = new BN(1_000 * 10 ** 6);
+      const legs = [
+        { pubkey: starVault,        isSigner: false, isWritable: true  },
+        { pubkey: USD_STAR,         isSigner: false, isWritable: false },
+        { pubkey: payerStar,        isSigner: false, isWritable: true  },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      ];
+      const borrowIx = await program.methods
+        .flashBorrow(new BN(0), LOAN, starBump)
+        .accountsStrict({
+          flashAuthority: bebopAuthKp.publicKey, borrower: payer.publicKey,
+          bank: bankPDA, flashLoan: flashLoanPDA, config: configPDA,
+          solPool: deriveSolPool(), ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(legs).instruction();
+
+      const repayIx = await program.methods
+        .flashRepay(new BN(0), LOAN, starBump)
+        .accountsStrict({
+          repayer: payer.publicKey, bank: bankPDA, flashLoan: flashLoanPDA,
+          solRisk: deriveSolRisk(), solPool: deriveSolPool(),
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(legs).instruction();
+
+      await provider.sendAndConfirm(
+        new anchor.web3.Transaction().add(borrowIx, repayIx), [bebopAuthKp]);
+
+      const flash = await program.account.flashLoan.fetch(flashLoanPDA);
+      expect(flash.flashTokenAmount.toNumber()).to.equal(0,
+        "the loan must be settled inside its own transaction");
+      console.log("  \u2713 USD* borrowed and repaid, flash state zeroed");
+    });
+
     it("FL.5 SPL flash borrow not permitted for unregistered mint", async () => {
       const unregisteredMint = await createMint(
         provider.connection, payer, payer.publicKey, null, 6
@@ -1654,13 +1730,20 @@ describe("QU!D Protocol — Depository Suite", () => {
       }
       let pl = 0;
       for (const d of all) for (const p of d.account.balances) pl += p.pledged.toNumber();
-      const vault = await getAccount(provider.connection, vaultPDA);
+      const cfg = await program.account.programConfig.fetch(configPDA);
+      let held = bank.solUsdContrib.toNumber();
+      for (const mint of cfg.registeredMints) {
+        const [v] = PublicKey.findProgramAddressSync(
+          [Buffer.from("vault"), mint.toBuffer()], program.programId);
+        try { held += Number((await getAccount(provider.connection, v)).amount); }
+        catch {}
+      }
       console.log("  ✓ deposits", q, "/", bank.totalDeposits.toNumber(),
                   "· drawn", dr, "/", bank.totalDrawn.toNumber());
       console.log("    conservation: deposits", bank.totalDeposits.toNumber(),
                   "+ earnings", bank.yieldPool.toNumber(),
-                  "+ pledged", pl, "vs held",
-                  Number(vault.amount) + bank.solUsdContrib.toNumber());
+                  "+ pledged", pl, "vs held", held, "across",
+                  cfg.registeredMints.length, "vaults");
     });
 
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
