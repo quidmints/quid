@@ -18,7 +18,22 @@
 # Terminal 1 - Start validator
 # yarn refresh                  # fetch fresh Pyth fixtures
 # chmod +x start-validator.sh   # first time only
-# ./start-validator.sh
+# ./start-validator.sh          # fixture mode: reproducible, offline, fast
+# ./start-validator.sh --fork   # clone live mainnet state instead
+#
+# The two are complementary, not alternatives.
+#
+# Fixture mode replays dumps in tests/fixtures. It is deterministic and works
+# offline, and it can mint balances for tokens whose real authority we do not
+# hold — USD* is minted at its true address with a local authority, which is
+# the only way the second-vault path gets exercised at all.
+#
+# Fork mode clones from mainnet at genesis: real programs, real balances, real
+# oracle ages. It is the only mode where the parts that depend on somebody
+# else's live state are genuinely tested — Kestrel caches a price inside its
+# own account and rejects one it considers stale, so a dump can arrive already
+# past their bound while a clone never does. What it cannot do is mint a token
+# it does not control, so the USD* leg skips there and runs under fixtures.
 #
 # Terminal 2 - Run tests
 # 1. Build (generates new keypair if first time)
@@ -178,5 +193,44 @@ fi
 echo ""
 echo "Starting validator with ${#ACCOUNTS[@]} fixture accounts, ${#PROGRAMS[@]} extra programs..."
 echo ""
+
+# ── Fork mode ────────────────────────────────────────────────────────────────
+# `./start-validator.sh --fork` clones the accounts and programs from live
+# mainnet instead of replaying the dumps in tests/fixtures.
+#
+# The dumps are reproducible and fast, which is what a suite wants, but they
+# are a photograph: Kestrel caches a price inside its own state and rejects one
+# it considers stale, so a fixture can arrive already past their bound, and no
+# amount of local care makes an old snapshot current. Cloning fetches whatever
+# mainnet holds right now — real balances, real oracle ages, real program
+# versions — which is the only way the parts of this that depend on somebody
+# else's live state get exercised at all.
+if [ "$1" = "--fork" ]; then
+  MAINNET="${FORK_URL:-https://api.mainnet-beta.solana.com}"
+  echo ""
+  echo "Forking mainnet state from $MAINNET"
+
+  CLONE=()
+  # Upgradeable programs need their data account cloned too, which the plain
+  # --clone does not do.
+  for p in "$PYTH_RECEIVER" "$KESTREL" "$LZ_ENDPOINT" \
+           7a4WjyR8VZ7yZz5XJAKm39BUGn5iT9CKcv2pmG9tdXVH \
+           HtEYV4xB4wvsj5fgTkcfuChYpvGYzgzwvNhgDZQNh7wW \
+           6doghB248px58JSSwG4qejQ46kFMW4AMj7vzJnWZHNZn; do
+    CLONE+=(--clone-upgradeable-program "$p")
+  done
+
+  # Live accounts: every price feed the suite reads, Kestrel's market state and
+  # its collateral vault, and the two mints.
+  for a in "$XAG_PYTH" "$XAU_PYTH" "$BTC_PYTH" "$ETH_PYTH" "$SOL_PYTH" \
+           "$USDC_PYTH" "$USDT_PYTH" "$PYUSD_PYTH" \
+           "$SOL_STAR_MINT" "$KESTREL_TOKEN" "$KESTREL_VAULT" "$WSOL_MINT"; do
+    CLONE+=(--clone "$a")
+  done
+
+  # The payer still has to be funded locally — mainnet does not know it.
+  exec $VALIDATOR --reset --url "$MAINNET" "${CLONE[@]}" \
+       --account "$PAYER_PUBKEY" "$FIXTURES/payer.json"
+fi
 
 $VALIDATOR --reset ${PROGRAMS[@]} ${ACCOUNTS[@]}
