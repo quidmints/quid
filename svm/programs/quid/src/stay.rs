@@ -573,6 +573,49 @@ impl Depositor {
 
     /// Mirror every depository.utilisation(delta) call on this account so that
     /// clutch.rs can discount yield claims by the borrower's share of pool risk.
+    /// One rung of a gradual liquidation, and everything that must follow it.
+    ///
+    /// Every breach branch in `repo()` ended with the same fifteen lines:
+    /// check the excursion is past its grace, take a tranche, move `drawn` and
+    /// utilisation by what was unwound, and flush RAROC if the position closed.
+    /// Four copies meant four places for one of those steps to be forgotten.
+    fn unwind_a_tranche(&mut self, pod_index: usize, price: u64, util_bps: i64,
+        actuary: &Actuary, depository: &mut Depository, old_exposure_value: u64,
+        current_time: i64, now: i64, accrued_interest: u64) -> Result<(i64, u64)> {
+        let pod = &mut self.balances[pod_index];
+        let excursion = pod.excursion(now);
+        require!(excursion > LIQ_GRACE_SECS as i64, PithyQuip::TooSoon);
+
+        let (dollars, pod_cb, pod_ip, pod_cds, closed) =
+            amortise_tranche(pod, price, excursion, util_bps, actuary,
+                             depository, old_exposure_value, current_time);
+
+        self.update_drawn(dollars);
+        depository.utilisation(dollars);
+        if closed {
+            self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
+            Depositor::flush_raroc_pool(depository,
+                -(pod_cb as i64) - pod_ip as i64, pod_cds);
+        }
+        Ok((dollars, accrued_interest))
+    }
+
+    /// Time-weight both sides before any balance moves.
+    ///
+    /// Every path that changes `deposited_quid` has to age the depositor's
+    /// seconds and the pool's on the *old* balances first, or the change is
+    /// backdated to the last touch. It was written out at four call sites,
+    /// which is four chances to age one side and not the other.
+    fn accrue_seconds(&mut self, bank: &mut Depository, now: i64) {
+        let dc = now.saturating_sub(self.last_updated) as u64;
+        self.deposit_seconds = self.deposit_seconds
+            .saturating_add(self.deposited_quid as u128 * dc as u128);
+
+        let db = now.saturating_sub(bank.last_updated) as u64;
+        bank.total_deposit_seconds = bank.total_deposit_seconds
+            .saturating_add(bank.total_deposits as u128 * db as u128);
+    }
+
     pub fn update_drawn(&mut self, change: i64) {
         if change > 0 {
             self.drawn = self.drawn.saturating_add(change as u64);
@@ -587,13 +630,7 @@ impl Depositor {
     pub fn accrue(&mut self, bank: &mut Depository, now: i64) {
         if self.owner == Pubkey::default() { return; }
 
-        let dc = now.saturating_sub(self.last_updated) as u64;
-        self.deposit_seconds = self.deposit_seconds
-            .saturating_add(self.deposited_quid as u128 * dc as u128);
-
-        let db = now.saturating_sub(bank.last_updated) as u64;
-        bank.total_deposit_seconds = bank.total_deposit_seconds
-            .saturating_add(bank.total_deposits as u128 * db as u128);
+        self.accrue_seconds(bank, now);
         
         self.last_updated = now; bank.last_updated = now;
     }
@@ -624,15 +661,8 @@ impl Depositor {
         bank: &mut Depository, 
         usd: u64, now: i64) {
         if self.owner != Pubkey::default() {
-            let dc = now.saturating_sub(self.last_updated) as u64;
-
-            self.deposit_seconds = self.deposit_seconds
-                .saturating_add(self.deposited_quid as u128 * dc as u128);
-
-            let db = now.saturating_sub(bank.last_updated) as u64;
-            bank.total_deposit_seconds = bank.total_deposit_seconds
-                .saturating_add(bank.total_deposits as u128 * db as u128);
-        }
+        self.accrue_seconds(bank, now);
+}
         self.deposited_quid = self.deposited_quid.saturating_add(usd);
         bank.total_deposits = bank.total_deposits.saturating_add(usd);
         self.last_updated = now; bank.last_updated = now;
@@ -641,15 +671,8 @@ impl Depositor {
     pub fn pool_withdraw(
         &mut self, bank: &mut Depository, 
         usd: u64, now: i64) -> Result<()> {
-        let dc = now.saturating_sub(self.last_updated) as u64;
-        self.deposit_seconds = self.deposit_seconds.saturating_add(
-                          self.deposited_quid as u128 * dc as u128);
-        
-        let db = now.saturating_sub(bank.last_updated) as u64;
-        bank.total_deposit_seconds = bank.total_deposit_seconds
-            .saturating_add(bank.total_deposits as u128 * db as u128);
-        
-        let new_total = bank.total_deposits.saturating_sub(usd);
+        self.accrue_seconds(bank, now);
+let new_total = bank.total_deposits.saturating_sub(usd);
 
         require!(new_total >= bank.max_liability, 
                 PithyQuip::Undercollateralised);
@@ -662,15 +685,8 @@ impl Depositor {
 
     pub fn pool_mark_down(&mut self,
         bank: &mut Depository, usd: u64, now: i64) {
-        let dc = now.saturating_sub(self.last_updated) as u64;
-        self.deposit_seconds = self.deposit_seconds
-            .saturating_add(self.deposited_quid as u128 * dc as u128);
-        
-            let db = now.saturating_sub(bank.last_updated) as u64;
-        bank.total_deposit_seconds = bank.total_deposit_seconds
-            .saturating_add(bank.total_deposits as u128 * db as u128);
-
-        // Drain dq first, then absorb shortfall from open positions' pledged
+        self.accrue_seconds(bank, now);
+// Drain dq first, then absorb shortfall from open positions' pledged
         // (largest first). Mirrors Drift's cross-margin model: SOL crashing
         // forces a margin-call-style deleveraging on positions backed by it.
         // Without this, dq.saturating_sub silently truncates and leaves the
@@ -806,9 +822,13 @@ impl Depositor {
         depository: &mut Depository) -> Result<(i64, u64)> {
         require!(price > 0, PithyQuip::InvalidPrice);
         let padded = Self::pad_ticker(ticker);
-        let pod = self.balances.iter_mut()
-            .find(|p| p.ticker == padded)
+        // Index rather than a reference: the liquidation rungs below need
+        // `&mut self` again after touching the pod, and re-borrowing by index
+        // is what lets that be one helper instead of four inline copies.
+        let pod_index = self.balances.iter()
+            .position(|p| p.ticker == padded)
             .ok_or(PithyQuip::DepositFirst)?;
+        let pod = &mut self.balances[pod_index];
 
         let old_exposure_value = (pod.exposure.unsigned_abs() as u128)
             .saturating_mul(price as u128)
@@ -889,21 +909,9 @@ impl Depositor {
                     // Liquidator. Profit that belongs to one depositor is
                     // appropriated by all of them, slowly, which is what gives
                     // the borrower time to react and close.
-                    let excursion = pod.excursion(now);
-                    require!(excursion > LIQ_GRACE_SECS as i64, PithyQuip::TooSoon);
-                    let (dollars, pod_cb, pod_ip, pod_cds, closed) =
-                        amortise_tranche(pod, price, excursion, util_bps,
-                                   actuary, depository, old_exposure_value,
-                                   current_time);
-                    let _ = &pod; // end borrow before &mut self
-                    self.update_drawn(dollars);
-                    depository.utilisation(dollars);
-                    if closed {
-                        self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
-                        Depositor::flush_raroc_pool(depository,
-                            -(pod_cb as i64) - pod_ip as i64, pod_cds);
-                    }
-                    return Ok((dollars, accrued_interest));
+                    return self.unwind_a_tranche(pod_index, price, util_bps,
+                        actuary, depository, old_exposure_value,
+                        current_time, now, accrued_interest);
                 }
             }
             let lower = pod.pledged.saturating_sub(collar_amt);
@@ -920,21 +928,9 @@ impl Depositor {
                     return Ok((0, accrued_interest));
                 }
                 else if amount == 0 {
-                    let excursion = pod.excursion(now);
-                    require!(excursion > LIQ_GRACE_SECS as i64, PithyQuip::TooSoon);
-                    let (dollars, pod_cb, pod_ip, pod_cds, closed) =
-                        amortise_tranche(pod, price, excursion, util_bps,
-                                   actuary, depository, old_exposure_value,
-                                   current_time);
-                    let _ = &pod; // end borrow before &mut self
-                    self.update_drawn(dollars);
-                    depository.utilisation(dollars);
-                    if closed {
-                        self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
-                        Depositor::flush_raroc_pool(depository,
-                            -(pod_cb as i64) - pod_ip as i64, pod_cds);
-                    }
-                    return Ok((dollars, accrued_interest));
+                    return self.unwind_a_tranche(pod_index, price, util_bps,
+                        actuary, depository, old_exposure_value,
+                        current_time, now, accrued_interest);
                 } else { // ^ total deposits ^ incremented plus ^
                     return Err(PithyQuip::Undercollateralised.into());
                 }
@@ -1134,21 +1130,9 @@ impl Depositor {
                     // Liquidator. Profit that belongs to one depositor is
                     // appropriated by all of them, slowly, which is what gives
                     // the borrower time to react and close.
-                    let excursion = pod.excursion(now);
-                    require!(excursion > LIQ_GRACE_SECS as i64, PithyQuip::TooSoon);
-                    let (dollars, pod_cb, pod_ip, pod_cds, closed) =
-                        amortise_tranche(pod, price, excursion, util_bps,
-                                   actuary, depository, old_exposure_value,
-                                   current_time);
-                    let _ = &pod; // end borrow before &mut self
-                    self.update_drawn(dollars);
-                    depository.utilisation(dollars);
-                    if closed {
-                        self.flush_raroc(pod_cb, pod_ip, pod_cds, 0);
-                        Depositor::flush_raroc_pool(depository,
-                            -(pod_cb as i64) - pod_ip as i64, pod_cds);
-                    }
-                    return Ok((dollars, accrued_interest));
+                    return self.unwind_a_tranche(pod_index, price, util_bps,
+                        actuary, depository, old_exposure_value,
+                        current_time, now, accrued_interest);
                 }
             }
             pod.breached_at = 0;   // in band, as above

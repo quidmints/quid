@@ -1,5 +1,9 @@
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+};
 use anchor_spl::token_interface::{self, Burn, Mint, TokenAccount, TokenInterface};
 use crate::etc::PithyQuip;
 
@@ -499,63 +503,9 @@ pub struct LzAccount {
     pub is_writable: bool,
 }
 
-/// Outbound endpoint CPI shims. Unused while the OApp is receive-only; they
-/// are the other half of the QD bridge (burn on Solana → release on L1) and
-/// are kept wired so that leg is an instruction, not a re-implementation.
-fn cpi_send<'info>(
-    endpoint_program: Pubkey,
-    remaining_accounts: &[AccountInfo<'info>],
-    signer_seeds: &[&[&[u8]]], params: SendParams) -> Result<()> {
-    let mut ix_data = vec![102, 251, 20, 187, 65, 75, 12, 69];
-    ix_data.extend_from_slice(&params.try_to_vec()?);
-    let ix = anchor_lang::solana_program::instruction::Instruction {
-        program_id: endpoint_program, accounts: remaining_accounts.iter()
-            .map(|acc| anchor_lang::solana_program::instruction::AccountMeta {
-                pubkey: *acc.key, is_signer: acc.is_signer,
-                is_writable: acc.is_writable }).collect(),
-        data: ix_data,
-    };
-    anchor_lang::solana_program::program::invoke_signed(
-                  &ix, remaining_accounts, signer_seeds)?;
-    Ok(())
-}
 
 
-pub fn cpi_clear<'info>(
-    endpoint_program: Pubkey, accounts: &[AccountInfo<'info>],
-    signer_seeds: &[&[&[u8]]], params: ClearParams) -> Result<()> {
-    let mut ix_data = vec![250, 39, 28, 213, 123, 163, 133, 5];
 
-    ix_data.extend_from_slice(&params.try_to_vec()?);
-    let ix = anchor_lang::solana_program::instruction::Instruction {
-        program_id: endpoint_program, accounts: accounts.iter().map(
-                |acc| anchor_lang::solana_program::instruction::AccountMeta {
-                                pubkey: *acc.key, is_signer: acc.is_signer,
-                                is_writable: acc.is_writable, }).collect(),
-        data: ix_data,
-    };
-    anchor_lang::solana_program::program::invoke_signed(
-                            &ix, accounts, signer_seeds)?;
-    Ok(())
-}
-
-pub fn cpi_register_oapp<'info>(
-    endpoint_program: Pubkey, accounts: &[AccountInfo<'info>],
-    signer_seeds: &[&[&[u8]]], params: RegisterOAppParams) -> Result<()> {
-    let mut ix_data = vec![129, 89, 71, 68, 11, 82, 210, 125];
-    ix_data.extend_from_slice(&params.try_to_vec()?);
-
-    let ix = anchor_lang::solana_program::instruction::Instruction {
-        program_id: endpoint_program, accounts: accounts.iter().map(
-                |acc| anchor_lang::solana_program::instruction::AccountMeta {
-                                pubkey: *acc.key, is_signer: acc.is_signer,
-                                is_writable: acc.is_writable, }).collect(),
-        data: ix_data,
-    };
-    anchor_lang::solana_program::program::invoke_signed(
-                            &ix, accounts, signer_seeds)?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod bridge_label {
@@ -625,4 +575,50 @@ mod bridge_label {
                     "both shapes clear the header check that gates delivery");
         }
     }
+}
+
+/// Call the endpoint, signing as the OApp.
+///
+/// The three entry points below — send, clear, register — differ only in an
+/// eight-byte discriminator and the params they serialise. Each carried its
+/// own copy of "build the AccountMeta list, append borsh, invoke_signed",
+/// which is three places for an account flag to be dropped in transit.
+fn endpoint_cpi<'info, P: AnchorSerialize>(endpoint_program: Pubkey,
+    discriminator: [u8; 8], accounts: &[AccountInfo<'info>],
+    signer_seeds: &[&[&[u8]]], params: P) -> Result<()> {
+    let mut ix_data = discriminator.to_vec();
+    ix_data.extend_from_slice(&params.try_to_vec()?);
+    let ix = Instruction {
+        program_id: endpoint_program,
+        accounts: accounts.iter().map(|acc| AccountMeta {
+            pubkey: *acc.key, is_signer: acc.is_signer,
+            is_writable: acc.is_writable }).collect(),
+        data: ix_data,
+    };
+    invoke_signed(&ix, accounts, signer_seeds)?;
+    Ok(())
+}
+
+/// `endpoint::send`
+fn cpi_send<'info>(endpoint_program: Pubkey,
+    remaining_accounts: &[AccountInfo<'info>],
+    signer_seeds: &[&[&[u8]]], params: SendParams) -> Result<()> {
+    endpoint_cpi(endpoint_program, [102, 251, 20, 187, 65, 75, 12, 69],
+                 remaining_accounts, signer_seeds, params)
+}
+
+/// `endpoint::clear` — settles the nonce so a payload cannot be replayed.
+pub fn cpi_clear<'info>(endpoint_program: Pubkey,
+    accounts: &[AccountInfo<'info>],
+    signer_seeds: &[&[&[u8]]], params: ClearParams) -> Result<()> {
+    endpoint_cpi(endpoint_program, [250, 39, 28, 213, 123, 163, 133, 5],
+                 accounts, signer_seeds, params)
+}
+
+/// `endpoint::register_oapp`
+pub fn cpi_register_oapp<'info>(endpoint_program: Pubkey,
+    accounts: &[AccountInfo<'info>],
+    signer_seeds: &[&[&[u8]]], params: RegisterOAppParams) -> Result<()> {
+    endpoint_cpi(endpoint_program, [129, 89, 71, 68, 11, 82, 210, 125],
+                 accounts, signer_seeds, params)
 }

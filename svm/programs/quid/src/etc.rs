@@ -410,7 +410,6 @@ impl Actuary {
     /// calculation — higher sigma, lower max leverage, smaller
     /// leveraged gross on-chain product surface,
     /// more conservative collar.
-    #[inline]
 
     // =========================================================================
     // TAIL MODEL — peaks over threshold, Generalised Pareto
