@@ -207,6 +207,27 @@ describe("QU!D Protocol — Depository Suite", () => {
       .map(pubkey => ({ pubkey, isSigner: false, isWritable: true }));
   }
 
+  /**
+   * The pool must never promise more than it holds.
+   *
+   * `total_deposits` is what depositors are collectively owed and what payouts
+   * are computed against. The vault is what exists. A gain credited before the
+   * offsetting loss has been collected shows up here and nowhere else — it is
+   * the settlement-timing gap a buffer exists to fund, and the only way to see
+   * it is to compare the promise against the balance at each step.
+   *
+   * Pledged collateral sits in the vault but deliberately outside
+   * `total_deposits`, so the vault should exceed the promise, never trail it.
+   */
+  async function assertSolvent(label: string): Promise<void> {
+    const bank = await program.account.depository.fetch(bankPDA);
+    const vault = await getAccount(provider.connection, vaultPDA);
+    const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
+    const owed = bank.totalDeposits.toNumber();
+    expect(owed).to.be.at.most(held,
+      `${label}: pool owes ${owed} but holds ${held} — short by ${owed - held}`);
+  }
+
   async function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -1298,8 +1319,20 @@ describe("QU!D Protocol — Depository Suite", () => {
       const after = await program.account.depository.fetch(bankPDA);
       expect(after.sweptAt.toNumber()).to.be.greaterThan(0);
       expect(after.sweptAt.toNumber()).to.be.greaterThanOrEqual(before.sweptAt.toNumber());
-      console.log("  ✓ Swept by a non-keeper; coverage stamped at",
-                  after.sweptAt.toNumber());
+
+      // What a sweep is for: value moves from whoever was mispriced to the
+      // depositors as a whole, and the cranker is paid rather than charged.
+      expect(after.totalDeposits.toNumber())
+        .to.be.at.least(before.totalDeposits.toNumber(),
+                        "a sweep must never reduce what depositors are owed");
+      const cranker = await program.account.depositor.fetch(
+        deriveDepositor(user2.publicKey));
+      expect(cranker.depositedQuid.toNumber()).to.be.at.least(0);
+      await assertSolvent("after sweep");
+
+      console.log("  ✓ Swept by a non-keeper at", after.sweptAt.toNumber(),
+                  "— pool +",
+                  after.totalDeposits.toNumber() - before.totalDeposits.toNumber());
     });
 
     it("SW.2 Foreign and look-alike accounts are skipped, not fatal", async () => {
@@ -1468,6 +1501,20 @@ describe("QU!D Protocol — Depository Suite", () => {
       }
       // Kestrel stays enabled for the rest of the suite; unwinding must remain
       // possible in that state, which is what SW.8 goes on to exercise.
+    });
+
+    it("SW.5c The pool never promises more than the vault holds", async () => {
+      // Checked here after the whole suite has run deposits, levered exposure,
+      // take-profits, a liquidation and a sweep through the same book. If a
+      // winner could realise and withdraw before the offsetting loser was
+      // collected, `total_deposits` would have outrun the vault by now.
+      await assertSolvent("end of suite");
+
+      const bank = await program.account.depository.fetch(bankPDA);
+      const vault = await getAccount(provider.connection, vaultPDA);
+      const held = Number(vault.amount) + bank.solUsdContrib.toNumber();
+      console.log("  ✓ owes", bank.totalDeposits.toNumber(), "holds", held,
+                  "— margin", held - bank.totalDeposits.toNumber());
     });
 
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {

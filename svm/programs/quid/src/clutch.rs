@@ -293,7 +293,23 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
             } else { 10_000 };
             let max_value = raw_max.saturating_mul(utilisation_discount) / 10_000;
 
-            let value = max_value.min(amount.abs() as u64);
+            // Withheld: the pool cannot pay out what it is holding against
+            // open exposure. `max_liability` is the reserve against every
+            // ticker's net, and until now it was a number that restrained
+            // nothing — `withdrawable()` existed and was never called. That
+            // left the settlement-timing gap open: a gain is credited when a
+            // position closes, but the offsetting loss is collected over
+            // several liquidation calls, and in between this path would pay
+            // the winner out of principal that had not been collected yet.
+            //
+            // No premium closes that, because it is not a mispricing; it is a
+            // lag. Ostium funds a junior tranche to bridge it. The same
+            // protection is available here without raising any capital, by
+            // withholding the amount already reserved rather than by holding
+            // a separate pot in front of it — the reserve was always the right
+            // number, it just had to bind.
+            let value = max_value.min(amount.abs() as u64)
+                                 .min(Banks.withdrawable());
             amt += value; Banks.total_deposits -= value;
 
             let old_deposited = customer.deposited_quid;
