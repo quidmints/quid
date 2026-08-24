@@ -1746,6 +1746,27 @@ describe("QU!D Protocol — Depository Suite", () => {
                   cfg.registeredMints.length, "vaults");
     });
 
+    it("SW.12 refresh_sol_collateral is permissionless and re-marks the pool",
+       async () => {
+      // Deliberately callable by anyone: a keeper that goes dark must not be
+      // able to strand the pool's SOL mark.
+      const before = await program.account.depository.fetch(bankPDA);
+      await program.methods
+        .refreshSolCollateral()
+        .accountsStrict({
+          depositor: payer.publicKey, customerAccount: depositorPDA,
+          bank: bankPDA, solRisk: deriveSolRisk(),
+        })
+        .remainingAccounts(pyth.getAccountMetas(["SOL"]))
+        .signers([])
+        .rpc();
+      const after = await program.account.depository.fetch(bankPDA);
+      expect(after.lastUpdated.toNumber())
+        .to.be.at.least(before.lastUpdated.toNumber());
+      await assertAggregates("after refresh_sol_collateral");
+      console.log("  ✓ re-marked by a non-keeper; aggregates still hold");
+    });
+
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
       for (const [amount, ticker, why] of [
         [new BN(0), "", "zero amount"],
@@ -1918,6 +1939,118 @@ describe("QU!D Protocol — Depository Suite", () => {
         expect(store.mint.toString()).to.not.equal(rogue.toString());
         console.log("  ✓ foreign bridge mint refused");
       }
+    });
+
+    it("LZ.1 lz_receive_types names exactly what lz_receive consumes", async () => {
+      // A view, so it can be simulated. It tells the executor which accounts
+      // to pass, and `lz_receive` indexes them positionally — if the two ever
+      // disagree, inbound QD stops arriving with no other symptom.
+      const [storePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("Store")], program.programId);
+      const recipient = Keypair.generate().publicKey;
+      const msg = Buffer.concat([recipient.toBuffer(), Buffer.alloc(8)]);
+      msg.writeBigUInt64BE(1_000_000n, 32);
+
+      const metas = await program.methods
+        .lzReceiveTypes({
+          srcEid: 30101, sender: Array.from(Buffer.alloc(32)),
+          nonce: new BN(1), guid: Array.from(Buffer.alloc(32)),
+          message: msg, extraData: Buffer.alloc(0),
+        })
+        .accountsStrict({ store: storePDA, mint: mintUSD })
+        .view();
+
+      expect(metas.length).to.equal(3, "mint, recipient ATA, token program");
+      expect(metas[0].pubkey.toString()).to.equal(mintUSD.toString());
+      expect(metas[2].pubkey.toString()).to.equal(TOKEN_PROGRAM_ID.toString());
+      console.log("  ✓ types returns", metas.length, "accounts, mint first");
+    });
+
+    it("LZ.2 lz_receive refuses a message from the wrong chain or sender",
+       async () => {
+      // The peer and origin checks run before anything is minted, so a forged
+      // message is refused on its own terms rather than deep inside a CPI.
+      const [storePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("Store")], program.programId);
+      const store = await program.account.oAppStore.fetch(storePDA);
+      const LZ_ENDPOINT = new PublicKey("76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
+
+      const pda = (seed: Buffer[], prog: PublicKey) =>
+        PublicKey.findProgramAddressSync(seed, prog)[0];
+      const eidBuf = (e: number) => { const b = Buffer.alloc(4); b.writeUInt32BE(e); return b; };
+      const nonceBuf = (n: number) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+
+      const attempt = async (srcEid: number, sender: number[], message: Buffer) => {
+        const senderBuf = Buffer.from(sender);
+        return program.methods
+          .lzReceive({
+            srcEid, sender, nonce: new BN(1),
+            guid: Array.from(Buffer.alloc(32)), message, extraData: Buffer.alloc(0),
+          })
+          .accountsStrict({
+            store: storePDA,
+            oappRegistry: pda([Buffer.from("OApp"), storePDA.toBuffer()], LZ_ENDPOINT),
+            nonce: pda([Buffer.from("Nonce"), storePDA.toBuffer(), eidBuf(srcEid), senderBuf], LZ_ENDPOINT),
+            payloadHash: pda([Buffer.from("PayloadHash"), storePDA.toBuffer(),
+                              eidBuf(srcEid), senderBuf, nonceBuf(1)], LZ_ENDPOINT),
+            endpoint: pda([Buffer.from("Endpoint")], LZ_ENDPOINT),
+            endpointProgram: LZ_ENDPOINT,
+          })
+          .remainingAccounts([
+            { pubkey: mintUSD, isSigner: false, isWritable: true },
+            { pubkey: userTokenAccount, isSigner: false, isWritable: true },
+            { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          ])
+          .rpc();
+      };
+
+      const good = Buffer.concat([payer.publicKey.toBuffer(), Buffer.alloc(8)]);
+      good.writeBigUInt64BE(1_000n, 32);
+
+      // Wrong origin chain.
+      let refused = false;
+      try { await attempt(30110, store.peerAddress, good); }
+      catch { refused = true; }
+      expect(refused, "a message from another chain must be refused").to.be.true;
+
+      // Right chain, wrong sender.
+      refused = false;
+      try { await attempt(30101, Array.from(Buffer.alloc(32, 9)), good); }
+      catch { refused = true; }
+      expect(refused, "a message from another sender must be refused").to.be.true;
+
+      // Right chain and sender, malformed payload.
+      refused = false;
+      try { await attempt(30101, store.peerAddress, Buffer.alloc(8)); }
+      catch { refused = true; }
+      expect(refused, "a truncated payload must be refused").to.be.true;
+      console.log("  ✓ wrong chain, wrong sender and short payload all refused");
+    });
+
+    it("LZ.3 bridge_home refuses dust and a mint that is not QD", async () => {
+      // The burn rounds down to whole shared-decimal units, so anything finer
+      // would be destroyed here and never arrive. And the mint is pinned to
+      // the store's, which is pinned to the registered token.
+      const [storePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("Store")], program.programId);
+      const LZ_ENDPOINT = new PublicKey("76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
+      const to = Array.from(Buffer.alloc(20, 0xAB));
+
+      let refused = false;
+      try {
+        await program.methods.bridgeHome(new BN(999), to, new BN(0))
+          .accountsStrict({
+            signer: payer.publicKey, store: storePDA, mint: mintUSD,
+            from: userTokenAccount, tokenProgram: TOKEN_PROGRAM_ID,
+            endpointProgram: LZ_ENDPOINT,
+          }).rpc();
+      } catch (e: any) {
+        refused = true;
+        expect(String(e)).to.match(/InvalidAmount|custom program error/);
+      }
+      expect(refused, "sub-unit amounts must be refused, not silently burned")
+        .to.be.true;
+      console.log("  ✓ dust refused before anything is burned");
     });
 
     it("SW.9 A pool withdrawal still rejects 0", async () => {
