@@ -1927,6 +1927,29 @@ describe("QU!D Protocol — Depository Suite", () => {
         [program.programId.toBuffer()],
         new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"));
 
+      // Registering with the endpoint is a real CPI into the real endpoint
+      // program, cloned from mainnet along with its settings account. It used
+      // to be skipped under the `testing` feature, which meant the tested
+      // binary and the shipped one differed on exactly the call that makes
+      // this program addressable.
+      const EP = new PublicKey("76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6");
+      const pdaOf = (seeds: Buffer[], prog: PublicKey) =>
+        PublicKey.findProgramAddressSync(seeds, prog)[0];
+      const oappRegistry = pdaOf([Buffer.from("OApp"), storePDA.toBuffer()], EP);
+      const eventAuthority = pdaOf([Buffer.from("__event_authority")], EP);
+      // Exactly the endpoint's own account order. The SDK's CPI helper
+      // prepends the endpoint program because its convention puts the callee
+      // first in remaining_accounts; ours takes the program as a parameter, so
+      // including it here would shift every account by one.
+      const registerAccounts = [
+        { pubkey: payer.publicKey,           isSigner: true,  isWritable: true  },
+        { pubkey: storePDA,                  isSigner: false, isWritable: false },
+        { pubkey: oappRegistry,              isSigner: false, isWritable: true  },
+        { pubkey: SystemProgram.programId,   isSigner: false, isWritable: false },
+        { pubkey: eventAuthority,            isSigner: false, isWritable: false },
+        { pubkey: EP,                        isSigner: false, isWritable: false },
+      ];
+
       const peer = Buffer.alloc(32);            // Basket.sol, left-padded
       Buffer.from("beef".repeat(10), "hex").copy(peer, 12, 0, 20);
 
@@ -1945,7 +1968,14 @@ describe("QU!D Protocol — Depository Suite", () => {
           programData,
           systemProgram: SystemProgram.programId,
         })
+        .remainingAccounts(registerAccounts)
         .rpc();
+
+      // Registered with the endpoint, not merely configured on our side.
+      const registry = await provider.connection.getAccountInfo(oappRegistry);
+      expect(registry, "the endpoint must now know this OApp").to.not.be.null;
+      expect(registry!.owner.toString()).to.equal(EP.toString());
+      console.log("  ✓ registered with the endpoint:", oappRegistry.toBase58());
 
       const store = await program.account.oAppStore.fetch(storePDA);
       // The endpoint and the origin chain are not stored at all — they are

@@ -442,8 +442,18 @@ pub fn init_oapp_store_handler(ctx: &mut Context<InitOAppStore>, params: &InitOA
     };
     ctx.accounts.lz_receive_types_accounts.store = ctx.accounts.store.key();
 
-    #[cfg(not(feature = "testing"))]
-    {
+    // Register with the endpoint, which is what makes this program an OApp it
+    // will deliver to. Gated on the accounts being supplied rather than on a
+    // cargo feature: `#[cfg(not(feature = "testing"))]` meant the binary under
+    // test skipped a CPI the shipped one performs, so the one path that
+    // matters was the one never exercised. Same shape as the mint whitelist
+    // that sat behind a `mainnet` feature and was therefore absent from every
+    // build that forgot the flag.
+    //
+    // A caller who supplies the endpoint accounts registers; one who does not
+    // gets a store that is configured but unregistered — a state worth being
+    // able to reach deliberately and hard to reach by accident.
+    if !ctx.remaining_accounts.is_empty() {
         let register_params = RegisterOAppParams { delegate: ctx.accounts.store.admin };
         let seeds: &[&[&[u8]]] = &[&[OAPP_STORE_SEED, &[ctx.accounts.store.bump]]];
         cpi_register_oapp(LZ_ENDPOINT_PROGRAM,
@@ -588,10 +598,27 @@ fn endpoint_cpi<'info, P: AnchorSerialize>(endpoint_program: Pubkey,
     signer_seeds: &[&[&[u8]]], params: P) -> Result<()> {
     let mut ix_data = discriminator.to_vec();
     ix_data.extend_from_slice(&params.try_to_vec()?);
+
+    // The PDA we are signing for has to be *declared* a signer in the
+    // instruction, not merely passed with seeds. Copying `is_signer` off the
+    // account info could never do that: a PDA is not a signer of the outer
+    // transaction, so it arrives false and the endpoint rejects the call as
+    // unsigned. `invoke_signed` grants the privilege only where the meta asks
+    // for it and the seeds check out.
+    //
+    // Deriving it from the seeds rather than taking it as a parameter keeps
+    // the two from disagreeing — an earlier signature carried the OApp as an
+    // argument, went unread, and was removed as dead precisely because nothing
+    // consumed it.
+    let signers: Vec<Pubkey> = signer_seeds.iter()
+        .filter_map(|seeds| Pubkey::create_program_address(seeds, &crate::ID).ok())
+        .collect();
+
     let ix = Instruction {
         program_id: endpoint_program,
         accounts: accounts.iter().map(|acc| AccountMeta {
-            pubkey: *acc.key, is_signer: acc.is_signer,
+            pubkey: *acc.key,
+            is_signer: acc.is_signer || signers.contains(acc.key),
             is_writable: acc.is_writable }).collect(),
         data: ix_data,
     };

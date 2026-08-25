@@ -220,6 +220,12 @@ if [ "$1" = "--fork" ]; then
     CLONE+=(--clone-upgradeable-program "$p")
   done
 
+  # The endpoint's own state, and the ULN's. Without these the endpoint
+  # program is loaded but inert: `register_oapp` and `clear` both read them,
+  # so cloning the code alone tests nothing about the CPIs that matter.
+  CLONE+=(--clone 2uk9pQh3tB5ErV7LGQJcbWjb4KeJ2UJki5qJZ8QG56G3)   # Endpoint settings
+  CLONE+=(--clone 2XgGZG4oP29U3w5h4nTk1V2LFHL23zKDPJjs3psGzLKQ)   # ULN302 message lib
+
   # Live accounts: every price feed the suite reads, Kestrel's market state and
   # its collateral vault, and the two mints.
   for a in "$XAG_PYTH" "$XAU_PYTH" "$BTC_PYTH" "$ETH_PYTH" "$SOL_PYTH" \

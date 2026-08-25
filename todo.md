@@ -11,12 +11,17 @@ clean, the Seeker app typechecks, and there is no dead code.
 
 ## Blocked on a real crossing
 
-**The bridge has never carried a message.** Both halves compile and the checks
-that stand between a forged message and a mint are covered — peer, origin
-chain, payload length, all of which run before `cpi_clear`. What follows them
-is not: a delivered message needs DVN attestations and executor delivery, and
-no fork produces those. Cloning the endpoint, ULN302, the DVN and the executor
-gives the code, not the consensus.
+**The bridge has never carried a message**, though it now talks to the real
+endpoint. `init_oapp_store` registers against the endpoint program cloned from
+mainnet, with its settings account, and the OApp registry PDA comes back owned
+by the endpoint — so `cpi_register_oapp`, and the PDA signing every endpoint
+CPI depends on, are exercised rather than assumed.
+
+What is still untested is delivery. A message needs DVN attestations and
+executor delivery, and no fork produces those: cloning the endpoint, ULN302,
+the DVN and the executor gives the code, not the consensus. So `cpi_clear` and
+`cpi_send` remain unexercised even though the signing they rely on is now
+proven by registration.
 
 Proving it needs devnet — this program against eid 40168, `Basket.sol` on a
 matching testnet, DVNs configured on both sides, and a QD round trip observed
