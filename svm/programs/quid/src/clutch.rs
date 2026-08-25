@@ -101,6 +101,9 @@ pub fn amortise(ctx: Context<Liquidate>, ticker: String) -> Result<()> {
         return Err(PithyQuip::UnknownSymbol.into());
     }
     let adjusted_price = fetch_price(t, Some(first))?;
+    // Integrate the interval at the rate that ran over it, before the new
+    // observation changes that rate.
+    risk.actuary.accrue_premium_index(right_now, Banks.utilisation_bps());
     risk.actuary.update_price(adjusted_price as i64, slot);
     risk.actuary.check_twap_deviation(adjusted_price as i64)?;
     let mut time_delta = right_now - customer.last_updated;
@@ -434,6 +437,7 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 return Err(PithyQuip::UnknownSymbol.into());
             }
             let adjusted_price = fetch_price(t, Some(first))?;
+            risk.actuary.accrue_premium_index(right_now, Banks.utilisation_bps());
             risk.actuary.update_price(adjusted_price as i64, slot);
             risk.actuary.check_twap_deviation(adjusted_price as i64)?;
             let pos = customer.balances.iter().find(|p|
@@ -586,6 +590,7 @@ fn withdraw_native<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>,
     let pyth = ctx.remaining_accounts.first();
     let sol_price = crate::etc::fetch_price("SOL", pyth)?;
     let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
+    risk.actuary.accrue_premium_index(now, ctx.accounts.bank.utilisation_bps());
     risk.actuary.update_price(sol_price as i64, slot);
 
     // Anything the hot buffer cannot cover comes out of the parked tranche,
@@ -880,7 +885,9 @@ pub fn handle_sweep<'info>(ctx: Context<'_, '_, 'info, 'info, Sweep<'info>>,
 
     // Once for the batch, not once per position.
     let price = fetch_price(t, Some(first))?;
+    let util = ctx.accounts.bank.utilisation_bps();
     let risk = &mut ctx.accounts.ticker_risk;
+    risk.actuary.accrue_premium_index(now, util);
     risk.actuary.update_price(price as i64, slot);
     risk.actuary.check_twap_deviation(price as i64)?;
 

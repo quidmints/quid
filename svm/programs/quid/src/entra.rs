@@ -186,6 +186,8 @@ pub fn handle_in<'info>(ctx: Context<'_, '_, 'info, 'info, Stockup<'info>>,
             risk.bump = ctx.bumps.ticker_risk.unwrap();
             risk.actuary.obs_count = 10;
         }
+        let util = bank.utilisation_bps();
+        risk.actuary.accrue_premium_index(right_now, util);
         risk.actuary.update_price(sol_price as i64, clock.slot as i64);
 
         // Settle first, so arriving lamports cannot claim carry generated

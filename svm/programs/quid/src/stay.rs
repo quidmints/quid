@@ -52,6 +52,12 @@ pub struct Stock {
     /// that was added is the only way the two sides cannot drift.
     pub collar_dollars: u64,
 
+    /// Where this position last stood in its ticker's premium integral.
+    /// The difference against the ticker's current index is what it owes for
+    /// the base rate over the interval, charged at the rates that prevailed
+    /// rather than at whichever one is read today.
+    pub premium_checkpoint: u128,
+
     /// Unix time this position first went outside its band, 0 while inside it.
     /// Liquidation is a Parisian barrier — it triggers on the *excursion*, the
     /// unbroken time spent beyond the barrier — so the clock that gates it has
@@ -101,6 +107,7 @@ impl Space for Stock {
           + 8 + 8  // cost_basis + interest_paid
           + 16     // collar_dollar_seconds
           + 8      // collar_dollars
+          + 16     // premium_checkpoint
           + 8;     // breached_at
 }
 
@@ -380,15 +387,25 @@ impl LiabilityUpdate {
 /// pay a transaction fee per call to save a millionth of a cent. Carrying it
 /// would cost a field in every `Stock` to defend against an attack that loses
 /// money faster than the pool does.
-fn premium_due(exposure_value: u64, rate_bps: i64, dt: i64, pledged: u64) -> (u64, i64) {
+fn premium_due(exposure_value: u64, position_rate_bps: i64, dt: i64,
+    base_bps_seconds: u128, pledged: u64) -> (u64, i64) {
     const YEAR_BPS: u128 = 31_536_000 * 10_000;
     let dt = dt.max(0);
-    let per_second = (exposure_value as u128).saturating_mul(rate_bps.max(0) as u128);
-    if per_second == 0 { return (0, dt); }
-    let accrued = (per_second.saturating_mul(dt as u128) / YEAR_BPS) as u64;
+    // The integrated half is already rate-times-seconds; the position half is
+    // a rate that still has to be spread over the interval. Both land in the
+    // same unit before either is divided.
+    let bps_seconds = base_bps_seconds.saturating_add(
+        (position_rate_bps.max(0) as u128).saturating_mul(dt as u128));
+    if bps_seconds == 0 || exposure_value == 0 { return (0, dt); }
+
+    let accrued = ((exposure_value as u128).saturating_mul(bps_seconds)
+        / YEAR_BPS).min(u64::MAX as u128) as u64;
     if accrued <= pledged { return (accrued, dt); }
-    let billed = ((pledged as u128).saturating_mul(YEAR_BPS) / per_second)
-                     .min(dt as u128) as i64;
+
+    // Only part of the interval is affordable. Bill the share of it the pledge
+    // covers, so the remainder stays on the clock rather than being forgiven.
+    let billed = ((pledged as u128).saturating_mul(dt as u128)
+        / accrued.max(1) as u128).min(dt as u128) as i64;
     (pledged, billed)
 }
 
@@ -919,11 +936,30 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                 .min(i64::MAX as u128) as i64
         } else { 10_000 };
 
-        let rate = rate_bps(conc, leverage, actuary).saturating_add(
-            hazard_rate_bps(distance_bps, collar, amount, actuary,
+        // Two halves, charged differently because they are known differently.
+        //
+        // The base — this ticker's volatility against how full the pool is —
+        // has been integrated as it happened, in `premium_index`, so the
+        // interval is billed at the rates that actually ran over it rather
+        // than at whichever one prevails today. That is worth doing: the same
+        // ticker prices 7.5x apart between a calm state and a violent one, and
+        // reading it once let a borrower choose which by timing their touch.
+        //
+        // The rest — leverage, and how close this position sits to its barrier
+        // — belongs to the position and not to the interval, so it is read now
+        // and applied across it. That half is still a point estimate, and the
+        // honest limit of a lazy scheme.
+        let base_bps_seconds = actuary.premium_index
+            .saturating_sub(pod.premium_checkpoint);
+        pod.premium_checkpoint = actuary.premium_index;
+
+        let position_rate = rate_bps(conc, leverage, actuary)
+            .saturating_sub(rate_bps(conc, 100, actuary))
+            .saturating_add(hazard_rate_bps(distance_bps, collar, amount, actuary,
                             depository.total_deposits, depository.max_liability));
-        let (accrued_interest, billed_secs) =
-            premium_due(old_exposure_value, rate, time_elapsed, pod.pledged);
+
+        let (accrued_interest, billed_secs) = premium_due(old_exposure_value,
+            position_rate, time_elapsed, base_bps_seconds, pod.pledged);
 
         let util_bps = (conc as i64).clamp(1_000, 10_000);
         let max_lev = max_leverage_pct(actuary, slot, conc);
@@ -1456,7 +1492,7 @@ let new_total = bank.total_deposits.saturating_sub(usd);
             } else { require!(amount > 0, PithyQuip::InvalidAmount);
                 if self.balances.len() >= MAX_LEN {
                     return Err(PithyQuip::MaxPositionsReached.into());
-                }   self.balances.push(Stock { breached_at: 0, ticker: padded,
+                }   self.balances.push(Stock { breached_at: 0, premium_checkpoint: 0, ticker: padded,
                         pledged: amount as u64, exposure: 0,
                         updated: current_time, rate_bps: 0,
                         collar_bps: 0,
@@ -2331,7 +2367,8 @@ mod tests {
     }
 
     pub(super) fn pod(pledged: u64, exposure: i64, collar_bps: u16, collar_dollars: u64) -> Stock {
-        Stock { ticker: [0u8; 8], breached_at: 0, pledged, exposure, updated: 0, rate_bps: 0,
+        Stock { ticker: [0u8; 8], breached_at: 0, premium_checkpoint: 0,
+            pledged, exposure, updated: 0, rate_bps: 0,
             collar_bps, cost_basis: pledged, interest_paid: 0,
             collar_dollar_seconds: 0, collar_dollars }
     }
@@ -2613,14 +2650,14 @@ mod tests {
         // truncation it does buy must stay bounded by one unit per call.
         let (value, rate, span) = (1_000_000_000_000u64, 500i64, 3_600i64);
         let pledge = u64::MAX;
-        let (lump, secs) = premium_due(value, rate, span, pledge);
+        let (lump, secs) = premium_due(value, rate, span, 0, pledge);
         assert_eq!(secs, span, "a covered charge pays for the whole span");
 
         // Faithful to repo(): the caller picks `now`, the charge is taken over
         // `now - pod.updated`, and the meter advances by what was billed.
         let (mut billed, mut meter) = (0u64, 0i64);
         for now in 1..=span {
-            let (c, secs) = premium_due(value, rate, now - meter, pledge);
+            let (c, secs) = premium_due(value, rate, now - meter, 0, pledge);
             billed += c;
             meter += secs;
         }
@@ -2634,11 +2671,11 @@ mod tests {
         // Only the pledge can be taken, but the rest is not forgiven: the
         // meter stays put, so the debt keeps accruing and the position stays
         // liquidatable instead of holding exposure for free.
-        let (charged, billed) = premium_due(1_000_000_000_000, 500, 31_536_000, 7);
+        let (charged, billed) = premium_due(1_000_000_000_000, 500, 31_536_000, 0, 7);
         assert_eq!(charged, 7, "cannot take more than the pledge");
         assert!(billed < 31_536_000, "unpayable premium must stay on the clock");
 
-        let (charged, billed) = premium_due(1_000_000_000_000, 500, 31_536_000, 0);
+        let (charged, billed) = premium_due(1_000_000_000_000, 500, 31_536_000, 0, 0);
         assert_eq!((charged, billed), (0, 0), "a spent pledge buys no time");
     }
 

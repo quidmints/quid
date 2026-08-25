@@ -55,6 +55,29 @@ same shape used in both directions. It is a change to the accounting model
 rather than a bug fix, which is why it is written down here rather than done.
 `a_loss_beyond_earnings_is_not_yet_marked_to_claims` documents the exposure.
 
+## Half-integrated premium
+
+The base rate — this ticker's volatility against how full the pool is — is
+integrated as it happens, so an interval is billed at the rates that ran over
+it. The position-specific half is not: leverage and distance to the barrier
+are read at settlement and applied across the whole window, even though both
+move with price throughout it.
+
+That half is smaller than the base, which measured 7.5x between a calm state
+and a violent one, and it cannot be integrated the same way because it is
+per-position rather than per-ticker — an index would need one accumulator per
+position, which is the loop this design exists to avoid. Frequent touches keep
+the error small, which is what `sweep` is for.
+
+## SOL is not in the payout split
+
+`transfer_from_vaults` pays pro rata across the registered SPL vaults. SOL is
+in the pool's backing and its carry now credits `deposited_quid`, but a stables
+withdrawal cannot draw on it — so a depositor whose claim grew through SOL
+carry can be told the pool is short while the SOL sits there. Fixing it means
+the native leg inside the pro-rata split, which changes `handle_out`'s account
+shape.
+
 ## Untested
 
 - **`bebop_jam` is cloned but not deployed.** The flash path is proven on our

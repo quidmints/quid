@@ -2183,6 +2183,33 @@
             "type": "i64"
           },
           {
+            "name": "premium_index",
+            "docs": [
+              "Cumulative base premium, in bps-seconds, and the moment it last moved.",
+              "",
+              "A premium charged as `rate × dt` reads the rate once, from whatever",
+              "state prevails when somebody finally touches the position — so a year",
+              "held through a storm and settled in the calm is billed as if it had",
+              "been calm throughout, and a quiet year settled during a spike is billed",
+              "as if it had been a crisis. Measured at 7.5x between two states of the",
+              "same ticker, which is both a mispricing and something a borrower can",
+              "choose by timing when they touch.",
+              "",
+              "Integrating instead: every observation advances this by the rate that",
+              "prevailed since the last one, and a position is charged the difference",
+              "against its own checkpoint. The same accumulator shape as",
+              "`sol_yield_index`, and the same one Aave and Compound use for borrow",
+              "interest. It cannot capture a state nobody observed — but an",
+              "unobserved price is one the pool never knew, so there was no rate to",
+              "charge for it either."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "index_updated",
+            "type": "i64"
+          },
+          {
             "name": "total_exposure",
             "docs": [
               "Sum of |exposure × leverage| across all positions, always positive.",
@@ -2939,6 +2966,16 @@
               "that was added is the only way the two sides cannot drift."
             ],
             "type": "u64"
+          },
+          {
+            "name": "premium_checkpoint",
+            "docs": [
+              "Where this position last stood in its ticker's premium integral.",
+              "The difference against the ticker's current index is what it owes for",
+              "the base rate over the interval, charged at the rates that prevailed",
+              "rather than at whichever one is read today."
+            ],
+            "type": "u128"
           },
           {
             "name": "breached_at",

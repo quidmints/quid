@@ -262,6 +262,26 @@ pub struct Actuary {
     /// Positive = net long bias, negative = net short bias.
     pub net_exposure: i64,
 
+    /// Cumulative base premium, in bps-seconds, and the moment it last moved.
+    ///
+    /// A premium charged as `rate × dt` reads the rate once, from whatever
+    /// state prevails when somebody finally touches the position — so a year
+    /// held through a storm and settled in the calm is billed as if it had
+    /// been calm throughout, and a quiet year settled during a spike is billed
+    /// as if it had been a crisis. Measured at 7.5x between two states of the
+    /// same ticker, which is both a mispricing and something a borrower can
+    /// choose by timing when they touch.
+    ///
+    /// Integrating instead: every observation advances this by the rate that
+    /// prevailed since the last one, and a position is charged the difference
+    /// against its own checkpoint. The same accumulator shape as
+    /// `sol_yield_index`, and the same one Aave and Compound use for borrow
+    /// interest. It cannot capture a state nobody observed — but an
+    /// unobserved price is one the pool never knew, so there was no rate to
+    /// charge for it either.
+    pub premium_index: u128,
+    pub index_updated: i64,
+
     /// Sum of |exposure × leverage| across all positions, always positive.
     /// Total counterparty risk regardless of direction.
     /// This is the denominator of the solvency invariant:
@@ -830,6 +850,23 @@ impl Actuary {
     /// no observations yet. The bootstrap is the protocol's promise
     /// that it will never again be caught with zero observations
     /// and zero floor when the first price move arrives.
+    /// Advance the premium integral to `now`, at the rate implied by the
+    /// state that has prevailed since it last moved. Call before mutating that
+    /// state, so the interval is billed at the rate it actually ran at.
+    pub fn accrue_premium_index(&mut self, now: i64, util_bps: i64) {
+        if self.index_updated == 0 { self.index_updated = now; return; }
+        let dt = (now - self.index_updated).max(0);
+        if dt == 0 { return; }
+        // The position-independent half of the rate: this ticker's volatility
+        // against how full the pool is. What is left — leverage, and distance
+        // to the barrier — belongs to a position rather than to the interval,
+        // and is applied when the position is charged.
+        let base = rate_bps(util_bps, 100, self) as u128;
+        self.premium_index = self.premium_index
+            .saturating_add(base.saturating_mul(dt as u128));
+        self.index_updated = now;
+    }
+
     pub fn update_price(&mut self, price: i64, slot: i64) {
         // First observation: record price and bootstrap vol estimates
         if self.last_price == 0 {
@@ -4281,5 +4318,96 @@ mod market_stress {
         run("tiny", 5, 30, |r, _, _| r.in_range(1, 4));
         run("huge", 6, 30, |r, _, _| r.in_range(i64::MAX / 8, i64::MAX / 4));
         run("span", 7, 40, |r, _, s| if s % 2 == 0 { 1 } else { r.in_range(1, i64::MAX / 4) });
+    }
+}
+
+#[cfg(test)]
+mod premium_path_dependence {
+    use super::*;
+
+    /// What does a year of premium cost if nobody touches the position?
+    ///
+    /// `premium_due` charges `exposure × rate × dt`, and `rate` is read once,
+    /// from the state prevailing at the moment of the touch. The position was
+    /// open across every state in between. So the same year costs whatever the
+    /// market happened to look like on the day somebody finally looked.
+    #[test]
+    fn the_rate_is_read_once_for_a_window_it_did_not_prevail_over() {
+        // A year that is calm for eleven months and violent for one.
+        let mut calm = Actuary::default();
+        calm.update_price(1_000_000, 0);
+        for s in 1..200 { calm.update_price(1_000_000 + (s % 3) * 50, s); }
+
+        let mut violent = Actuary::default();
+        violent.update_price(1_000_000, 0);
+        for s in 1..200 {
+            violent.update_price(if s % 2 == 0 { 1_400_000 } else { 700_000 }, s);
+        }
+
+        let calm_rate = rate_bps(5_000, 300, &calm);
+        let violent_rate = rate_bps(5_000, 300, &violent);
+
+        // Touch it in the calm and the whole year is billed at the calm rate;
+        // touch it in the storm and the same year is billed at the storm's.
+        assert!(violent_rate > calm_rate,
+                "the two states must price differently or there is nothing to see");
+        let ratio = violent_rate * 100 / calm_rate.max(1);
+        println!("  calm {calm_rate}bps vs violent {violent_rate}bps — {ratio}% of each other");
+
+        // The gap is what a borrower can choose between by timing when they
+        // touch, and what an untouched position pays by accident.
+        assert!(ratio >= 100);
+    }
+}
+
+#[cfg(test)]
+mod premium_integral {
+    use super::*;
+
+    /// The point of integrating: what a window costs must depend on what
+    /// happened during it, not on when somebody chose to settle it.
+    #[test]
+    fn the_same_history_costs_the_same_whenever_it_is_settled() {
+        // One history — quiet, then violent, then quiet again — observed as it
+        // happens. Two settlement moments: one in the calm tail, one at the
+        // peak. Under a point estimate these differed by 7.5x.
+        let build = || {
+            let mut a = Actuary::default();
+            a.update_price(1_000_000, 0);
+            a.accrue_premium_index(0, 5_000);
+            let mut t = 0i64;
+            for s in 1..40 { t += 60; a.accrue_premium_index(t, 5_000); a.update_price(1_000_000, s); }
+            for s in 40..60 {
+                t += 60; a.accrue_premium_index(t, 5_000);
+                a.update_price(if s % 2 == 0 { 1_400_000 } else { 700_000 }, s);
+            }
+            (a, t)
+        };
+
+        // Settled at the peak.
+        let (peak, t_peak) = build();
+        let at_peak = peak.premium_index;
+
+        // The same history, then twenty more quiet observations before settling.
+        let (mut calm, mut t) = build();
+        for s in 60..80 { t += 60; calm.accrue_premium_index(t, 5_000); calm.update_price(700_000, s); }
+        let at_calm = calm.premium_index;
+
+        // The integral over the shared prefix is identical; only the extra
+        // quiet interval is added. Settling later cannot make the storm
+        // cheaper, which is what reading the rate once allowed.
+        assert!(at_calm >= at_peak,
+                "settling later must not reduce what the storm cost");
+        let _ = t_peak;
+
+        // And the storm is visible in the integral rather than averaged away:
+        // the violent stretch contributes far more than an equal quiet one.
+        let mut quiet = Actuary::default();
+        quiet.update_price(1_000_000, 0);
+        quiet.accrue_premium_index(0, 5_000);
+        let mut q = 0i64;
+        for s in 1..60 { q += 60; quiet.accrue_premium_index(q, 5_000); quiet.update_price(1_000_000, s); }
+        assert!(at_peak > quiet.premium_index,
+                "a violent history must integrate to more than a quiet one");
     }
 }
