@@ -322,18 +322,24 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                     .unwrap_or(0).min(Banks.yield_pool as u128) as u64
             } else { 0 };
 
-            // Borrowers pay supra to the pool proportional to their share of total drawn;
-            // a pure depositor (drawn=0) gets full pro-rata yield, a borrower gets it
-            // discounted by their fraction of pool risk — closing the circular subsidy
-            // where funding payments flow into the pool and then back to the payer.
-            // Applied to the earnings alone now: a borrower's own principal was
-            // never a subsidy to discount.
-            let utilisation_discount = if Banks.total_drawn > 0 {
-                let borrow_frac = (customer.drawn as u128 * 10_000
-                              / Banks.total_drawn as u128).min(10_000) as u64;
-
-                10_000u64.saturating_sub(borrow_frac)
-            } else { 10_000 };
+            // Earn on the part of your own stake that is backing somebody
+            // else, and on no more than that. A borrower who has drawn against
+            // their whole deposit is net a taker of risk and earns nothing; a
+            // depositor who has drawn against a tenth of it still earns on the
+            // other nine, which is genuinely at work for the pool.
+            //
+            // This used to divide by `total_drawn` — a borrower's share of all
+            // borrowing rather than of their own capital. The sole borrower in
+            // a pool therefore had a share of one and earned nothing at all,
+            // however large their deposit and however small their draw, purely
+            // because nobody else happened to be borrowing. That made being
+            // both depositor and borrower irrational, which is exactly the
+            // position a conditional-exposure product puts somebody in.
+            let utilisation_discount = if customer.deposited_quid > 0 {
+                let committed = (customer.drawn as u128 * 10_000
+                    / customer.deposited_quid as u128).min(10_000) as u64;
+                10_000u64.saturating_sub(committed)
+            } else { 0 };
             let earned = earned.saturating_mul(utilisation_discount) / 10_000;
             let max_value = customer.deposited_quid.saturating_add(earned);
 
