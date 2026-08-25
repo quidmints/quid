@@ -69,19 +69,6 @@ per-position rather than per-ticker — an index would need one accumulator per
 position, which is the loop this design exists to avoid. Frequent touches keep
 the error small, which is what `sweep` is for.
 
-## SOL is not in the payout split
-
-Every payout now sources pro rata across the registered SPL vaults, which was
-not true of take-profits or ticker withdrawals until recently. What is still
-outside that split is SOL: it is in the pool's backing through
-`sol_usd_contrib`, and its carry credits `deposited_quid`, but no stables
-payout can draw on it. A depositor whose claim grew through SOL carry can be
-told the pool is short while the SOL sits there.
-
-Fixing it means the native leg inside the pro-rata split — paying part of a
-claim in lamports — which changes `handle_out`'s account shape and needs a rule
-for when a depositor is paid in SOL rather than stables.
-
 ## Untested
 
 - **`bebop_jam` is cloned but not deployed.** The flash path is proven on our

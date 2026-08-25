@@ -10,16 +10,16 @@ use anchor_lang::solana_program::{
 };
 
 use crate::stay::*;
-use crate::stay::{
-    transfer_from_vaults,
-    ProgramConfig, SOL_POOL_SEED,
-};
 use crate::etc::{ get_account,
     PithyQuip, fetch_price,
     fetch_multiple_prices,
     TickerRisk, fee_bps
 };
 use anchor_lang::prelude::*;
+// The SOL* subsystem and the protocol config now live beside the
+// instructions that configure them.
+use crate::entra::{transfer_from_vaults, ProgramConfig, SOL_POOL_SEED, NativeLeg,
+    SolStarLegs, unpark_for_withdrawal, credited_lamports, collar_adjusted_usd};
 
 
 /// Replace this ticker's contribution to the pool reserve with one computed on
@@ -254,12 +254,17 @@ pub struct Withdraw<'info> {
 pub fn handle_out<'info>(ctx: Context<'_, '_,
     'info, 'info, Withdraw<'info>>, mut amount: i64,
     ticker: String, exposure: bool) -> Result<()> {
-    // Exactly one leg, same rule as handle_in: native SOL is `sol_pool` with
-    // no `mint`, an SPL withdrawal is the mirror. The native leg alone accepts
-    // 0, meaning all of it: a depositor cannot know their own accrued carry
-    // ahead of time, and a full exit is exactly the case where guessing the
-    // figure strands lamports behind.
-    if ctx.accounts.sol_pool.is_some() {
+    // `sol_pool` with ticker "SOL" withdraws lamports and nothing else, the
+    // mirror of how `handle_in` selects its native leg. With an empty ticker
+    // it means something different: pay this pool withdrawal from the SOL as
+    // well as the vaults, pro rata, because SOL backs the claim exactly as
+    // they do. Supplying it is how a caller says the pool's lamports are on
+    // the table; leaving it out limits the payout to the vaults.
+    //
+    // The native leg alone accepts 0, meaning all of it: a depositor cannot
+    // know their own accrued carry ahead of time, and a full exit is exactly
+    // the case where guessing the figure strands lamports behind.
+    if ctx.accounts.sol_pool.is_some() && ticker == "SOL" {
         return withdraw_native(ctx, amount.unsigned_abs());
     }
     require!(amount != 0, PithyQuip::InvalidAmount);
@@ -408,12 +413,48 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
         // in vault_accounts. Empty slice = no alt vaults (primary only).
         // `amt` is accounting units; transfer_from_vaults normalises each
         // vault and converts every payout back to that mint's precision.
-        transfer_from_vaults(&ctx.accounts.bank_token_account,
+        // The pool's lamports join the split when they are offered, marked
+        // the way they were credited so a share of the value is a share of
+        // the lamports.
+        let native = match (&ctx.accounts.sol_pool, ctx.bumps.sol_pool,
+                            ctx.accounts.ticker_risk.as_ref()) {
+            (Some(pool), Some(bump), Some(risk)) if Banks.sol_lamports > 0 => {
+                let price = fetch_price("SOL", ctx.remaining_accounts.first())?;
+                Some(NativeLeg {
+                    sol_pool: pool.clone(),
+                    recipient: ctx.accounts.signer.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                    bump,
+                    lamports: Banks.sol_lamports,
+                    value: crate::entra::collar_adjusted_usd(
+                        Banks.sol_lamports, price, &risk.actuary),
+                    paid: core::cell::Cell::new(0),
+                })
+            }
+            _ => None,
+        };
+
+        let paid = transfer_from_vaults(&ctx.accounts.bank_token_account,
             &ctx.accounts.mint,
             &ctx.accounts.customer_token_account,
             ctx.bumps.bank_token_account, vault_accounts,
             &ctx.accounts.token_program, ctx.program_id,
-            &ctx.accounts.config.registered_mints, amt)?;
+            &ctx.accounts.config.registered_mints, amt,
+            native.as_ref())?;
+
+        // Whatever left as lamports leaves the pool's SOL books with it,
+        // marked the same way it was valued going in.
+        let _ = paid;
+        if let Some(leg) = native.as_ref() {
+            let out = leg.paid.get();
+            if out > 0 {
+                let value_out = ((leg.value as u128).saturating_mul(out as u128)
+                    / leg.lamports.max(1) as u128) as u64;
+                Banks.sol_lamports = Banks.sol_lamports.saturating_sub(out);
+                Banks.sol_usd_contrib = Banks.sol_usd_contrib
+                    .saturating_sub(value_out.min(Banks.sol_usd_contrib));
+            }
+        }
     } else { // < ticker was not ""
         let t: &str = ticker.as_str();
         if !exposure { // < withdraw pledged from specific ticker (no exposure change)
@@ -431,7 +472,7 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 ctx.bumps.bank_token_account, pledged_vaults,
                 &ctx.accounts.token_program, ctx.program_id,
                 &ctx.accounts.config.registered_mints,
-                (-amount) as u64)?;
+                (-amount) as u64, None)?;
         } else {
             let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
             let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
@@ -524,7 +565,7 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                     &ctx.accounts.customer_token_account,
                     ctx.bumps.bank_token_account, tp_vaults,
                     &ctx.accounts.token_program, ctx.program_id,
-                    &ctx.accounts.config.registered_mints, payout)?;
+                    &ctx.accounts.config.registered_mints, payout, None)?;
 
                 -(dq_delta_repo.saturating_add(pledged_delta)).saturating_sub(payout as i128)
             } 

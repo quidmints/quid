@@ -388,7 +388,7 @@ pub struct InitOAppStore<'info> {
     /// change it afterwards, so tying the bridge's mint to `token_mint` is
     /// what makes "only these two" true rather than merely intended.
     #[account(seeds = [b"program_config"], bump = config.bump)]
-    pub config: Box<Account<'info, crate::stay::ProgramConfig>>,
+    pub config: Box<Account<'info, crate::entra::ProgramConfig>>,
 
     #[account(init, payer = payer, space = LzReceiveTypesAccounts::SIZE,
               seeds = [LZ_RECEIVE_TYPES_SEED, &store.key().to_bytes()], bump)]
