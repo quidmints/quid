@@ -71,12 +71,16 @@ the error small, which is what `sweep` is for.
 
 ## SOL is not in the payout split
 
-`transfer_from_vaults` pays pro rata across the registered SPL vaults. SOL is
-in the pool's backing and its carry now credits `deposited_quid`, but a stables
-withdrawal cannot draw on it — so a depositor whose claim grew through SOL
-carry can be told the pool is short while the SOL sits there. Fixing it means
-the native leg inside the pro-rata split, which changes `handle_out`'s account
-shape.
+Every payout now sources pro rata across the registered SPL vaults, which was
+not true of take-profits or ticker withdrawals until recently. What is still
+outside that split is SOL: it is in the pool's backing through
+`sol_usd_contrib`, and its carry credits `deposited_quid`, but no stables
+payout can draw on it. A depositor whose claim grew through SOL carry can be
+told the pool is short while the SOL sits there.
+
+Fixing it means the native leg inside the pro-rata split — paying part of a
+claim in lamports — which changes `handle_out`'s account shape and needs a rule
+for when a depositor is paid in SOL rather than stables.
 
 ## Untested
 

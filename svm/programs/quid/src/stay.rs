@@ -1674,34 +1674,6 @@ impl ProgramConfig {
         + 8;  // sol_min_park_secs → total 324
 }
 
-pub fn transfer_from_vault<'info>(
-    vault: &InterfaceAccount<'info, TokenAccount>,
-    mint: &InterfaceAccount<'info, Mint>,
-    recipient_ata: &InterfaceAccount<'info, TokenAccount>,
-    vault_bump: u8,
-    token_program: &Interface<'info, TokenInterface>,
-    amount: u64) -> Result<u64> {
-    if amount == 0 || vault.amount == 0 { return Ok(0); }
-    let transfer_amount = amount.min(vault.amount);
-    let mint_key = mint.key();
-    let signer_seeds: &[&[&[u8]]] = &[&[b"vault",
-            mint_key.as_ref(), &[vault_bump]]];
-
-    let cpi_ctx = CpiContext::new_with_signer(
-        token_program.to_account_info(),
-        TransferChecked {
-            from: vault.to_account_info(),
-            mint: mint.to_account_info(),
-            to: recipient_ata.to_account_info(),
-            authority: vault.to_account_info(),
-        },
-        signer_seeds,
-    );
-    token_interface::transfer_checked(cpi_ctx,
-        transfer_amount, mint.decimals)?;
-
-    Ok(transfer_amount)
-}
 
 /// Pro-rata withdrawal across primary vault + alternate vaults from remaining_accounts.
 /// remaining_accounts layout: [alt_mint, alt_vault, alt_user_ata] triplets.

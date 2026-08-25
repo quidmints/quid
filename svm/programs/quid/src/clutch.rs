@@ -11,7 +11,6 @@ use anchor_lang::solana_program::{
 
 use crate::stay::*;
 use crate::stay::{
-    transfer_from_vault,
     transfer_from_vaults,
     ProgramConfig, SOL_POOL_SEED,
 };
@@ -420,14 +419,19 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
         if !exposure { // < withdraw pledged from specific ticker (no exposure change)
             require!(amount < 0, PithyQuip::InvalidAmount);
             customer.renege(Some(t), amount, None, right_now)?;
-            // renege() worked in accounting units; the vault pays raw units.
-            transfer_from_vault(&ctx.accounts.bank_token_account,
+            // Pro rata across the vaults, as everywhere else: `renege` worked
+            // in accounting units and the claim is asset-agnostic, so a single
+            // vault could refuse a withdrawal the pool as a whole can cover.
+            let pledged_vaults = if !ctx.remaining_accounts.is_empty() {
+                &ctx.remaining_accounts[..]
+            } else { &[] };
+            transfer_from_vaults(&ctx.accounts.bank_token_account,
                 &ctx.accounts.mint,
                 &ctx.accounts.customer_token_account,
-                ctx.bumps.bank_token_account, &ctx.accounts.token_program,
-                from_accounting((-amount) as u64,
-                    ctx.accounts.mint.decimals)?,
-            )?;
+                ctx.bumps.bank_token_account, pledged_vaults,
+                &ctx.accounts.token_program, ctx.program_id,
+                &ctx.accounts.config.registered_mints,
+                (-amount) as u64)?;
         } else {
             let risk = ctx.accounts.ticker_risk.as_mut().ok_or(PithyQuip::UnknownSymbol)?;
             let key: &str = get_account(t).ok_or(PithyQuip::UnknownSymbol)?;
@@ -499,11 +503,28 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 let fee_amount = (interest as u128 * fee as u128 / 10_000) as u64;
                 let payout = interest.saturating_sub(fee_amount);
 
-                transfer_from_vault(&ctx.accounts.bank_token_account,
+                // Sourced across every vault, not out of whichever mint the
+                // caller happened to name. `repo` returns this as one figure
+                // but it is two things: the trader's own pledge coming back,
+                // and profit that comes from the pool. Paying either from a
+                // single vault meant a take-profit could fail for want of
+                // liquidity in one asset while the others sat full — the pool
+                // solvent, the payout impossible. A claim here is
+                // asset-agnostic exactly as it is on a pool withdrawal, so it
+                // is paid the same way: pro rata across what backs it, each
+                // vault converted back to its own precision.
+                //
+                // Alt vaults ride behind the price feed, in the same
+                // [mint, vault, user_ata] triplets a pool withdrawal uses.
+                let tp_vaults = if ctx.remaining_accounts.len() > 1 {
+                    &ctx.remaining_accounts[1..]
+                } else { &[] };
+                transfer_from_vaults(&ctx.accounts.bank_token_account,
                     &ctx.accounts.mint,
                     &ctx.accounts.customer_token_account,
-                    ctx.bumps.bank_token_account, &ctx.accounts.token_program,
-                    from_accounting(payout, ctx.accounts.mint.decimals)?)?;
+                    ctx.bumps.bank_token_account, tp_vaults,
+                    &ctx.accounts.token_program, ctx.program_id,
+                    &ctx.accounts.config.registered_mints, payout)?;
 
                 -(dq_delta_repo.saturating_add(pledged_delta)).saturating_sub(payout as i128)
             } 
