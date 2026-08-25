@@ -57,7 +57,7 @@ export default function HomeScreen({ walletAddress, onDisconnect }: HomeScreenPr
     <SafeAreaView style={s.root} edges={['top']}>
       {/* Header */}
       <View style={s.header}>
-        <Text style={s.logo}>SAFTA</Text>
+        <Text style={s.logo}>QU!D</Text>
         <View style={s.headerRight}>
           {mintLoading && (
             <ActivityIndicator color="#888" size="small" style={{ marginRight: 8 }} />

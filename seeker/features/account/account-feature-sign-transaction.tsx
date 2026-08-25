@@ -18,7 +18,7 @@ export function AccountFeatureSignTransaction({ address }: { address: PublicKey 
         payerKey: address,
         recentBlockhash: latestBlockhash.blockhash,
         instructions: [
-          createMemoInstruction('Hello from SAFTA'),
+          createMemoInstruction('Hello from QU!D'),
         ],
       }).compileToLegacyMessage()
 

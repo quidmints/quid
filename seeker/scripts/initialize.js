@@ -1,7 +1,7 @@
 /**
  * scripts/initialize.js
  *
- * Calls init_config on devnet to bootstrap the SAFTA program.
+ * Calls init_config on devnet to bootstrap the QU!D program.
  *   node scripts/initialize.js <mint>
  *   QUID_MINT=<mint> node scripts/initialize.js
  */
@@ -31,9 +31,9 @@ async function main() {
   const idl = JSON.parse(readFileSync(idlPath, 'utf8'))
 
   const programId = new PublicKey(
-    process.env.EXPO_PUBLIC_SAFTA_PROGRAM_ID ??
+    process.env.EXPO_PUBLIC_QUID_PROGRAM_ID ??
     idl.address ??
-    (() => { throw new Error('Set EXPO_PUBLIC_SAFTA_PROGRAM_ID or deploy first') })()
+    (() => { throw new Error('Set EXPO_PUBLIC_QUID_PROGRAM_ID or deploy first') })()
   )
 
   const program = new anchor.Program(idl, provider)
@@ -78,9 +78,9 @@ async function main() {
   console.log('   Signature:', sig)
   console.log('   Explorer: https://explorer.solana.com/tx/' + sig + '?cluster=devnet')
   console.log('\nAdd to seeker/.env:')
-  console.log('   EXPO_PUBLIC_SAFTA_PROGRAM_ID=' + programId.toBase58())
+  console.log('   EXPO_PUBLIC_QUID_PROGRAM_ID=' + programId.toBase58())
   console.log('   EXPO_PUBLIC_QUID_MINT=' + tokenMint.toBase58())
-  console.log('   EXPO_PUBLIC_SAFTA_KEEPER=' + wallet.publicKey.toBase58())
+  console.log('   EXPO_PUBLIC_QUID_KEEPER=' + wallet.publicKey.toBase58())
 }
 
 main().catch(err => {

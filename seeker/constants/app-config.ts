@@ -5,7 +5,7 @@ export interface SolanaCluster {
 }
 
 export class AppConfig {
-  static name = 'SAFTA'
+  static name = 'QU!D'
   static uri = 'https://quid.so'
   static networks: SolanaCluster[] = [
     {

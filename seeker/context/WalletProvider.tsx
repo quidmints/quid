@@ -39,7 +39,7 @@ if (Platform.OS === 'android') {
       await transact(async (wallet: any) => {
         const authResult = await wallet.authorize({
           cluster: chain,
-          identity: { name: 'SAFTA', uri: 'https://quid.so' },
+          identity: { name: 'QU!D', uri: 'https://quid.so' },
         })
         // MWA returns address as base64-encoded bytes, not base58
         const addressBytes = Buffer.from(authResult.accounts[0].address, 'base64')
@@ -60,7 +60,7 @@ if (Platform.OS === 'android') {
         return await transact(async (wallet: any) => {
           await wallet.authorize({
             cluster: chain,
-            identity: { name: 'SAFTA', uri: 'https://quid.so' },
+            identity: { name: 'QU!D', uri: 'https://quid.so' },
           })
           const result = await wallet.signAndSendTransactions({
             minContextSlot,
@@ -74,7 +74,7 @@ if (Platform.OS === 'android') {
       return await transact(async (wallet: any) => {
         await wallet.authorize({
           cluster: chain,
-          identity: { name: 'SAFTA', uri: 'https://quid.so' },
+          identity: { name: 'QU!D', uri: 'https://quid.so' },
         })
         const result = await wallet.signMessages({ addresses: [], payloads: [message] })
         return result[0]
@@ -104,7 +104,7 @@ function iOSWalletProvider({
   const session = useRef<string | null>(null)
 
   // Must match "scheme" in app.json exactly
-  const redirectUrl = 'safta://'
+  const redirectUrl = 'quid://'
 
   const encryptPayload = useCallback((payload: object) => {
     if (!sharedSecret.current) throw new Error('No shared secret')

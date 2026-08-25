@@ -26,7 +26,7 @@ MINT_AMOUNT=10000000   # 10 million QD (with 6 decimal places = 10_000_000_000_0
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
-echo "  SAFTA testnet mock token setup"
+echo "  QU!D testnet mock token setup"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 

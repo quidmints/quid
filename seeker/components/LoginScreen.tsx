@@ -50,9 +50,9 @@ export default function LoginScreen() {
     <View style={styles.container}>
       {/* Logo / title */}
       <View style={styles.header}>
-        <Text style={styles.title}>SAFTA</Text>
+        <Text style={styles.title}>QU!D</Text>
         <Text style={styles.subtitle}>
-          Solana Audio Fingerprint &amp; Trust Attestation
+          Synthetic exposure, collateralised on Solana
         </Text>
       </View>
 
