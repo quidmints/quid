@@ -2995,3 +2995,65 @@ mod exit_fairness {
                 "the second depositor is left worse off by arriving second");
     }
 }
+
+#[cfg(test)]
+mod exit_and_return {
+    use super::*;
+    use super::tests::{depositor, bank};
+
+    /// A borrower's profit is paid out of the pool, so it is a loss to
+    /// depositors. Where it lands decides whether leaving before it and
+    /// returning afterwards is profitable.
+    ///
+    /// Against earnings it is not: the leaver forfeits their tenure share of
+    /// premiums, which is the thing tenure exists to allocate, and every
+    /// claim on principal stays exactly equal to what backs it.
+    #[test]
+    fn a_loss_within_earnings_leaves_every_claim_backed() {
+        let mut b = bank(0, 0, 0);
+        let mut stayer = depositor(0);
+        let mut leaver = depositor(0);
+
+        stayer.pool_deposit(&mut b, 1_000_000, 0);
+        leaver.pool_deposit(&mut b, 1_000_000, 0);
+        b.yield_pool = 500_000;                    // premiums collected
+
+        let taken = leaver.deposited_quid;
+        leaver.pool_withdraw(&mut b, taken, 100).unwrap();
+
+        // A 400_000 take-profit, paid for by premiums as `handle_out` now does.
+        let loss = 400_000u64;
+        let from_yield = loss.min(b.yield_pool);
+        b.yield_pool -= from_yield;
+        b.total_deposits = b.total_deposits.saturating_sub(loss - from_yield);
+
+        leaver.pool_deposit(&mut b, taken, 200);
+
+        assert_eq!(stayer.deposited_quid + leaver.deposited_quid, b.total_deposits,
+            "principal claims must still equal the principal that backs them");
+        assert_eq!(b.yield_pool, 100_000, "the loss came out of premiums");
+    }
+
+    /// The limit of that protection, stated rather than assumed.
+    ///
+    /// A loss larger than everything the pool has earned reaches deposits, and
+    /// `total_deposits` is an aggregate no individual claim tracks — so every
+    /// depositor still claims par against a pool holding less, and leaving
+    /// before it is once again strictly better than staying. Closing this
+    /// needs claims to be shares of the pool rather than fixed amounts, so a
+    /// mark-down reaches everyone at once and there is nothing to step out of.
+    #[test]
+    fn a_loss_beyond_earnings_is_not_yet_marked_to_claims() {
+        let mut b = bank(0, 0, 0);
+        let mut a = depositor(0);
+        let mut c = depositor(0);
+        a.pool_deposit(&mut b, 1_000_000, 0);
+        c.pool_deposit(&mut b, 1_000_000, 0);
+
+        b.total_deposits = b.total_deposits.saturating_sub(400_000);  // beyond earnings
+
+        assert!(a.deposited_quid + c.deposited_quid > b.total_deposits,
+            "documented gap: claims {} exceed the {} backing them",
+            a.deposited_quid + c.deposited_quid, b.total_deposits);
+    }
+}

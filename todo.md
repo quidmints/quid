@@ -33,6 +33,28 @@ installed and verified loadable, and there are 28 live DVNs on Solana —
 LayerZero Labs at `4VDjp6XQaxoZf5RGwiPU9NR1EXSZn2TP4ATMmiSzLfhb` and Google at
 `F7gu9kLcpn4bSTZn183mhn2RXUuMy7zckdxJZdUjuALw` mirror the EVM pair.
 
+## Claims are amounts, not shares
+
+A loss larger than everything the pool has earned reaches `total_deposits`,
+which is an aggregate no individual claim tracks. Every depositor still claims
+par against a pool that holds less, so withdrawing before a large loss and
+returning afterwards is strictly profitable — the leaver keeps par, the stayers
+absorb it. Resetting the tenure clock does not deter it: tenure governs
+earnings, and what is being dodged is principal.
+
+Ordinary borrower profit no longer reaches principal — premiums are what the
+pool collected for carrying that risk, so they pay for it first, and
+`a_loss_within_earnings_leaves_every_claim_backed` pins that. The gap is what
+remains after earnings are exhausted, which is genuine impairment.
+
+Closing it means `deposited_quid` becoming a share of the pool rather than a
+fixed amount, so a mark-down reaches every claim at once and there is nothing
+to step out of. The machinery already exists in miniature: `sol_yield_index`
+is a per-unit accumulator applied lazily at each touch, and a NAV index is the
+same shape used in both directions. It is a change to the accounting model
+rather than a bug fix, which is why it is written down here rather than done.
+`a_loss_beyond_earnings_is_not_yet_marked_to_claims` documents the exposure.
+
 ## Untested
 
 - **`bebop_jam` is cloned but not deployed.** The flash path is proven on our

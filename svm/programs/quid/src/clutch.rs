@@ -531,12 +531,28 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
                 }
                 -(dq_delta_repo.saturating_add(pledged_delta))
             };
+            // A borrower's profit is paid out of the pool, so it is a loss to
+            // depositors — and it used to land straight on `total_deposits`,
+            // an aggregate that no individual claim tracks. Every depositor
+            // still claimed par against a pool that held less, which makes
+            // withdrawing before a large take-profit and returning afterwards
+            // strictly profitable: the leaver keeps par and the stayers absorb
+            // it. Resetting the tenure clock is no deterrent, because tenure
+            // governs earnings and what is being dodged is principal.
+            //
+            // Premiums are what the pool collected for carrying exactly this
+            // risk, so they pay for it first. Only a loss beyond everything
+            // earned reaches deposits, and that is genuine impairment rather
+            // than the ordinary cost of writing the other side of a trade.
             if signed_t_delta >= 0 {
-                Banks.total_deposits = Banks.total_deposits
+                Banks.yield_pool = Banks.yield_pool
                     .saturating_add(signed_t_delta as u64);
             } else {
+                let loss = (-signed_t_delta) as u64;
+                let from_yield = loss.min(Banks.yield_pool);
+                Banks.yield_pool -= from_yield;
                 Banks.total_deposits = Banks.total_deposits
-                    .saturating_sub((-signed_t_delta) as u64);
+                    .saturating_sub(loss - from_yield);
             }
             // `amount` is in asset units here; the risk state is dollars.
             let value_delta = (amount as i128)
