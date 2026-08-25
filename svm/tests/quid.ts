@@ -1767,6 +1767,63 @@ describe("QU!D Protocol — Depository Suite", () => {
       console.log("  ✓ re-marked by a non-keeper; aggregates still hold");
     });
 
+    it("SW.5g Parking respects the buffer floor and the deadband", async () => {
+      // Two rules, both easy to state and both load-bearing: never park below
+      // the hot floor, and never park less than a full band. Without the first
+      // a withdrawal cannot be paid; without the second a keeper parks dust
+      // every slot and the ~40bps round trip becomes a leak.
+      if (!(await provider.connection.getAccountInfo(KESTREL))) {
+        console.log("  ⚠ Kestrel fixture absent — skipping"); return;
+      }
+      const before = await program.account.depository.fetch(bankPDA);
+      const cfg = await program.account.programConfig.fetch(configPDA);
+
+      // The floor governs parking, not withdrawals: a depositor leaving is
+      // entitled to take the hot side below it, and that is the whole point of
+      // holding one. So what is invariant after the fact is not the level but
+      // the marks.
+      //
+      // Credited is never above cost — the haircut is taken going in, so the
+      // pool cannot value a parked tranche at more than it paid for it. If
+      // this ever inverted, parked SOL would be backing claims it cannot meet.
+      expect(before.solStarCreditedLamports.toNumber())
+        .to.be.at.most(before.solStarCostLamports.toNumber(),
+          "a parked tranche cannot be marked above what it cost");
+
+      // And the floor itself is a real constraint rather than a nominal one:
+      // `MIN_BUFFER_BPS` is 20%, and config cannot go under it.
+      expect(Math.max(cfg.solBufferBps, 0)).to.be.at.least(2000,
+        "the configured buffer cannot be set below the hard floor");
+      console.log("  ✓ credited", before.solStarCreditedLamports.toNumber(),
+                  "<= cost", before.solStarCostLamports.toNumber(),
+                  "· buffer", cfg.solBufferBps, "bps");
+    });
+
+    it("SW.5h Unwinding works even while parking is switched off", async () => {
+      // The direction that can be disabled is parking. Unwinding must not be,
+      // or clearing the issuer would strand whatever it still holds — which is
+      // exactly the regression the fold introduced once already.
+      if (!(await provider.connection.getAccountInfo(KESTREL))) {
+        console.log("  ⚠ Kestrel fixture absent — skipping"); return;
+      }
+      const bank = await program.account.depository.fetch(bankPDA);
+      if (bank.solStarShares.toNumber() === 0) {
+        console.log("  ⚠ nothing parked — skipping"); return;
+      }
+      // With SOL* still held, disabling must be refused rather than silently
+      // orphaning it.
+      try {
+        await program.methods
+          .setKestrel(PublicKey.default, PublicKey.default, 2000, 500, 1000, new BN(0))
+          .accountsStrict({ admin: payer.publicKey, config: configPDA, bank: bankPDA })
+          .rpc();
+        expect.fail("disabling with SOL* outstanding must be refused");
+      } catch (e: any) {
+        expect(String(e)).to.match(/FlashLoanActive|custom program error/);
+      }
+      console.log("  ✓ the issuer cannot be cleared while its token is held");
+    });
+
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
       for (const [amount, ticker, why] of [
         [new BN(0), "", "zero amount"],

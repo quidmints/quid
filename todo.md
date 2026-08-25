@@ -23,15 +23,19 @@ matching testnet, DVNs configured on both sides, and a QD round trip observed
 to land. Until then, treat the return leg as code that compiles rather than a
 working bridge, and do not let the suite's coverage suggest otherwise.
 
-**The Solana DVN config script does not exist.** The EVM half is written and
-compiles: `evm/scripts/LZconfig.s.sol` binds send and receive libraries before
-setting config — the step whose absence leaves an OApp on the endpoint defaults
-while looking configured, which is how KelpDAO was on 1-of-1 when 116,500 rsETH
-left through a single compromised verifier. The Solana side needs the same:
-`SetConfigType::SEND_ULN` and `RECEIVE_ULN` with two required DVNs. The SDK is
-installed and verified loadable, and there are 28 live DVNs on Solana —
-LayerZero Labs at `4VDjp6XQaxoZf5RGwiPU9NR1EXSZn2TP4ATMmiSzLfhb` and Google at
-`F7gu9kLcpn4bSTZn183mhn2RXUuMy7zckdxJZdUjuALw` mirror the EVM pair.
+**Both DVN config scripts are written but neither has been run.**
+`evm/scripts/LZconfig.s.sol` and `svm/scripts/lz-config.ts` bind the send and
+receive libraries before setting config — the step whose absence leaves an OApp
+on the endpoint defaults while looking configured, which is how KelpDAO was on
+1-of-1 when 116,500 rsETH left through a single compromised verifier — and then
+require two DVNs from different operators in both directions. They compile and
+typecheck; running them needs a deployment to point at.
+
+**Devnet is blocked on funding.** The wallet
+`4BYcGVBnvzPKT74wZaTE3aoaJTePZWunEDiji1EbkuNP` holds no devnet SOL and the
+faucet is rate-limited, so the program cannot be deployed there. That is the
+only thing between here and a real crossing: the code is written, the config
+scripts exist, and `Basket.sol` needs a matching testnet deployment.
 
 ## Claims are amounts, not shares
 
