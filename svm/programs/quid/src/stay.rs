@@ -797,7 +797,15 @@ let new_total = bank.total_deposits.saturating_sub(usd);
                 shortfall -= take;
             }
         } self.last_updated = now; bank.last_updated = now;
-        bank.total_deposits = bank.total_deposits.saturating_sub(usd);
+        // Only what came out of free balance. `pledged` sits outside
+        // `total_deposits` by design — a ticker deposit never incremented it —
+        // so charging the whole reduction here took the part absorbed by open
+        // positions twice: once off the position, and again off an aggregate
+        // that never contained it. Conservation still balanced, because both
+        // sides fell, but the identity that free balances sum to the recorded
+        // deposits did not, and it is that identity every payout is computed
+        // against.
+        bank.total_deposits = bank.total_deposits.saturating_sub(dq_drop);
         // Any residual `shortfall` after exhausting dq+pledged means the
         // user is fully insolvent on their SOL-backed account. T still drops
         // by full `usd` so has_capacity() will fail and amortise() can fire
@@ -3064,5 +3072,46 @@ mod exit_and_return {
         assert!(a.deposited_quid + c.deposited_quid > b.total_deposits,
             "documented gap: claims {} exceed the {} backing them",
             a.deposited_quid + c.deposited_quid, b.total_deposits);
+    }
+}
+
+#[cfg(test)]
+mod sol_mark_down {
+    use super::*;
+    use super::tests::{depositor, bank, pod};
+
+    /// A SOL crash marks the depositor's contribution down. What it must not
+    /// do is take the same reduction twice.
+    ///
+    /// `pledged` sits outside `total_deposits` by design — a ticker deposit
+    /// never incremented it. So when a mark-down exhausts free balance and
+    /// reaches into open positions, reducing `total_deposits` by the whole
+    /// figure charges the pool for collateral that was never counted in it.
+    #[test]
+    fn a_shortfall_taken_from_pledged_is_not_charged_to_deposits_as_well() {
+        let mut b = bank(0, 0, 0);
+        // Someone else in the pool, so the aggregate cannot saturate to zero
+        // and hide the difference.
+        let mut other = depositor(0);
+        other.pool_deposit(&mut b, 5_000_000, 0);
+
+        let mut d = depositor(1_000_000_000);
+        d.pool_deposit(&mut b, 300_000, 0);          // free balance
+        let mut p = pod(700_000, 0, 200, 0);         // and collateral in a position
+        p.ticker = Depositor::pad_ticker("AAA");
+        d.balances.push(p);
+
+        // SOL falls: 500_000 of contribution has to come off. Only 300_000 of
+        // it can come from the free balance; the rest comes from the position.
+        d.pool_mark_down(&mut b, 500_000, 100);
+
+        assert_eq!(d.deposited_quid, 0, "free balance is drained first");
+        assert_eq!(d.balances[0].pledged, 500_000, "the rest comes from pledged");
+
+        // The identity every other path preserves: what depositors hold free
+        // is what the pool records as deposits.
+        assert_eq!(d.deposited_quid + other.deposited_quid, b.total_deposits,
+            "Σ deposited_quid is {} against total_deposits {}",
+            d.deposited_quid + other.deposited_quid, b.total_deposits);
     }
 }
