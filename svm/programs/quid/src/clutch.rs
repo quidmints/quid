@@ -352,8 +352,30 @@ pub fn handle_out<'info>(ctx: Context<'_, '_,
             // withholding the amount already reserved rather than by holding
             // a separate pot in front of it — the reserve was always the right
             // number, it just had to bind.
-            let value = max_value.min(amount.abs() as u64)
-                                 .min(Banks.withdrawable());
+            // Each depositor's own share of the free capacity, not the whole
+            // of it. `withdrawable()` is pool-wide — total plus earnings, less
+            // what is reserved against borrowers — and capping a payout by it
+            // directly let the first to ask take all of it, leaving the next
+            // depositor with the same claim holding nothing. That is a race,
+            // and a race is a run: the rational move becomes withdrawing
+            // before anyone else does.
+            //
+            // Prorating it makes the constraint a rule instead. When the pool
+            // can release 60% of what it owes, everybody can take 60% of their
+            // own claim, whenever they ask and in any order. Nobody is blocked
+            // by somebody else's earlier exit, and there is nothing to be
+            // gained by being first.
+            //
+            // The remainder is not lost, only committed: it is backing
+            // positions that are still open, and it frees as those close.
+            let backing = Banks.total_deposits.saturating_add(Banks.yield_pool);
+            let free = Banks.withdrawable();
+            let my_share = if backing > 0 {
+                ((max_value as u128).saturating_mul(free as u128)
+                    / backing as u128).min(u64::MAX as u128) as u64
+            } else { 0 };
+
+            let value = max_value.min(amount.abs() as u64).min(my_share);
             amt += value;
             // Spend principal first, then earnings, so the two ledgers each
             // fall by what actually left them.

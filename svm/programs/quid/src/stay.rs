@@ -694,6 +694,12 @@ impl Depositor {
             // so it is never counted twice.
             self.deposited_quid = self.deposited_quid.saturating_add(owed);
             bank.total_deposits = bank.total_deposits.saturating_add(owed);
+            // And the pool's mark of its SOL collateral rises with it. The
+            // carry is real — the parked tranche appreciated — but crediting
+            // only the claim left it unbacked: the pool owed more without
+            // holding more. Both sides move here, in the same place, so they
+            // cannot drift.
+            bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_add(owed);
         }
         owed
     }
@@ -2910,5 +2916,82 @@ mod state_machine_stress {
             assert!(lev_reads_unbounded <= lev_reads_unlevered,
                     "a stripped position must not be handed the wider band");
         }
+    }
+}
+
+#[cfg(test)]
+mod sol_yield_conservation {
+    use super::*;
+    use super::tests::{depositor, bank};
+
+    /// Attributed SOL carry has to be backed by something the pool holds.
+    ///
+    /// `settle_sol_yield` credits a depositor's balance and `total_deposits`.
+    /// The value behind it is the SOL* tranche appreciating, which the pool
+    /// records in `sol_usd_contrib` — so if the index moves without that
+    /// figure moving, the pool owes more than it holds.
+    #[test]
+    fn attributed_carry_is_backed_by_the_pools_own_mark() {
+        let mut b = bank(10_000_000_000, 0, 0);
+        b.sol_usd_contrib = 1_000_000;
+        b.total_deposits = 1_000_000;
+
+        let mut d = depositor(10_000_000_000);
+        d.deposited_quid = 1_000_000;
+        d.sol_yield_checkpoint = b.sol_yield_index;
+
+        let held_before = b.sol_usd_contrib;
+        let owed_before = b.total_deposits;
+
+        // Carry realised on the parked tranche.
+        assert!(b.accrue_sol_yield(50_000), "carry should attribute to SOL");
+        let owed = d.settle_sol_yield(&mut b);
+        assert!(owed > 0, "the depositor should be credited");
+
+        let owed_delta = b.total_deposits - owed_before;
+        let held_delta = b.sol_usd_contrib as i64 - held_before as i64;
+        assert_eq!(owed_delta as i64, held_delta,
+            "the pool now owes {owed_delta} more but holds {held_delta} more");
+    }
+}
+
+#[cfg(test)]
+mod exit_fairness {
+    use super::*;
+    use super::tests::bank;
+
+    /// When the pool is reserved against borrowers, who can still get out?
+    ///
+    /// `withdrawable()` is a pool-wide figure — total plus earnings, less the
+    /// reserve. Capping each payout by it means the first depositor to ask can
+    /// take the whole of the free capacity and the next one finds none, which
+    /// is a race rather than a rule.
+    #[test]
+    fn free_capacity_is_shared_not_raced() {
+        let mut b = bank(0, 0, 0);
+        b.total_deposits = 1_000_000;
+        b.max_liability = 400_000;          // borrowers' reserve
+        let free = b.withdrawable();
+        assert_eq!(free, 600_000);
+
+        // Two depositors of equal size. Each is owed 500_000 and the pool can
+        // release 600_000 between them, so a fair rule gives each 300_000.
+        let alice = 500_000u64;
+        let bob = 500_000u64;
+
+        let fair = |mine: u64| (mine as u128 * free as u128
+                                / (b.total_deposits + b.yield_pool) as u128) as u64;
+        assert_eq!(fair(alice), 300_000);
+        assert_eq!(fair(bob), 300_000);
+        assert!(fair(alice) + fair(bob) <= free,
+                "shares of free capacity must not sum past it");
+
+        // Whereas capping by the pool-wide figure alone lets the first mover
+        // take everything: 500_000 of the 600_000, leaving 100_000 for a
+        // depositor owed the same amount.
+        let first_mover_takes = alice.min(free);
+        assert_eq!(first_mover_takes, 500_000);
+        assert!(bob.min(free - first_mover_takes) < fair(bob),
+                "the second depositor is left worse off by arriving second");
     }
 }

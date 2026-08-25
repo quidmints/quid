@@ -69,10 +69,11 @@ LayerZero Labs at `4VDjp6XQaxoZf5RGwiPU9NR1EXSZn2TP4ATMmiSzLfhb` and Google at
 
 ## Known and accepted
 
-- **Conservation holds to two units on 131.8bn**, which is the documented
-  residue: the partial take-profit path rounds `pledged_reduce` and lets
-  `T_delta` absorb the difference. Watched by a relative bound rather than
-  demanded exact.
+- **Conservation is exact** as of the SOL-carry fix: 131,800,000,264 owed
+  against 131,800,000,264 held. The two-unit residue previously attributed to
+  rounding in the partial take-profit path was mostly attributed carry that had
+  no backing. The assertion is still a relative bound, since integer division
+  in that path can legitimately leave a unit behind.
 - **Native SOL deposits have no minimum** while SPL deposits require $100, so
   dust SOL deposits can create depositor accounts cheaply. An asymmetry of the
   kind that has been wrong every other time it appeared, and unfixed.
