@@ -240,16 +240,39 @@ impl Depository {
     /// Solvency requirement: total deposits must cover worst-case losses.
     /// max_liability tracks sum of (exposure × collar_bps) for all positions.
     /// If all positions hit their collar simultaneously, the pool must cover it.
+    /// Backing that will still be worth what it says tomorrow.
+    ///
+    /// `total_deposits` mixes two things that are not the same kind of
+    /// capital: stables, which are par by construction, and SOL, which is
+    /// marked and can halve overnight. Every solvency question was asked
+    /// against the mixture, so a SOL move changed what a stablecoin depositor
+    /// could withdraw and whether anyone could open a position at all —
+    /// contaminating people with no exposure to it.
+    ///
+    /// A cap on how much SOL the pool may hold does not fix that. It bounds
+    /// the contamination on the way in and does nothing about the crash
+    /// afterwards, and the concentration falls as SOL drops, so the cap is not
+    /// even breached while the damage happens. What fixes it is refusing to
+    /// let volatile collateral back anybody's obligations but its owner's.
+    ///
+    /// SOL remains real backing for whoever put it up: it margins their own
+    /// positions, and `withdraw_native` pays it out without consulting this.
+    /// What it no longer does is underwrite the pool.
+    pub fn stable_deposits(&self) -> u64 {
+        self.total_deposits.saturating_sub(self.sol_usd_contrib)
+    }
+
     pub fn has_capacity(&self, 
         additional_collar: u64) -> bool {
-        if self.total_deposits == 0 { return false; }
-        self.max_liability.saturating_add(additional_collar) <= self.total_deposits
+        let stable = self.stable_deposits();
+        if stable == 0 { return false; }
+        self.max_liability.saturating_add(additional_collar) <= stable
     }
 
     /// Maximum amount LP can withdraw without breaking solvency.
     /// Must maintain enough deposits to cover worst-case collar losses.
     pub fn withdrawable(&self) -> u64 {
-        self.total_deposits.saturating_add(self.yield_pool)
+        self.stable_deposits().saturating_add(self.yield_pool)
             .saturating_sub(self.max_liability)
     }
 }
@@ -2367,5 +2390,56 @@ mod sol_mark_down {
         assert_eq!(d.deposited_quid + other.deposited_quid, b.total_deposits,
             "Σ deposited_quid is {} against total_deposits {}",
             d.deposited_quid + other.deposited_quid, b.total_deposits);
+    }
+}
+
+#[cfg(test)]
+mod volatile_backing_is_segregated {
+    use super::*;
+    use super::tests::bank;
+
+    /// A SOL crash must not reach a stablecoin depositor.
+    ///
+    /// Both solvency gates used to measure against `total_deposits`, which
+    /// mixes par-valued stables with marked SOL. So a move in one changed what
+    /// the other could do — and a cap on concentration cannot fix that, since
+    /// the crash happens after the deposit and the share falls as the price
+    /// does.
+    #[test]
+    fn a_sol_crash_does_not_gate_a_stablecoin_depositor() {
+        let mut b = bank(0, 0, 0);
+        b.total_deposits = 1_000_000;      // 600k stables, 400k SOL
+        b.sol_usd_contrib = 400_000;
+        b.max_liability = 300_000;
+
+        let before_free = b.withdrawable();
+        let before_room = b.has_capacity(100_000);
+
+        // SOL halves. The pool's SOL-derived backing goes with it.
+        b.total_deposits -= 200_000;
+        b.sol_usd_contrib -= 200_000;
+
+        assert_eq!(b.withdrawable(), before_free,
+            "a stablecoin depositor's exit must not narrow because SOL fell");
+        assert_eq!(b.has_capacity(100_000), before_room,
+            "and the book must not close to them either");
+
+        // The stable half is what answers both, and it did not move.
+        assert_eq!(b.stable_deposits(), 600_000);
+    }
+
+    /// The other direction: stables leaving does still tighten things, because
+    /// that is the capital genuinely underwriting the reserve.
+    #[test]
+    fn stables_leaving_still_tightens_the_gate() {
+        let mut b = bank(0, 0, 0);
+        b.total_deposits = 1_000_000;
+        b.sol_usd_contrib = 400_000;
+        b.max_liability = 300_000;
+        let before = b.withdrawable();
+
+        b.total_deposits -= 200_000;       // stables, not SOL
+        assert!(b.withdrawable() < before,
+            "the reserve is backed by stables, so their departure must bind");
     }
 }
