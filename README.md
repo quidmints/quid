@@ -601,22 +601,23 @@ the error small, which is what `sweep` is for.
   read access can redeploy over that address. Treat it as compromised and
   rotate before any real deployment. Not done here because it changes the
   program ID everywhere and is a decision rather than a fix.
-- **`SQUADS_MULTISIG_V4` is a bare `&str` that nothing checks.** `config.admin`
-  is whoever called `init_config` and can be rotated to any pubkey, with no
-  requirement that the destination is a Squads vault. Enforcing it means
-  deriving `[b"vault", multisig, 0]` under the Squads program, which needs the
-  multisig address — hardcode it the way the LayerZero endpoint is, or require
-  the new admin to be owned by the Squads program, which blocks rotation to a
-  plain wallet without naming a specific vault.
+- **The upgrade authority is a single key.** `DEPLOY.1` reads it off the
+  programdata account every run and names it; set `QUID_SQUADS_MULTISIG` and it
+  becomes a hard assertion against the derived vault. Today it prints
+  `9HomVTtGt3N5uUAdnk7t1SKLqPWtVm4jMDLMGoM8usXX`, so the gate is armed and
+  waiting rather than satisfied.
 
-  The more important thing it should hold is not `config.admin` at all but the
-  **program's upgrade authority**. Everything `config.admin` governs is
-  bounded — rotate the bebop authority, point SOL* at an issuer, set buffer
-  parameters — and none of it can rewrite the rules. Whoever can upgrade the
-  binary can, and that is the key that decides whether the ticker table is
-  extended, whether a gate is removed, whether any of the invariants below
-  still hold. Today it is `9HomVTtGt3N5uUAdnk7t1SKLqPWtVm4jMDLMGoM8usXX`, a
-  single key. That is the one to move to the multisig first.
+- **`config.admin` is not required to be a vault, and should not be.** `config.admin`
+  A Squads vault PDA is an ordinary pubkey, so setting `admin` to it needs no
+  program change — Anchor treats it as any other signer, and a runtime check
+  deriving the vault would be redundant. That is the pattern this was taken
+  from, and it is deliberate. What it leaves is the risk that nobody ever does
+  it, which is what `DEPLOY.1` exists to catch.
+
+  `SQUADS_MULTISIG_V4` is bytes rather than a string, so a mistyped address is
+  a compile error. The implementation this came from carries the same constant
+  as a `&str` with one character too many; it compiles, and would fail only
+  when something first tried to parse it.
 
 ## Known and accepted
 

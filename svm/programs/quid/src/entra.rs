@@ -547,7 +547,18 @@ pub fn is_approved_mint(mint: &Pubkey,
 //            --new-upgrade-authority <SQUADS_VAULT_PDA>
 //      Compromised upgrade key can replace the entire program. Highest-risk key.
 
-pub const SQUADS_MULTISIG_V4: &str = "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf";
+/// Squads v4, mainnet. `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`.
+///
+/// Bytes rather than a string, so a mistyped address is a compile error
+/// instead of a runtime one. The reference implementation this pattern came
+/// from carries the same constant as a `&str` with a trailing character too
+/// many — it compiles, and would only fail whenever something first tried to
+/// parse it.
+pub const SQUADS_MULTISIG_V4: Pubkey = Pubkey::new_from_array([
+    6, 129, 196, 206, 71, 226, 35, 104, 184, 177, 85, 94,
+    200, 135, 175, 9, 46, 252, 126, 251, 182, 108, 163, 245,
+    47, 191, 104, 212, 172, 156, 183, 168,
+]);
 
 /// PDA seed for the native-SOL collateral pool.
 pub const SOL_POOL_SEED: &[u8] = b"sol_pool";

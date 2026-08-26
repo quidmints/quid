@@ -1824,6 +1824,57 @@ describe("QU!D Protocol — Depository Suite", () => {
       console.log("  ✓ the issuer cannot be cleared while its token is held");
     });
 
+    it("DEPLOY.1 The upgrade authority is whatever it is — and is checked",
+       async () => {
+      // A deployment gate, not a unit test. It reads the upgrade authority off
+      // the BPFLoaderUpgradeable programdata account and holds it against what
+      // it is supposed to be.
+      //
+      // There is nothing to enforce on chain here and there should not be: a
+      // Squads vault PDA is an ordinary pubkey, so setting `admin` to it needs
+      // no program change at all — Anchor treats it like any other signer.
+      // What that leaves is the risk that nobody ever does it, and this is the
+      // check for that. Locally the authority is the test wallet and the gate
+      // passes loudly; run against devnet or mainnet with
+      // QUID_SQUADS_MULTISIG set and it becomes a hard assertion.
+      //
+      // The authority matters more than `config.admin`. Admin governs bounded
+      // things — rotate the bebop authority, point SOL* at an issuer, set
+      // buffer parameters. Whoever can upgrade the binary can remove any of
+      // those bounds, extend the ticker table, or take out a gate.
+      const [programData] = PublicKey.findProgramAddressSync(
+        [program.programId.toBuffer()],
+        new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"));
+
+      const acct = await provider.connection.getAccountInfo(programData);
+      if (!acct) {
+        console.log("  ⚠ no programdata account — not an upgradeable deploy");
+        return;
+      }
+      // ProgramData layout: u32 variant, u64 slot, u8 Option tag, [u8; 32].
+      expect(acct.data.length).to.be.at.least(45);
+      expect(acct.data[12]).to.equal(1, "the program must not be immutable yet");
+      const authority = new PublicKey(acct.data.subarray(13, 45));
+
+      const multisig = process.env.QUID_SQUADS_MULTISIG;
+      if (multisig) {
+        // Squads v4 vault, index 0: [b"vault", multisig, 0].
+        const SQUADS = new PublicKey("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf");
+        const [vault] = PublicKey.findProgramAddressSync(
+          [Buffer.from("vault"), new PublicKey(multisig).toBuffer(), Buffer.from([0])],
+          SQUADS);
+        expect(authority.toBase58()).to.equal(vault.toBase58(),
+          `upgrade authority is ${authority.toBase58()}, expected the Squads ` +
+          `vault ${vault.toBase58()} — a single key can rewrite every rule below`);
+        console.log("  ✓ upgrade authority is the Squads vault", vault.toBase58());
+      } else {
+        // Ungated. Say so plainly rather than passing quietly.
+        expect(authority.equals(PublicKey.default)).to.be.false;
+        console.log("  ⚠ upgrade authority is", authority.toBase58(),
+                    "— set QUID_SQUADS_MULTISIG to gate this against a vault");
+      }
+    });
+
     it("SW.6 Deposit of zero and unknown tickers are rejected", async () => {
       for (const [amount, ticker, why] of [
         [new BN(0), "", "zero amount"],
