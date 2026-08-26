@@ -584,9 +584,21 @@ the error small, which is what `sweep` is for.
   live program in fork mode. The buffer-floor edges, unwinding while the issuer
   is disabled, and partial unparks are not covered — fork mode makes these
   straightforward to write now.
-- **The oracle path has not been attacked.** Staleness and TWAP-deviation
-  bounds exist and read soundly; the vol-suppression attack is defended at the
-  source. Nobody has tried to break them on purpose.
+- **The staleness bound is unproven, and is the last build-differing
+  behaviour.** `MAX_PRICE_AGE` is five minutes shipped and effectively
+  unbounded under `testing`, so nothing exercises the guard — the same shape as
+  the mint whitelist behind a `mainnet` feature and the endpoint registration
+  behind this one, both of which turned out to be broken precisely because the
+  path that mattered never ran. A one-hour bound was tried and the suite
+  failed: the price accounts read two days older than the validator's clock,
+  because the environment's date advances between fixture refreshes and a fork
+  clones at genesis while the validator takes ninety seconds to start. Closing
+  it needs a harness that controls the clock — plant a feed with a chosen
+  publish time, assert the refusal — rather than a different number here.
+
+- **The rest of the oracle path has not been attacked.** TWAP-deviation reads
+  soundly and the vol-suppression attack is defended at the source. Nobody has
+  tried to break either on purpose.
 - **No concurrency or reentrancy work.** Solana's model makes EVM-style
   reentrancy unavailable, and the flash loan is bounded by the instruction
   sysvar within its own transaction, but neither has been probed.

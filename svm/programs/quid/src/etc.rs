@@ -18,7 +18,23 @@ pub const MAX_LEN: usize = 50;
 /// same constant gates `repo()`'s liquidator branches. Two policies, two knobs.
 #[cfg(not(feature = "testing"))]
 pub const MAX_PRICE_AGE: i64 = 300;
-/// Test fixtures are frozen snapshots; the test build accepts any age.
+
+/// Effectively unbounded under test, and that is a gap rather than a choice.
+///
+/// This is the last place where the tested binary differs in behaviour from
+/// the shipped one, which is the shape of two bugs already found here: the
+/// mint whitelist behind a `mainnet` feature and the endpoint registration
+/// behind this one. In both, the path that mattered was the one that never
+/// ran. The same holds here — nothing exercises the staleness guard.
+///
+/// Measured rather than assumed. A one-hour bound was tried and the suite
+/// failed: the price accounts read two days older than the validator's clock,
+/// because the environment's date advances between fixture refreshes and a
+/// fork clones at genesis while the validator takes ninety seconds to come up.
+/// So the guard cannot be exercised by changing this number, only by a harness
+/// that controls the clock — planting a feed with a chosen publish time and
+/// asserting the refusal. Until that exists the shipped bound of five minutes
+/// is unproven, and the README says so.
 #[cfg(feature = "testing")]
 pub const MAX_PRICE_AGE: i64 = i64::MAX / 4;
 
