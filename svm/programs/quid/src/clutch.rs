@@ -678,25 +678,32 @@ fn withdraw_native<'info>(ctx: Context<'_, '_, 'info, 'info, Withdraw<'info>>,
     let customer = &mut ctx.accounts.customer_account;
     // Pay out carry earned on this SOL before the principal shrinks.
     customer.settle_sol_yield(bank);
-    // Proportional share of the locked USD contribution being withdrawn
+    // The claim is lamports, so paying it is not a solvency question: the
+    // depositor gets back what they put in plus carry, whatever the price has
+    // done. There is no USD mark to measure it against, because a SOL deposit
+    // margins nothing and underwrites nobody.
+    //
+    // Clamp before touching any book. The pool PDA holds deposits and nothing
+    // else — no separate rent was ever funded into it — so its last few
+    // thousand lamports are what keeps the account alive, and sending them
+    // would delete the pool underneath everybody still in it. Paying what can
+    // be paid beats refusing: whatever is not paid is not deducted either, so
+    // it stays owed and becomes payable as soon as anyone else deposits.
+    let rent_floor = Rent::get()?.minimum_balance(sol_pool.data_len());
+    let spendable = sol_pool.lamports().saturating_sub(rent_floor);
+    lamports = lamports.min(spendable.saturating_add(forfeit));
+    require!(lamports > 0, PithyQuip::InsufficientFunds);
+
+    // Now every book moves by the same, final figure.
     let locked_fraction = (lamports as u128)
         .saturating_mul(customer.sol_pledged_usd as u128)
         .checked_div(customer.deposited_lamports as u128)
         .unwrap_or(0) as u64;
 
-    // Current collar-adjusted value of the lamports being withdrawn
-    let current_floor = collar_adjusted_usd(lamports, sol_price, &risk.actuary);
-    // Use min(locked, current): prevents withdrawing stale value if SOL has dropped.
-    // If SOL rose: depositor gets no windfall (conservative, matches Aux headroom logic).
-    // If SOL fell: depositor can only take out what it's worth now — no pool theft.
-    let usd_reduction = locked_fraction.min(current_floor);
-
-    // Shared accounting: accrues deposit_seconds + solvency check + mutates deposited_quid
     customer.sol_pledged_usd = customer.sol_pledged_usd.saturating_sub(locked_fraction);
     customer.deposited_lamports = customer.deposited_lamports.saturating_sub(lamports);
     bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_sub(locked_fraction);
     bank.sol_lamports = bank.sol_lamports.saturating_sub(lamports);
-    customer.pool_withdraw(bank, usd_reduction, now)?;
 
     // The forfeit stays in the pool: the caller's claim falls by `lamports`
     // but only `lamports - forfeit` leaves, which is what "the withdrawer eats
@@ -761,19 +768,23 @@ pub fn handle_refresh_sol_collateral(
     if current_floor >= customer.sol_pledged_usd {
         return Ok(()); // SOL has not dropped below locked value — nothing to do
     }
-    // Unconditional mark-down: pool_mark_down does NOT check solvency.
-    // This is correct — if SOL has dropped the pool may already be
-    // undercollateralized, and blocking the mark-down would hide that.
-    // After this call: if total_deposits < max_liability, the next
-    // amortise() call on any open position will detect it and fire.
+    // Re-mark the pool's record of what it holds in SOL, and stop there.
+    //
+    // This used to hand the reduction to `pool_mark_down`, which drained the
+    // depositor's dollar balance and then reached into their open positions'
+    // `pledged` — deleveraging a stock book because SOL had fallen. That
+    // followed from SOL being credited as margin. It no longer is: a SOL
+    // deposit margins nothing, so a SOL move has nothing to deleverage, and
+    // the depositor's claim is their lamports either way.
+    //
+    // What remains is bookkeeping. The mark matters because `sol_usd_contrib`
+    // is what the pool reports it is holding, and an unmarked one would
+    // overstate it.
     let reduction = customer.sol_pledged_usd.saturating_sub(current_floor);
     let bank = &mut ctx.accounts.bank;
     customer.sol_pledged_usd = current_floor;
     bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_sub(reduction);
-    customer.pool_mark_down(bank, reduction, now);
-    // If total_deposits < max_liability after this reduction, the next amortise()
-    // call on any of this depositor's positions will fire. No new liquidation
-    // logic needed — has_capacity() is already the gate everywhere it matters.
+    let _ = now;
     Ok(())
 }
 

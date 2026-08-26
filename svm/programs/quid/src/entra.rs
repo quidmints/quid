@@ -204,10 +204,23 @@ pub fn handle_in<'info>(ctx: Context<'_, '_, 'info, 'info, Stockup<'info>>,
                     to: sol_pool.to_account_info(),
                 }), amount)?;
 
+        // A SOL deposit is a yield position, not margin. It is deliberately
+        // not credited to `deposited_quid`, because that is the balance
+        // `renege` draws on to fund `pledged` — so crediting it would let a
+        // stock position be opened against SOL, and a stock loss would then be
+        // paid out of somebody's staking deposit. Only dollars margin stocks.
+        //
+        // It follows that a SOL move cannot reach a stock book at all, in
+        // either direction, and that the depositor's claim is simply their
+        // lamports: they get back what they put in, plus carry, whatever the
+        // price has done in between. Nothing here needs a USD mark, so nothing
+        // needs marking down.
+        //
+        // `sol_usd_contrib` is still tracked, as the pool's own record of what
+        // it is holding in SOL. It backs no obligation but this one.
         let sol_usd_floor = collar_adjusted_usd(amount, sol_price, &risk.actuary);
         customer.sol_pledged_usd = customer.sol_pledged_usd.saturating_add(sol_usd_floor);
         bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_add(sol_usd_floor);
-        customer.pool_deposit(bank, sol_usd_floor, right_now);
 
         // A deposit is the moment the hot buffer grows, so it is the moment
         // the parking question arises — and hanging it here means no keeper

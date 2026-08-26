@@ -2486,7 +2486,7 @@
               "Carry used to be booked straight into `total_deposits`, which shares it",
               "by `deposit_seconds` across every depositor — so a USD*/QD depositor",
               "earned staking yield on lamports they never posted, while SOL price",
-              "losses stayed idiosyncratic (`pool_mark_down` hits one depositor's",
+              "losses stayed idiosyncratic (a SOL move hits one depositor's",
               "`sol_pledged_usd`). Risk was individual and reward was socialised. The",
               "index attributes the yield to the tranche that funded it, in O(1)."
             ],

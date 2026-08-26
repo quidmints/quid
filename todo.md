@@ -42,6 +42,20 @@ faucet is rate-limited, so the program cannot be deployed there. That is the
 only thing between here and a real crossing: the code is written, the config
 scripts exist, and `Basket.sol` needs a matching testnet deployment.
 
+## SOL and dollars are separate books, and the seam is not fully tested
+
+A SOL deposit is a yield position, not margin. It does not credit
+`deposited_quid`, so it cannot fund `pledged` and no stock position can be
+opened against it; a SOL move therefore reaches no stock book, and a stock
+loss reaches no staking deposit. `sol_usd_contrib` is the pool's record of
+what it holds in SOL and backs nothing else.
+
+What that leaves untested is the seam. `withdraw_native` now clamps a payout
+to what can leave without closing the pool PDA, and the residual stays owed
+rather than being written off — exercised once, by a full exit. Nobody has
+tested two SOL depositors racing for the same lamports, or a full exit while a
+large tranche is parked and the unwind is short.
+
 ## Claims are amounts, not shares
 
 A loss larger than everything the pool has earned reaches `total_deposits`,

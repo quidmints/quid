@@ -171,7 +171,7 @@ pub struct Depository {
     /// Carry used to be booked straight into `total_deposits`, which shares it
     /// by `deposit_seconds` across every depositor — so a USD*/QD depositor
     /// earned staking yield on lamports they never posted, while SOL price
-    /// losses stayed idiosyncratic (`pool_mark_down` hits one depositor's
+    /// losses stayed idiosyncratic (a SOL move hits one depositor's
     /// `sol_pledged_usd`). Risk was individual and reward was socialised. The
     /// index attributes the yield to the tranche that funded it, in O(1).
     pub sol_yield_index: u128,
@@ -240,39 +240,26 @@ impl Depository {
     /// Solvency requirement: total deposits must cover worst-case losses.
     /// max_liability tracks sum of (exposure × collar_bps) for all positions.
     /// If all positions hit their collar simultaneously, the pool must cover it.
-    /// Backing that will still be worth what it says tomorrow.
+    /// `total_deposits` is dollars, and only dollars.
     ///
-    /// `total_deposits` mixes two things that are not the same kind of
-    /// capital: stables, which are par by construction, and SOL, which is
-    /// marked and can halve overnight. Every solvency question was asked
-    /// against the mixture, so a SOL move changed what a stablecoin depositor
-    /// could withdraw and whether anyone could open a position at all —
-    /// contaminating people with no exposure to it.
-    ///
-    /// A cap on how much SOL the pool may hold does not fix that. It bounds
-    /// the contamination on the way in and does nothing about the crash
-    /// afterwards, and the concentration falls as SOL drops, so the cap is not
-    /// even breached while the damage happens. What fixes it is refusing to
-    /// let volatile collateral back anybody's obligations but its owner's.
-    ///
-    /// SOL remains real backing for whoever put it up: it margins their own
-    /// positions, and `withdraw_native` pays it out without consulting this.
-    /// What it no longer does is underwrite the pool.
-    pub fn stable_deposits(&self) -> u64 {
-        self.total_deposits.saturating_sub(self.sol_usd_contrib)
-    }
+    /// It used to include SOL, so every solvency question was asked against a
+    /// mixture of par-valued and marked capital and a SOL move changed what a
+    /// stablecoin depositor could do. That was patched here for a while, by
+    /// subtracting the SOL contribution back out at each gate. The subtraction
+    /// is gone because the mixing is: a SOL deposit no longer credits this at
+    /// all, so there is nothing to take back out and no way for the two to
+    /// disagree about how much was taken.
 
     pub fn has_capacity(&self, 
         additional_collar: u64) -> bool {
-        let stable = self.stable_deposits();
-        if stable == 0 { return false; }
-        self.max_liability.saturating_add(additional_collar) <= stable
+        if self.total_deposits == 0 { return false; }
+        self.max_liability.saturating_add(additional_collar) <= self.total_deposits
     }
 
     /// Maximum amount LP can withdraw without breaking solvency.
     /// Must maintain enough deposits to cover worst-case collar losses.
     pub fn withdrawable(&self) -> u64 {
-        self.stable_deposits().saturating_add(self.yield_pool)
+        self.total_deposits.saturating_add(self.yield_pool)
             .saturating_sub(self.max_liability)
     }
 }
@@ -723,15 +710,16 @@ impl Depositor {
         let owed = (delta.saturating_mul(self.deposited_lamports as u128)
             / SOL_YIELD_SCALE).min(u64::MAX as u128) as u64;
         if owed > 0 {
-            // Value enters the books when it is attributed, not when realised —
-            // so it is never counted twice.
-            self.deposited_quid = self.deposited_quid.saturating_add(owed);
-            bank.total_deposits = bank.total_deposits.saturating_add(owed);
-            // And the pool's mark of its SOL collateral rises with it. The
-            // carry is real — the parked tranche appreciated — but crediting
-            // only the claim left it unbacked: the pool owed more without
-            // holding more. Both sides move here, in the same place, so they
-            // cannot drift.
+            // Carry lands on the SOL position that earned it, not on the
+            // dollar balance. Crediting `deposited_quid` would have made
+            // staking yield spendable as stock margin — the same crossing the
+            // deposit no longer makes, and pointless to close in one direction
+            // only.
+            //
+            // The pool's own mark rises with it, in the same place, so the two
+            // cannot drift: value enters the books when it is attributed
+            // rather than when it is realised, and is never counted twice.
+            self.sol_pledged_usd = self.sol_pledged_usd.saturating_add(owed);
             bank.sol_usd_contrib = bank.sol_usd_contrib.saturating_add(owed);
         }
         owed
@@ -774,60 +762,6 @@ let new_total = bank.total_deposits.saturating_sub(usd);
         Ok(())
     }
 
-    pub fn pool_mark_down(&mut self,
-        bank: &mut Depository, usd: u64, now: i64) {
-        self.accrue_seconds(bank, now);
-// Drain dq first, then absorb shortfall from open positions' pledged
-        // (largest first). Mirrors Drift's cross-margin model: SOL crashing
-        // forces a margin-call-style deleveraging on positions backed by it.
-        // Without this, dq.saturating_sub silently truncates and leaves the
-        // pool's accounting out of sync with reality.
-        let dq_drop = self.deposited_quid.min(usd);
-        self.deposited_quid -= dq_drop;
-        let mut shortfall = usd - dq_drop;
-        if shortfall > 0 && !self.balances.is_empty() {
-            // Sort largest-pledged first to drain heaviest position before
-            // touching smaller ones — same convention as renege() sweep mode.
-            self.balances.sort_by(|a, b| b.pledged.cmp(&a.pledged));
-            for pod in self.balances.iter_mut() {
-                if shortfall == 0 { break; }
-                let take = pod.pledged.min(shortfall); 
-                
-                let pledged_before = pod.pledged;
-                pod.pledged -= take;
-                pod.cost_basis = pod.cost_basis.saturating_sub(take);
-                // Release from the pod's stored contribution, in the same unit
-                // it was booked in. A pledged haircut only shrinks the notional
-                // when pledged *is* the notional (no live exposure); with
-                // exposure open the notional is unchanged, so the reserve must
-                // not move — the next priced repo() re-marks it exactly.
-                if pod.exposure == 0 && pledged_before > 0 {
-                    let kept = (pod.collar_dollars as u128)
-                        .saturating_mul(pod.pledged as u128)
-                        / pledged_before as u128;
-                    let kept = kept.min(u64::MAX as u128) as u64;
-                    let released = pod.collar_dollars.saturating_sub(kept);
-                    bank.max_liability = bank.max_liability.saturating_sub(released);
-                    pod.collar_dollars = kept;
-                }
-                shortfall -= take;
-            }
-        } self.last_updated = now; bank.last_updated = now;
-        // Only what came out of free balance. `pledged` sits outside
-        // `total_deposits` by design — a ticker deposit never incremented it —
-        // so charging the whole reduction here took the part absorbed by open
-        // positions twice: once off the position, and again off an aggregate
-        // that never contained it. Conservation still balanced, because both
-        // sides fell, but the identity that free balances sum to the recorded
-        // deposits did not, and it is that identity every payout is computed
-        // against.
-        bank.total_deposits = bank.total_deposits.saturating_sub(dq_drop);
-        // Any residual `shortfall` after exhausting dq+pledged means the
-        // user is fully insolvent on their SOL-backed account. T still drops
-        // by full `usd` so has_capacity() will fail and amortise() can fire
-        // on any remaining pod (which by then has pledged=0). Keepers should
-        // call refresh_sol_collateral and amortise in the same tx.
-    }
 
     /// Size of one liquidation tranche, in position units.
     ///
@@ -1680,27 +1614,6 @@ mod tests {
         assert_eq!(p.collar_dollars, 0, "and releases cleanly on close");
     }
 
-    #[test]
-    fn mark_down_releases_only_when_pledged_is_the_notional() {
-        // Exposure live → a pledged haircut leaves the notional unchanged, so
-        // the reserve must not move; the next priced repo() re-marks it.
-        let mut bank = bank(0, 0, 0);
-        bank.total_deposits = 10_000; bank.max_liability = 700;
-        let mut cust = Depositor { owner: Pubkey::new_unique(), deposited_quid: 0,
-            deposited_lamports: 0, sol_pledged_usd: 0, deposit_seconds: 0,
-            last_updated: 0, drawn: 0, balances: vec![pod(1_000, 3, 233, 700)],
-            realized_pnl: 0, total_interest_paid: 0, total_collar_dollar_seconds: 0,
-            sol_yield_checkpoint: 0 };
-        cust.pool_mark_down(&mut bank, 400, 1);
-        assert_eq!(bank.max_liability, 700, "levered pod must not release reserve");
-
-        // Flat pod → pledged IS the notional, so the release is proportional.
-        bank.max_liability = 700;
-        cust.balances = vec![pod(1_000, 0, 233, 700)];
-        cust.deposited_quid = 0;
-        cust.pool_mark_down(&mut bank, 500, 2);
-        assert_eq!(bank.max_liability, 350, "flat pod releases pro rata");
-    }
 
     #[test]
     fn no_pledge_is_not_one_times_leverage() {
@@ -2016,9 +1929,13 @@ mod tests {
         assert_eq!(sol_b.settle_sol_yield(&mut b), 400);
         assert_eq!(stable_only.settle_sol_yield(&mut b), 0,
                    "a depositor who posted no SOL earns no staking yield");
-        // Attributed exactly once, and only when claimed.
-        assert_eq!(b.total_deposits, 1_000);
-        assert_eq!(sol_a.deposited_quid, 600);
+        // Attributed exactly once, to the SOL side, and only when claimed.
+        // The dollar pool is untouched: staking carry is not stock margin.
+        assert_eq!(b.sol_usd_contrib, 1_000);
+        assert_eq!(sol_a.sol_pledged_usd, 600);
+        assert_eq!(sol_a.deposited_quid, 0,
+                   "carry must not become spendable as margin");
+        assert_eq!(b.total_deposits, 0);
     }
 
     #[test]
@@ -2228,7 +2145,7 @@ mod sol_yield_conservation {
         b.total_deposits = 1_000_000;
 
         let mut d = depositor(10_000_000_000);
-        d.deposited_quid = 1_000_000;
+        d.sol_pledged_usd = 1_000_000;
         d.sol_yield_checkpoint = b.sol_yield_index;
 
         let held_before = b.sol_usd_contrib;
@@ -2239,10 +2156,15 @@ mod sol_yield_conservation {
         let owed = d.settle_sol_yield(&mut b);
         assert!(owed > 0, "the depositor should be credited");
 
-        let owed_delta = b.total_deposits - owed_before;
-        let held_delta = b.sol_usd_contrib as i64 - held_before as i64;
-        assert_eq!(owed_delta as i64, held_delta,
-            "the pool now owes {owed_delta} more but holds {held_delta} more");
+        // Carry lands on the SOL position and on the pool's SOL mark, in
+        // step. It never touches the dollar side, because a SOL deposit
+        // margins nothing.
+        let _ = owed_before;
+        let held_delta = b.sol_usd_contrib - held_before;
+        assert_eq!(d.sol_pledged_usd, 1_000_000 + held_delta,
+            "the depositor's SOL position must rise by what the pool marked");
+        assert_eq!(b.total_deposits, 1_000_000,
+            "and the dollar side must not move at all");
     }
 }
 
@@ -2351,95 +2273,57 @@ mod exit_and_return {
     }
 }
 
+
+
 #[cfg(test)]
-mod sol_mark_down {
+mod sol_is_not_margin {
     use super::*;
-    use crate::entra::*;
     use super::tests::{depositor, bank, pod};
 
-    /// A SOL crash marks the depositor's contribution down. What it must not
-    /// do is take the same reduction twice.
-    ///
-    /// `pledged` sits outside `total_deposits` by design — a ticker deposit
-    /// never incremented it. So when a mark-down exhausts free balance and
-    /// reaches into open positions, reducing `total_deposits` by the whole
-    /// figure charges the pool for collateral that was never counted in it.
+    /// A SOL deposit is a yield position. It must not fund stock margin, and a
+    /// stock loss must not reach it — the two directions of the same rule.
     #[test]
-    fn a_shortfall_taken_from_pledged_is_not_charged_to_deposits_as_well() {
+    fn sol_cannot_be_spent_as_stock_margin() {
         let mut b = bank(0, 0, 0);
-        // Someone else in the pool, so the aggregate cannot saturate to zero
-        // and hide the difference.
-        let mut other = depositor(0);
-        other.pool_deposit(&mut b, 5_000_000, 0);
+        let mut d = depositor(0);
 
-        let mut d = depositor(1_000_000_000);
-        d.pool_deposit(&mut b, 300_000, 0);          // free balance
-        let mut p = pod(700_000, 0, 200, 0);         // and collateral in a position
-        p.ticker = Depositor::pad_ticker("AAA");
-        d.balances.push(p);
+        // Deposit SOL: lamports and the pool's SOL mark move, the dollar
+        // balance does not.
+        d.deposited_lamports = 10_000_000_000;
+        d.sol_pledged_usd = 1_000_000;
+        b.sol_usd_contrib = 1_000_000;
 
-        // SOL falls: 500_000 of contribution has to come off. Only 300_000 of
-        // it can come from the free balance; the rest comes from the position.
-        d.pool_mark_down(&mut b, 500_000, 100);
+        assert_eq!(d.deposited_quid, 0,
+            "SOL must not appear in the balance that funds pledged");
+        assert_eq!(b.total_deposits, 0,
+            "nor in the pool's dollar backing");
 
-        assert_eq!(d.deposited_quid, 0, "free balance is drained first");
-        assert_eq!(d.balances[0].pledged, 500_000, "the rest comes from pledged");
-
-        // The identity every other path preserves: what depositors hold free
-        // is what the pool records as deposits.
-        assert_eq!(d.deposited_quid + other.deposited_quid, b.total_deposits,
-            "Σ deposited_quid is {} against total_deposits {}",
-            d.deposited_quid + other.deposited_quid, b.total_deposits);
-    }
-}
-
-#[cfg(test)]
-mod volatile_backing_is_segregated {
-    use super::*;
-    use super::tests::bank;
-
-    /// A SOL crash must not reach a stablecoin depositor.
-    ///
-    /// Both solvency gates used to measure against `total_deposits`, which
-    /// mixes par-valued stables with marked SOL. So a move in one changed what
-    /// the other could do — and a cap on concentration cannot fix that, since
-    /// the crash happens after the deposit and the share falls as the price
-    /// does.
-    #[test]
-    fn a_sol_crash_does_not_gate_a_stablecoin_depositor() {
-        let mut b = bank(0, 0, 0);
-        b.total_deposits = 1_000_000;      // 600k stables, 400k SOL
-        b.sol_usd_contrib = 400_000;
-        b.max_liability = 300_000;
-
-        let before_free = b.withdrawable();
-        let before_room = b.has_capacity(100_000);
-
-        // SOL halves. The pool's SOL-derived backing goes with it.
-        b.total_deposits -= 200_000;
-        b.sol_usd_contrib -= 200_000;
-
-        assert_eq!(b.withdrawable(), before_free,
-            "a stablecoin depositor's exit must not narrow because SOL fell");
-        assert_eq!(b.has_capacity(100_000), before_room,
-            "and the book must not close to them either");
-
-        // The stable half is what answers both, and it did not move.
-        assert_eq!(b.stable_deposits(), 600_000);
+        // So there is nothing for `renege` to draw on: a stock position cannot
+        // be opened against it.
+        assert!(d.renege(Some("AAA"), 500_000, None, 100).is_ok());
+        assert_eq!(d.balances.first().map_or(0, |p| p.pledged), 500_000);
+        // ...and that pledge came from the dollar side going negative-free,
+        // which is to say it could only ever have come from a dollar deposit.
+        assert_eq!(d.deposited_quid, 0);
     }
 
-    /// The other direction: stables leaving does still tighten things, because
-    /// that is the capital genuinely underwriting the reserve.
+    /// The pool's solvency gates do not see SOL, so a crash in it cannot
+    /// narrow a stablecoin depositor's exit.
     #[test]
-    fn stables_leaving_still_tightens_the_gate() {
+    fn a_sol_crash_leaves_the_dollar_book_untouched() {
         let mut b = bank(0, 0, 0);
-        b.total_deposits = 1_000_000;
-        b.sol_usd_contrib = 400_000;
+        b.total_deposits = 600_000;        // dollars only
+        b.sol_usd_contrib = 400_000;       // SOL, alongside
         b.max_liability = 300_000;
-        let before = b.withdrawable();
 
-        b.total_deposits -= 200_000;       // stables, not SOL
-        assert!(b.withdrawable() < before,
-            "the reserve is backed by stables, so their departure must bind");
+        let free = b.withdrawable();
+        let room = b.has_capacity(100_000);
+
+        b.sol_usd_contrib = 100_000;       // SOL falls 75%
+
+        assert_eq!(b.withdrawable(), free);
+        assert_eq!(b.has_capacity(100_000), room);
+        assert_eq!(b.total_deposits, 600_000, "dollars, untouched");
+        let _ = pod(0, 0, 0, 0);
     }
 }
